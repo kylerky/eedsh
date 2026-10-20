@@ -7,15 +7,13 @@
  */
 import { PLAN_FORMAT, PLAN_VERSION } from './constants.js'
 import type { PlanBundle, PlanLayer, PlanPatch, ProfilePlan } from './schema.js'
+import { RESERVED_NAMES } from './schema.js'
 import {
   type JsonObject,
   type PlanIssue,
   type PlanValidation,
   PlanValidationError,
 } from './types.js'
-
-/** Package names the materializer owns; authors may not select them. */
-export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/generated']
 
 const RESERVED = new Set(RESERVED_NAMES)
 

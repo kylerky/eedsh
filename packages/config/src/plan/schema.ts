@@ -3,8 +3,98 @@
  * plan shape, the validation rules, and the derived plan types.
  * @module @eedsh/config/plan/schema
  */
+import * as ParseResult from 'effect/ParseResult'
 import * as Schema from 'effect/Schema'
 import { PLAN_FORMAT, PLAN_VERSION } from './constants.js'
+import { planJsonIssues } from './json.js'
+
+/** Package names the materializer owns; authors may not select them. */
+export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/generated']
+
+const RESERVED = new Set(RESERVED_NAMES)
+
+/** Layer ids double as patch file names, so they stay safe kebab-case. */
+const SAFE_LAYER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** An exact DSH runtime pin such as `0.2.1-rc.2`. */
+const DSH_PIN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+/**
+ * Require a plain object at a schema boundary before decoding its fields.
+ * Struct decoding rebuilds objects, so without this guard a class instance
+ * with the right fields would silently decode; the plan contract rejects it.
+ */
+function plain<S extends Schema.Schema.Any>(
+  schema: S,
+  message: string,
+): Schema.Schema<Schema.Schema.Type<S>, unknown, Schema.Schema.Context<S>> {
+  return Schema.transformOrFail(Schema.Unknown, schema, {
+    strict: false,
+    decode: (input, _options, ast) =>
+      isPlainObject(input)
+        ? ParseResult.succeed(input as Schema.Schema.Encoded<S>)
+        : ParseResult.fail(new ParseResult.Type(ast, input, message)),
+    encode: (value) => ParseResult.succeed(value),
+  })
+}
+
+function isSafeProfileName(name: string): boolean {
+  return (
+    name.trim() === name &&
+    name !== '' &&
+    name !== '.' &&
+    name !== '..' &&
+    name !== 'node_modules' &&
+    !name.includes('/') &&
+    !name.includes('\\')
+  )
+}
+
+/**
+ * Refine a schema with a filter while keeping the precise derived type.
+ * Explicitly passing the base schema keeps the inferred filter schema typed;
+ * an untyped curried filter would widen the type to `any`.
+ */
+function refine<S extends Schema.Schema.Any>(
+  self: S,
+  predicate: (
+    value: Schema.Schema.Type<S>,
+  ) => Schema.FilterOutput | ReadonlyArray<Schema.FilterOutput>,
+): Schema.Schema<Schema.Schema.Type<S>, Schema.Schema.Encoded<S>, Schema.Schema.Context<S>> {
+  return Schema.filter<S>(predicate)(self)
+}
+
+/** A profile name that is safe to use as a profile directory. */
+const ProfileNameSchema = refine(
+  Schema.NonEmptyString,
+  (name) =>
+    isSafeProfileName(name) || `profile name "${name}" is not usable as a profile directory`,
+)
+
+/** An exact DSH runtime pin. */
+const DshPinSchema = refine(
+  Schema.NonEmptyString,
+  (dsh) => DSH_PIN.test(dsh) || `"${dsh}" is not an exact version`,
+)
+
+/** A layer id that is safe to use as a patch file name. */
+const LayerIdSchema = refine(Schema.NonEmptyString, (id) =>
+  id.trim() === ''
+    ? 'layer id must be a non-empty string'
+    : SAFE_LAYER_ID.test(id) || `layer id "${id}" must be kebab-case (a-z, 0-9, single dashes)`,
+)
+
+/** A bundle name the materializer does not already own. */
+const BundleNameSchema = refine(
+  Schema.NonEmptyString,
+  (name) => !RESERVED.has(name) || `"${name}" is owned by the materializer`,
+)
 
 /** The reserved expression-node shape: source text DSH evaluates. */
 export const ExpressionNodeSchema = Schema.Struct({
@@ -14,7 +104,7 @@ export const ExpressionNodeSchema = Schema.Struct({
 /** One bundle selection, in authored order. */
 export const NamedBundleSchema = Schema.Struct({
   kind: Schema.Literal('bundle'),
-  name: Schema.NonEmptyString,
+  name: BundleNameSchema,
   source: Schema.optional(Schema.NonEmptyString),
 })
 
@@ -24,27 +114,156 @@ export const GeneratedBundleSchema = Schema.Struct({
 })
 
 /** An ordered bundle selection or the single generated-layer marker. */
-export const PlanBundleSchema = Schema.Union(NamedBundleSchema, GeneratedBundleSchema)
+export const PlanBundleSchema = plain(
+  Schema.Union(NamedBundleSchema, GeneratedBundleSchema),
+  'bundle must be a JSON object',
+)
+
+function bundleIssues(bundles: ReadonlyArray<PlanBundle>): Schema.FilterIssue[] {
+  const issues: Schema.FilterIssue[] = []
+  const seen = new Map<string, number>()
+  let markers = 0
+  bundles.forEach((bundle, index) => {
+    if (bundle.kind === 'generated') {
+      markers += 1
+      if (markers > 1) {
+        issues.push({ path: [index], message: 'a plan accepts at most one generated marker' })
+      }
+      return
+    }
+    const previous = seen.get(bundle.name)
+    if (previous === undefined) seen.set(bundle.name, index)
+    else
+      issues.push({
+        path: [index, 'name'],
+        message: `duplicate bundle "${bundle.name}" (also declared at bundles[${previous}].name)`,
+      })
+  })
+  return issues
+}
+
+const PlanBundleListBaseSchema = Schema.Array(PlanBundleSchema)
+
+/** Ordered bundles: unique names and at most one generated marker. */
+const PlanBundleListSchema = refine(PlanBundleListBaseSchema, bundleIssues)
 
 /** One Loader patch entry; plugin config values stay opaque to the schema. */
-export const PlanPatchSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown })
+const PlanPatchBaseSchema = plain(
+  Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  'patch must be a JSON object',
+)
+
+type PatchInput = { readonly [key: string]: unknown }
+
+function patchIssues(patch: PatchInput): Schema.FilterIssue[] {
+  const issues: Schema.FilterIssue[] = []
+  if ('insert' in patch) {
+    const insert = patch.insert
+    if (!Array.isArray(insert)) {
+      issues.push({ path: ['insert'], message: 'insert must be an array of entries' })
+    } else {
+      insert.forEach((entry, index) => {
+        const path: ReadonlyArray<PropertyKey> = ['insert', index]
+        if (!isPlainObject(entry)) {
+          issues.push({ path, message: 'inserted entry must be a JSON object' })
+          return
+        }
+        if (!('name' in entry) && entry.group !== true) {
+          issues.push({ path, message: 'inserted entry needs a name or group: true' })
+        }
+      })
+    }
+  } else if (typeof patch.id !== 'string' || patch.id.trim() === '') {
+    issues.push({ path: [], message: 'patch needs a non-empty id or an insert list' })
+  }
+
+  if ('name' in patch && typeof patch.name !== 'string') {
+    issues.push({ path: ['name'], message: 'name must be a string' })
+  }
+  for (const key of ['group', 'disabled'] as const) {
+    if (!(key in patch)) continue
+    const field = patch[key]
+    if (field !== null && typeof field !== 'boolean') {
+      issues.push({ path: [key], message: `${key} must be a boolean or null` })
+    }
+  }
+  return issues
+}
+
+/** One Loader patch entry with the patch rules applied. */
+export const PlanPatchSchema = refine(PlanPatchBaseSchema, patchIssues)
 
 /** One ordered generated layer. */
-export const PlanLayerSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  patches: Schema.Array(PlanPatchSchema),
-})
+export const PlanLayerSchema = plain(
+  Schema.Struct({
+    id: LayerIdSchema,
+    patches: Schema.Array(PlanPatchSchema),
+  }),
+  'layer must be a JSON object',
+)
 
-/** The complete profile plan schema. */
-export const ProfilePlanSchema = Schema.Struct({
-  format: Schema.Literal(PLAN_FORMAT),
-  version: Schema.Literal(PLAN_VERSION),
-  profile: Schema.Struct({ name: Schema.NonEmptyString }),
-  dsh: Schema.NonEmptyString,
-  bundles: Schema.Array(PlanBundleSchema),
-  layers: Schema.Array(PlanLayerSchema),
-  packages: Schema.Record({ key: Schema.String, value: Schema.String }),
-})
+function layerIssues(layers: ReadonlyArray<PlanLayer>): Schema.FilterIssue[] {
+  const issues: Schema.FilterIssue[] = []
+  const seen = new Map<string, number>()
+  layers.forEach((layer, index) => {
+    const previous = seen.get(layer.id)
+    if (previous === undefined) seen.set(layer.id, index)
+    else
+      issues.push({
+        path: [index, 'id'],
+        message: `duplicate layer id "${layer.id}" (also declared at layers[${previous}].id)`,
+      })
+  })
+  return issues
+}
+
+const PlanLayerListBaseSchema = Schema.Array(PlanLayerSchema)
+
+/** Ordered layers with unique ids. */
+const PlanLayerListSchema = refine(PlanLayerListBaseSchema, layerIssues)
+
+const PackagesBaseSchema = Schema.Record({ key: Schema.String, value: Schema.String })
+
+function packageIssues(packages: Readonly<Record<string, string>>): Schema.FilterIssue[] {
+  const issues: Schema.FilterIssue[] = []
+  for (const [name, spec] of Object.entries(packages)) {
+    if (name.trim() === '') {
+      issues.push({ path: [name], message: 'package name must be non-empty' })
+    }
+    if (RESERVED.has(name)) {
+      issues.push({ path: [name], message: `"${name}" is owned by the materializer` })
+    }
+    if (spec.trim() === '') {
+      issues.push({ path: [name], message: 'package spec must be a non-empty string' })
+    }
+  }
+  return issues
+}
+
+/** Profile-local packages with non-empty specs and no reserved names. */
+const PackagesSchema = refine(PackagesBaseSchema, packageIssues)
+
+const ProfilePlanBaseSchema = plain(
+  Schema.Struct({
+    format: Schema.Literal(PLAN_FORMAT),
+    version: Schema.Literal(PLAN_VERSION),
+    profile: plain(
+      Schema.Struct({ name: ProfileNameSchema }),
+      'profile must be a JSON object with a name',
+    ),
+    dsh: DshPinSchema,
+    bundles: PlanBundleListSchema,
+    layers: PlanLayerListSchema,
+    packages: PackagesSchema,
+  }),
+  'plan must be a JSON object',
+)
+
+/**
+ * The complete profile plan schema: the structural contract, the policy
+ * refinements, and the JSON and expression checks.
+ */
+export const ProfilePlanSchema = refine(ProfilePlanBaseSchema, planJsonIssues)
 
 /** The reserved expression node derived from the schema. */
 export type ExpressionNode = Schema.Schema.Type<typeof ExpressionNodeSchema>
