@@ -9,7 +9,7 @@ its own patch precedence, plugin manager, and HMR keep working.
 
 ## Requirements
 
-- Node.js >= 24
+- Node.js >= 26
 - pnpm 12.14.0
 - DSH `0.2.1-rc.2` (pinned by `@eedsh/cli` and declared as the runtime bundle engine)
 
@@ -182,14 +182,15 @@ pnpm format          # biome format --write .
 pnpm format:check    # biome format .
 pnpm lint            # biome lint .
 pnpm lint:fix        # biome lint --write .
-pnpm typecheck       # tsc -p tsconfig.check.json per package
+pnpm typecheck       # tsc -p tsconfig.check.json (whole repository)
+pnpm typecheck:watch # the same project in watch mode
 pnpm test            # vitest run (slow Web HMR test excluded)
 pnpm test:slow       # the slow Web-profile HMR integration test
 pnpm check           # biome check . && pnpm typecheck
 pnpm verify          # check + test + build
 ```
 
-CI runs `pnpm verify` on Node 24 and 26.
+CI runs `pnpm verify` on Node 26.
 
 ## Repository layout
 

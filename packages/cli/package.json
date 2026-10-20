@@ -17,6 +17,9 @@
   "files": [
     "lib"
   ],
+  "engines": {
+    "node": ">=26"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json"

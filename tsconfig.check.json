@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@eedsh/config": ["./packages/config/src/index.ts"],
+      "@eedsh/runtime": ["./packages/runtime/src/index.ts"]
+    }
+  },
+  "include": [
+    "test",
+    "vitest.config.ts",
+    "vitest.slow.config.ts",
+    "packages/*/src",
+    "packages/*/test"
+  ]
+}
