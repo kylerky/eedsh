@@ -7,7 +7,8 @@
 import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { PlanValidationError, type ProfilePlan, validatePlan } from '@eedsh/config'
+import { type ProfilePlan, validatePlan } from '@eedsh/config'
+import * as Either from 'effect/Either'
 
 /** TypeScript config file names, in discovery order. */
 export const CONFIG_FILENAMES = ['eedsh.config.ts', 'eedsh.config.mts'] as const
@@ -171,6 +172,6 @@ export async function loadConfig(configPath: string): Promise<ProfilePlan> {
     )
   }
   const result = validatePlan(exported)
-  if (!result.ok) throw new PlanValidationError(result.issues)
-  return result.plan
+  if (Either.isLeft(result)) throw result.left
+  return result.right
 }

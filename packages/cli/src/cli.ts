@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
+import { type PlanIssue, PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { runCheck } from './check.js'
 import {
@@ -226,20 +226,26 @@ function cliVersion(): string {
   }
 }
 
+function formatIssuePath(path: ReadonlyArray<PropertyKey>): string {
+  let text = ''
+  for (const segment of path) {
+    if (typeof segment === 'number') text += `[${segment}]`
+    else text += text === '' ? String(segment) : `.${String(segment)}`
+  }
+  return text === '' ? 'plan' : text
+}
+
 function describeError(error: unknown): string[] {
   if (error instanceof PlanValidationError) {
-    return error.issues.map((issue) => `${issue.code} at ${issue.path}: ${issue.message}`)
+    return error.issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`)
   }
   if (error instanceof ConfigError) return [`${error.code}: ${error.message}`]
   if (error !== null && typeof error === 'object' && '_tag' in error) {
     const tagged = error as Record<string, unknown>
     switch (tagged._tag) {
       case 'PlanInvalid': {
-        const issues = Array.isArray(tagged.issues) ? tagged.issues : []
-        return issues.map((issue) => {
-          const value = issue as { code?: string; path?: string; message?: string }
-          return `${value.code} at ${value.path}: ${value.message}`
-        })
+        const issues = Array.isArray(tagged.issues) ? (tagged.issues as readonly PlanIssue[]) : []
+        return issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`)
       }
       case 'FileSystemFailure':
         return [

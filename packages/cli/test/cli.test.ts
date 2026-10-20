@@ -10,10 +10,13 @@ import {
   generated,
   insert,
   layer,
+  type PlanIssue,
+  PlanValidationError,
   type ProfilePlan,
   validatePlan,
 } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
+import * as Either from 'effect/Either'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   type ReadableLike,
@@ -233,11 +236,38 @@ describe('eedsh sync', () => {
     expect(h.fs.files.has(generatedManifest)).toBe(true)
   })
 
-  it('reports an invalid config with a stable code and exit 1', async () => {
+  it('reports located validation issues for an invalid config and exit 1', async () => {
     const h = harness()
     const code = await runCli(['sync', '--config', fixture('invalid')], h.deps)
     expect(code).toBe(1)
-    expect(h.err.join('\n')).toContain('plan.missing_profile_name')
+    const errors = h.err.join('\n')
+    expect(errors).toContain('profile.name:')
+    expect(errors).not.toMatch(/plan\.[a-z_]/)
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('formats tagged validation issues as path: message', async () => {
+    const h = harness()
+    const issue = (path: readonly PropertyKey[], message: string): PlanIssue => ({
+      _tag: 'Type',
+      path,
+      message,
+    })
+    const loadConfig = async (): Promise<ProfilePlan> => {
+      throw new PlanValidationError({
+        issues: [
+          issue(['layers', 0, 'patches', 1, 'config', 'fn'], 'unsupported function value'),
+          issue([], 'not a plan object'),
+        ],
+        message: 'invalid eedsh profile plan',
+      })
+    }
+    const code = await runCli(['sync', '--config', fixture('basic')], { ...h.deps, loadConfig })
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('eedsh: layers[0].patches[1].config.fn: unsupported function value')
+    expect(errors).toContain('eedsh: plan: not a plan object')
+    expect(errors).not.toMatch(/plan\.[a-z_]/)
     expect(h.fs.files.size).toBe(0)
   })
 
@@ -602,7 +632,7 @@ describe('documentation', () => {
     const example = './fixtures/readme/eedsh.config.ts'
     const module = (await import(example)) as { default: unknown }
     const result = validatePlan(module.default)
-    expect(result.ok).toBe(true)
+    expect(Either.isRight(result)).toBe(true)
   })
 })
 
