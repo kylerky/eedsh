@@ -1,4 +1,5 @@
 import { canonicalJson, hashPlan, validatePlan } from '@eedsh/config'
+import * as Either from 'effect/Either'
 import { describe, expect, it } from 'vitest'
 import readme from '../../../cli/test/fixtures/readme/eedsh.config.js'
 
@@ -14,10 +15,8 @@ const PLAN_HASH = '2522100ca927c6a7e299b2b954a41e1dc937305feb917ace96e2cfe279a56
 
 describe('plan hash parity', () => {
   it('keeps the canonical JSON and hash of the README fixture plan', () => {
-    const result = validatePlan(readme)
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(canonicalJson(result.plan)).toBe(CANONICAL_JSON)
-    expect(hashPlan(result.plan)).toBe(PLAN_HASH)
+    const plan = Either.getOrThrow(validatePlan(readme))
+    expect(canonicalJson(plan)).toBe(CANONICAL_JSON)
+    expect(hashPlan(plan)).toBe(PLAN_HASH)
   })
 })

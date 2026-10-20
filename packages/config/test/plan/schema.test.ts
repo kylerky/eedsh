@@ -1,5 +1,6 @@
 import {
   canonicalJson,
+  decodePlan,
   hashPlan,
   PLAN_FORMAT,
   PLAN_VERSION,
@@ -27,14 +28,8 @@ function plan(overrides: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-/**
- * Decode through the public schema with the strict options a validator needs:
- * report every issue and reject keys the plan does not declare.
- */
-const decode = Schema.decodeUnknownEither(ProfilePlanSchema, {
-  errors: 'all',
-  onExcessProperty: 'error',
-})
+/** Decode through the documented strict entry point. */
+const decode = decodePlan
 
 function issuesOf(value: unknown): ReadonlyArray<ParseResult.ArrayFormatterIssue> {
   const result = decode(value)
@@ -79,6 +74,14 @@ describe('plan schema decoding', () => {
     expect(result.right.layers[0]?.id).toBe('base')
     expect(result.right.layers[0]?.patches).toHaveLength(2)
     expect(result.right.packages).toEqual({ '@scope/plugin': 'link:../plugin' })
+  })
+
+  it('rejects unknown fields through decodePlan and strips them through the raw schema', () => {
+    const value = plan({ extra: true })
+    expect(Either.isLeft(decodePlan(value))).toBe(true)
+    const lenient = Schema.decodeUnknownEither(ProfilePlanSchema)(value)
+    expect(Either.isRight(lenient)).toBe(true)
+    if (Either.isRight(lenient)) expect('extra' in lenient.right).toBe(false)
   })
 
   it('rejects wrong field types and identifies the field', () => {

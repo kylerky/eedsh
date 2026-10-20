@@ -15,6 +15,7 @@ import {
   raw,
   validatePlan,
 } from '@eedsh/config'
+import * as Either from 'effect/Either'
 import { describe, expect, it } from 'vitest'
 
 const base = { name: 'work', dsh: '0.2.1-rc.2' }
@@ -59,8 +60,10 @@ describe('defineProfile', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(PlanValidationError)
         const issues = (error as PlanValidationError).issues
-        expect(issues.map((issue) => issue.code)).toContain('plan.reserved_name')
-        expect(issues.some((issue) => issue.path === 'bundles[0].name')).toBe(true)
+        expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 0, 'name'])
+        expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(
+          true,
+        )
       }
     }
   })
@@ -91,7 +94,7 @@ describe('defineProfile', () => {
     expect(parsed.layers[0].patches[0].config.selected).toEqual({
       $eedsh: { expr: "ctx.get('profileContext').name" },
     })
-    expect(validatePlan(parsed).ok).toBe(true)
+    expect(Either.isRight(validatePlan(parsed))).toBe(true)
   })
 })
 
