@@ -1,0 +1,209 @@
+# eedsh
+
+Typed, code-first configuration for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) profiles.
+
+eedsh turns a TypeScript file into a normal DSH profile: an ordered bundle stack, a
+generated patch layer at the position you choose, reconciled dependencies, and a
+generation record that `dsh` boots like any other profile. DSH itself is untouched;
+its own patch precedence, plugin manager, and HMR keep working.
+
+## Requirements
+
+- Node.js >= 24
+- pnpm 12.14.0
+- DSH `0.2.1-rc.2` (pinned by `@eedsh/cli` and declared as the runtime bundle engine)
+
+## Packages
+
+| Package | Role |
+|---|---|
+| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, validation, and canonical hashing. No DSH runtime or Effect dependency. |
+| `@eedsh/cli` | The `eedsh` command: config discovery and evaluation, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. The only package that depends on Effect. |
+| `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
+
+### The Effect island
+
+Effect is confined to `@eedsh/cli`. The materializer, preflight, and publication
+pipeline are one Effect program with tagged failures and injectable services
+(`FileSystem`, `PackageManager`, `DshInstallation`, `Preflight`); Node `fs` and
+`spawn` live only in the live layer. `@eedsh/config` is plain data and
+`@eedsh/runtime` is a plain Cordis plugin. `test/architecture.test.ts` enforces the
+boundary: neither package may depend on or import `effect`, and `@eedsh/config`
+may not depend on DSH.
+
+## Quick start
+
+```ts
+// eedsh.config.ts
+import {
+  bundle,
+  defineProfile,
+  disable,
+  generated,
+  insert,
+  js,
+  layer,
+  override,
+} from '@eedsh/config'
+
+export default defineProfile({
+  name: 'work',
+  dsh: '0.2.1-rc.2',
+  packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
+  bundles: [
+    bundle('@deepseek-ai/dsh-base'),
+    bundle('@deepseek-ai/dsh-web-app'),
+    generated(), // the generated layers sit here: after web-app, before nothing else
+  ],
+  layers: [
+    layer('plugins', [
+      insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
+      disable('repeat-tool-reminder'),
+    ]),
+    layer('overrides', [
+      // Whole-config replacement, exactly like a DSH Loader patch.
+      override('agent-default-model', {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+      }),
+      insert({
+        id: 'plugin-manager',
+        name: '@deepseek-ai/dsh-plugin-manager',
+        disabled: js("!ctx.get('profileContext')"),
+      }),
+    ]),
+  ],
+})
+```
+
+```sh
+pnpm install
+pnpm -r build
+
+# Publish into $DSH_HOME/profiles/work
+node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
+
+# Boot the pinned DSH against the published profile
+node packages/cli/lib/bin.js run --config ./eedsh.config.ts -- --port 3080
+```
+
+`eedsh` is the package bin of `@eedsh/cli`; use `node packages/cli/lib/bin.js` from a
+checkout, or the linked `eedsh` bin once the package is installed.
+
+## The layer model
+
+A DSH profile is an ordered stack of bundle patch layers followed by the profile's
+own `cordis.patch.yml`, the harness-home patch, and invocation overlays. eedsh adds
+one thing: a **generated bundle** whose patch files are your `layer(...)` lists.
+
+- `bundles` keeps your authored order.
+- `generated()` is a single positional marker. Bundles listed after it override
+  generated defaults; the profile patch still has the final word.
+- Without a marker the generated bundle follows every managed bundle.
+- `@eedsh/runtime` is inserted immediately before `@eedsh/generated`. Both names are
+  reserved.
+
+Patch helpers mirror Loader semantics one-to-one: `insert`, `override` (whole-config
+replacement, no merge), `disable`, `enable`, `group` (group flag, isolate map,
+ordered children), `js` (a `!!js` runtime expression), and `raw` (any additional
+Loader patch field). No module, fragment, preset-extension, or feature concept
+exists in the plan; a preset is an ordinary inserted row.
+
+## What `eedsh sync` writes
+
+```
+$DSH_HOME/profiles/<name>/
+  package.json                      bundles + reconciled dependencies
+  cordis.yml                        empty root config (DSH mounts the stack over it)
+  cordis.patch.yml                  your layer; created empty only when missing
+  pnpm-workspace.yaml               pnpm settings DSH expects
+  .eedsh/plan.json                  the validated plan, canonical JSON
+  .eedsh/generated/package.json     generation record — the publication commit point
+  .eedsh/generated/patches/<generationId>/<layerId>.yml
+```
+
+Publication is atomic and idempotent:
+
+- patch files and the plan are written first, the generated package manifest last;
+- an unchanged plan changes nothing (same generation id, same bytes);
+- the generation id covers the plan hash and every emitted layer hash;
+- a failed install, preflight, or write leaves the previous generation published and
+  restores the profile manifest and lockfile.
+
+## Coexist contract
+
+The generated bundle is a normal bundle layer **beneath** the profile patch. Web GUI
+edits, Settings writes, and machine-local overrides keep winning, and `eedsh sync`
+never rewrites `cordis.patch.yml`, the harness-home patch, or `--patch` overlays.
+It only creates an empty `cordis.patch.yml` when none exists. Bundles and
+dependencies added outside eedsh are preserved; things eedsh managed before and no
+longer manages are removed.
+
+## CLI
+
+```sh
+eedsh sync [--config <path>] [--strict] [--watch]
+eedsh run  [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh --help | --version
+```
+
+- `--config` defaults to `eedsh.config.ts` (`.mts`, `.mjs`, `.js` also supported) in
+  the working directory.
+- `--strict` turns unmatched patch targets into a failure and skips publication.
+- `--watch` re-evaluates the config when files in its directory change; a compile
+  failure keeps the last published generation.
+- `run` syncs first (unless `--no-sync`) and then spawns the pinned DSH launcher with
+  `--profile <name>` and your arguments. It does not import the launcher, so argv,
+  signals, and shutdown stay exactly DSH's.
+- Exit codes: `0` success, `1` validation/materialization/launch failure, `2` usage
+  error.
+
+## Hot reload
+
+`@eedsh/runtime` registers only when the composition has a profile context and an
+active HMR service. It watches `.eedsh/generated/package.json`, skips a generation it
+has already reconciled, and calls `hmr.reconcileProfile()` for a new one. DSH rereads
+every bundle layer plus the profile patch, home patch, and overlays, so the profile
+patch keeps winning after reload.
+
+Restart-required outcomes are reported, never presented as a hot reload: a change
+DSH classifies as requiring a restart (pending modules or a moved package) logs a
+restart diagnostic and takes effect on the next start. Without HMR the watcher does
+not register and the current composition keeps running until restart. Editing the
+TypeScript config alone reloads nothing; only a published generation does.
+
+## Quality gate
+
+Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` is the type checker;
+Vitest runs the tests.
+
+```sh
+pnpm format          # biome format --write .
+pnpm format:check    # biome format .
+pnpm lint            # biome lint .
+pnpm lint:fix        # biome lint --write .
+pnpm typecheck       # tsc -p tsconfig.check.json per package
+pnpm test            # vitest run (slow Web HMR test excluded)
+pnpm test:slow       # the slow Web-profile HMR integration test
+pnpm check           # biome check . && pnpm typecheck
+pnpm verify          # check + test + build
+```
+
+CI runs `pnpm verify` on Node 24 and 26.
+
+## Repository layout
+
+```
+packages/config   @eedsh/config
+packages/cli      @eedsh/cli (bin: eedsh)
+packages/runtime  @eedsh/runtime (DSH bundle + HMR watcher)
+test/             workspace smoke, architecture, and (slow) integration tests
+```
+
+## Deferred
+
+The higher-level layer is deliberately out of scope for this change: modules,
+fragments, presets/`extends`, generated plugin-config types, project-level config,
+GUI manager augmentation, multiple profile surfaces, upgrade/migration machinery,
+and published npm packaging. The plan format is versioned so that layer can be
+added on top without changing what the materializer reads.

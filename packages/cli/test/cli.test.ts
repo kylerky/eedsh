@@ -2,7 +2,15 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, defineProfile, generated, insert, layer, type ProfilePlan } from '@eedsh/config'
+import {
+  bundle,
+  defineProfile,
+  generated,
+  insert,
+  layer,
+  type ProfilePlan,
+  validatePlan,
+} from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runCli, type SpawnedProcessLike, type SpawnLike } from '../src/cli.js'
@@ -254,6 +262,15 @@ describe('eedsh sync --watch', () => {
     controller.abort()
     expect(await running).toBe(0)
     expect(closed).toBe(1)
+  })
+})
+
+describe('documentation', () => {
+  it('keeps the README example a valid plan', async () => {
+    const example = './fixtures/readme/eedsh.config.ts'
+    const module = (await import(example)) as { default: unknown }
+    const result = validatePlan(module.default)
+    expect(result.ok).toBe(true)
   })
 })
 
