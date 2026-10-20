@@ -87,14 +87,22 @@ describe('preflight composition', () => {
         label: 'bundle:first',
         patches: [
           {
-            insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer', config: { ms: 1 } }],
+            insert: [
+              {
+                id: 'timer',
+                name: '@deepseek-ai/cordis-plugin-timer',
+                config: { ms: 1 },
+              },
+            ],
           },
         ],
       },
       { label: 'generated:middle', patches: [{ id: 'timer', config: { ms: 2 } }] },
       { label: 'bundle:second', patches: [{ id: 'timer', config: { ms: 3 } }] },
     ]
-    const result = composePreflightLayers(layers, { generatedLayerLabels: ['generated:middle'] })
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:middle'],
+    })
     expect(result.entries).toEqual([
       { id: 'timer', name: '@deepseek-ai/cordis-plugin-timer', config: { ms: 3 } },
     ])

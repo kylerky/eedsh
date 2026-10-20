@@ -166,7 +166,12 @@ describe('patch helpers', () => {
   })
 
   it('raw preserves additional Loader patch fields', () => {
-    const entry = raw({ id: 'row', name: '@scope/plugin', inject: ['service'], extra: { a: 1 } })
+    const entry = raw({
+      id: 'row',
+      name: '@scope/plugin',
+      inject: ['service'],
+      extra: { a: 1 },
+    })
     expect(entry).toEqual({
       id: 'row',
       name: '@scope/plugin',

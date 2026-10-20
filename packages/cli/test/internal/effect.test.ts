@@ -94,7 +94,11 @@ function failingPackageManager() {
   const shape: PackageManagerShape = {
     install: (dir) => {
       installs.push(dir)
-      return Effect.fail({ _tag: 'PackageInstallFailure', profileDir: dir, cause: 'boom' } as never)
+      return Effect.fail({
+        _tag: 'PackageInstallFailure',
+        profileDir: dir,
+        cause: 'boom',
+      } as never)
     },
   }
   return { shape, installs }

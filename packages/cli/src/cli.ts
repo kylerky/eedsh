@@ -68,7 +68,11 @@ export interface SpawnedProcessLike {
 export type SpawnLike = (
   command: string,
   args: string[],
-  options: { cwd?: string | undefined; env?: Record<string, string | undefined>; stdio: 'inherit' },
+  options: {
+    cwd?: string | undefined
+    env?: Record<string, string | undefined>
+    stdio: 'inherit'
+  },
 ) => SpawnedProcessLike
 
 /** Watch seam for `eedsh sync --watch`. */
