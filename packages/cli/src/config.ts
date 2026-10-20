@@ -1,0 +1,107 @@
+/**
+ * Config discovery and evaluation. A config is a TypeScript or JavaScript
+ * module whose default export is a validated profile plan; it is imported with
+ * Node's native ESM loader (type stripping for `.ts`), never compiled here.
+ * @module @eedsh/cli/config
+ */
+import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { PlanValidationError, type ProfilePlan, validatePlan } from '@eedsh/config'
+
+/** Recognized config file names, in discovery order. */
+export const CONFIG_FILENAMES = [
+  'eedsh.config.ts',
+  'eedsh.config.mts',
+  'eedsh.config.mjs',
+  'eedsh.config.js',
+] as const
+
+/** A config discovery, evaluation, or export failure. */
+export class ConfigError extends Error {
+  /** Stable diagnostic code. */
+  readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'ConfigError'
+    this.code = code
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (error !== null && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string') return message
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return String(error)
+    }
+  }
+  return String(error)
+}
+
+/**
+ * Native dynamic import. Going through `new Function` keeps bundlers and test
+ * transformers from rewriting the specifier, so config evaluation always uses
+ * Node's own ESM loader and TypeScript type stripping.
+ */
+const nativeImport = new Function('specifier', 'return import(specifier)') as (
+  specifier: string,
+) => Promise<{ default?: unknown }>
+
+/**
+ * Find the config file in a directory.
+ * @param cwd - directory to search.
+ * @returns the absolute config path, or undefined when none exists.
+ */
+export function findConfigPath(cwd: string): string | undefined {
+  for (const name of CONFIG_FILENAMES) {
+    const candidate = join(cwd, name)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * Import a config module and validate its default export as a profile plan.
+ * The module URL carries the file's modification time so a watch rerun
+ * re-evaluates an edited config instead of reusing the module cache.
+ * @param configPath - absolute config path.
+ * @returns the validated plan.
+ * @throws {ConfigError} when the file cannot be read or imported, or has no default export.
+ * @throws {PlanValidationError} when the exported plan is invalid.
+ */
+export async function loadConfig(configPath: string): Promise<ProfilePlan> {
+  let stamp: number
+  try {
+    stamp = statSync(configPath).mtimeMs
+  } catch (cause) {
+    throw new ConfigError('config.not_found', `cannot read ${configPath}: ${errorMessage(cause)}`)
+  }
+
+  const url = pathToFileURL(configPath)
+  url.search = `?eedsh=${stamp}`
+  let imported: { default?: unknown }
+  try {
+    imported = await nativeImport(url.href)
+  } catch (cause) {
+    throw new ConfigError(
+      'config.import_failed',
+      `cannot import ${configPath}: ${errorMessage(cause)}`,
+    )
+  }
+
+  const exported = imported.default
+  if (exported === undefined) {
+    throw new ConfigError(
+      'config.missing_default_export',
+      `${configPath} must default-export a profile plan`,
+    )
+  }
+  const result = validatePlan(exported)
+  if (!result.ok) throw new PlanValidationError(result.issues)
+  return result.plan
+}

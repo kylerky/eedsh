@@ -1,9 +1,12 @@
-import { Effect } from 'effect'
-
-export const packageName = '@eedsh/cli'
-
-/**
- * The CLI's application effect. One-shot commands run it through
- * `Effect.runPromise`; the watch loop keeps a `ManagedRuntime` alive.
- */
-export const main: Effect.Effect<void> = Effect.void
+export {
+  type CliDeps,
+  EXIT_FAILURE,
+  EXIT_OK,
+  EXIT_USAGE,
+  type ParsedCli,
+  parseCliArgs,
+  runCli,
+  UsageError,
+} from './cli.js'
+export { CONFIG_FILENAMES, ConfigError, findConfigPath, loadConfig } from './config.js'
+export { resolveDshInstallation } from './dsh.js'
