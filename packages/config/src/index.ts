@@ -1,4 +1,5 @@
 export * from './api.js'
+export * from './plan/constants.js'
 export * from './plan/hash.js'
 export * from './plan/schema.js'
 export * from './plan/types.js'

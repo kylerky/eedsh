@@ -217,10 +217,10 @@ importers:
         version: 4.0.9
 
   packages/config:
-    dependencies:
-      '@sinclair/typebox':
-        specifier: 0.34.52
-        version: 0.34.52
+    devDependencies:
+      effect:
+        specifier: 3.22.3
+        version: 3.22.3
 
   packages/runtime:
     devDependencies:
@@ -3566,9 +3566,6 @@ packages:
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
-
-  '@sinclair/typebox@0.34.52':
-    resolution: {integrity: sha512-XiMQh7qqVlxZzcVD+kkGMNGMzcTrDMLWI7S4x7z1MkCkbDPrekpZXEUK0eZqZFMuHQg2a2DZOcDIh9o5v3Gonw==}
 
   '@sindresorhus/is@7.2.0':
     resolution: {integrity: sha512-P1Cz1dWaFfR4IR+U13mqqiGsLFf1KbayybWwdd2vfctdV6hDpUkgCY0nKOLLTMSoRd/jJNjtbqzf13K8DCCXQw==}
@@ -8744,8 +8741,6 @@ snapshots:
     optional: true
 
   '@sec-ant/readable-stream@0.4.1': {}
-
-  '@sinclair/typebox@0.34.52': {}
 
   '@sindresorhus/is@7.2.0': {}
 

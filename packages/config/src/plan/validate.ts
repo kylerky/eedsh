@@ -5,18 +5,13 @@
  * into a stable code with the failing plan location.
  * @module @eedsh/config/plan/validate
  */
+import { PLAN_FORMAT, PLAN_VERSION } from './constants.js'
+import type { PlanBundle, PlanLayer, PlanPatch, ProfilePlan } from './schema.js'
 import {
   type JsonObject,
-  type NamedBundle,
-  PLAN_FORMAT,
-  PLAN_VERSION,
-  type PlanBundle,
   type PlanIssue,
-  type PlanLayer,
-  type PlanPatch,
   type PlanValidation,
   PlanValidationError,
-  type ProfilePlan,
 } from './types.js'
 
 /** Package names the materializer owns; authors may not select them. */
@@ -315,9 +310,9 @@ function validateBundle(
     report(context, 'plan.invalid_bundle', `${path}.source`, 'source must be a non-empty string')
   }
 
-  const parsed: NamedBundle = { kind: 'bundle', name }
-  if (typeof value.source === 'string') parsed.source = value.source
-  return parsed
+  return typeof value.source === 'string'
+    ? { kind: 'bundle', name, source: value.source }
+    : { kind: 'bundle', name }
 }
 
 function validatePackages(context: Context, value: unknown): Record<string, string> {

@@ -4,19 +4,17 @@
  * nothing here executes configuration or hides patch semantics.
  * @module @eedsh/config/api
  */
-import {
-  type ExpressionNode,
-  type GeneratedBundle,
-  type JsonObject,
-  type JsonValue,
-  type NamedBundle,
-  PLAN_FORMAT,
-  PLAN_VERSION,
-  type PlanBundle,
-  type PlanLayer,
-  type PlanPatch,
-  type ProfilePlan,
-} from './plan/types.js'
+import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants.js'
+import type {
+  ExpressionNode,
+  GeneratedBundle,
+  NamedBundle,
+  PlanBundle,
+  PlanLayer,
+  PlanPatch,
+  ProfilePlan,
+} from './plan/schema.js'
+import type { JsonObject, JsonValue } from './plan/types.js'
 import { assertPlan } from './plan/validate.js'
 
 /** One inserted Loader entry. */
@@ -49,9 +47,9 @@ export interface BundleOptions {
  * @returns an ordered bundle selection.
  */
 export function bundle(name: string, options: BundleOptions = {}): NamedBundle {
-  const value: NamedBundle = { kind: 'bundle', name }
-  if (options.source !== undefined) value.source = options.source
-  return value
+  return options.source === undefined
+    ? { kind: 'bundle', name }
+    : { kind: 'bundle', name, source: options.source }
 }
 
 /**

@@ -5,7 +5,7 @@
  * @module @eedsh/config/plan/hash
  */
 import { createHash } from 'node:crypto'
-import type { ProfilePlan } from './types.js'
+import type { ProfilePlan } from './schema.js'
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => canonicalize(item))
