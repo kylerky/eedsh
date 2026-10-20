@@ -147,8 +147,9 @@ eedsh run  [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
-- `--config` defaults to `eedsh.config.ts` (`.mts`, `.mjs`, `.js` also supported) in
-  the working directory.
+- `--config` defaults to `eedsh.config.ts` in the working directory, falling back to
+  `eedsh.config.mts`. JavaScript configs (`.js`, `.mjs`) are rejected with
+  `config.unsupported_extension` before they are imported.
 - `--strict` turns unmatched patch targets into a failure and skips publication.
 - `--watch` re-evaluates the config when files in its directory change; a compile
   failure keeps the last published generation.

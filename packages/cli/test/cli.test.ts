@@ -141,6 +141,61 @@ describe('eedsh sync', () => {
   })
 })
 
+describe('config discovery', () => {
+  const rejected = [
+    { dir: 'javascript-mjs', name: 'eedsh.config.mjs' },
+    { dir: 'javascript-js', name: 'eedsh.config.js' },
+  ] as const
+
+  it('selects eedsh.config.ts ahead of eedsh.config.mts', async () => {
+    const h = harness()
+    const code = await runCli(['sync'], {
+      ...h.deps,
+      cwd: join(root, 'packages/cli/test/fixtures/discovery'),
+    })
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile discovery-ts')
+    expect(h.fs.files.has('/home/profiles/discovery-ts/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/discovery-mts/.eedsh/generated/package.json')).toBe(false)
+  })
+
+  it('loads an explicit eedsh.config.mts path', async () => {
+    const h = harness()
+    const path = join(root, 'packages/cli/test/fixtures/mts/eedsh.config.mts')
+    const code = await runCli(['sync', '--config', path], h.deps)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile cli-mts')
+  })
+
+  for (const { dir, name } of rejected) {
+    it(`rejects a discovered ${name} config with a stable code`, async () => {
+      const h = harness()
+      const code = await runCli(['sync'], {
+        ...h.deps,
+        cwd: join(root, 'packages/cli/test/fixtures', dir),
+      })
+      expect(code).toBe(1)
+      const errors = h.err.join('\n')
+      expect(errors).toContain('config.unsupported_extension')
+      expect(errors).toContain('eedsh.config.ts')
+      expect(errors).toContain('eedsh.config.mts')
+      expect(h.fs.files.size).toBe(0)
+    })
+
+    it(`rejects an explicit ${name} config before evaluation`, async () => {
+      const h = harness()
+      const path = join(root, 'packages/cli/test/fixtures', dir, name)
+      const code = await runCli(['sync', '--config', path], h.deps)
+      expect(code).toBe(1)
+      const errors = h.err.join('\n')
+      expect(errors).toContain('config.unsupported_extension')
+      expect(errors).toContain('eedsh.config.ts')
+      expect(errors).toContain('eedsh.config.mts')
+      expect(h.fs.files.size).toBe(0)
+    })
+  }
+})
+
 describe('eedsh arguments', () => {
   it('returns exit 2 for usage errors', async () => {
     const h = harness()

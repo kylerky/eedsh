@@ -12,7 +12,15 @@ import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
-import { CONFIG_FILENAMES, ConfigError, findConfigPath, loadConfig } from './config.js'
+import {
+  assertSupportedConfigPath,
+  CONFIG_FILENAMES,
+  ConfigError,
+  findConfigPath,
+  findUnsupportedConfigPath,
+  loadConfig,
+  unsupportedConfigExtensionError,
+} from './config.js'
 import { resolveDshInstallation } from './dsh.js'
 import type { DshResolveFailure, MaterializeError } from './internal/effect/errors.js'
 import { liveServiceLayer } from './internal/effect/layer.js'
@@ -447,11 +455,27 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     return EXIT_OK
   }
 
-  const configPath =
-    parsed.configPath === undefined ? findConfigPath(cwd) : resolve(cwd, parsed.configPath)
-  if (configPath === undefined) {
-    stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${cwd}`)
-    return EXIT_FAILURE
+  let configPath: string
+  if (parsed.configPath === undefined) {
+    const discovered = findConfigPath(cwd)
+    if (discovered === undefined) {
+      const rejected = findUnsupportedConfigPath(cwd)
+      if (rejected !== undefined) {
+        report(stderr, unsupportedConfigExtensionError(rejected))
+        return EXIT_FAILURE
+      }
+      stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${cwd}`)
+      return EXIT_FAILURE
+    }
+    configPath = discovered
+  } else {
+    configPath = resolve(cwd, parsed.configPath)
+    try {
+      assertSupportedConfigPath(configPath)
+    } catch (error) {
+      report(stderr, error)
+      return EXIT_FAILURE
+    }
   }
 
   let plan: ProfilePlan
