@@ -7,7 +7,8 @@ const require = createRequire(import.meta.url)
 
 describe('workspace', () => {
   it('exposes the @eedsh/config public entry', () => {
-    expect(config.packageName).toBe('@eedsh/config')
+    expect(typeof config.defineProfile).toBe('function')
+    expect(config.PLAN_VERSION).toBe(1)
   })
 
   it('exposes the @eedsh/runtime public entry', () => {
