@@ -1,7 +1,7 @@
 /**
- * Config discovery and evaluation. A config is a TypeScript or JavaScript
- * module whose default export is a validated profile plan; it is imported with
- * Node's native ESM loader (type stripping for `.ts`), never compiled here.
+ * Config discovery and evaluation. A config is a TypeScript module whose
+ * default export is a validated profile plan; it is imported in-process
+ * through tsx's ESM and CJS hooks, with no build step or temporary file.
  * @module @eedsh/cli/config
  */
 import { existsSync, statSync } from 'node:fs'
@@ -46,11 +46,35 @@ function errorMessage(error: unknown): string {
 /**
  * Native dynamic import. Going through `new Function` keeps bundlers and test
  * transformers from rewriting the specifier, so config evaluation always uses
- * Node's own ESM loader and TypeScript type stripping.
+ * the process's module loader (tsx, registered by {@link ensureTsxLoader}).
  */
 const nativeImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<{ default?: unknown }>
+
+let loaderRegistration: Promise<void> | undefined
+
+async function registerTsxLoader(): Promise<void> {
+  const [esmApi, cjsApi] = await Promise.all([import('tsx/esm/api'), import('tsx/cjs/api')])
+  esmApi.register()
+  cjsApi.register()
+}
+
+/**
+ * Register tsx's ESM and CJS hooks once per process. Both are needed: a `.ts`
+ * config in a project without `"type": "module"` is classified as CommonJS, so
+ * its dynamic import reaches the CJS loader rather than the ESM hooks.
+ * Registration is lazy (never for `--help`/`--version`) and idempotent.
+ */
+function ensureTsxLoader(): Promise<void> {
+  if (loaderRegistration === undefined) {
+    loaderRegistration = registerTsxLoader().catch((error: unknown) => {
+      loaderRegistration = undefined
+      throw error
+    })
+  }
+  return loaderRegistration
+}
 
 /**
  * Find the config file in a directory.
@@ -112,6 +136,14 @@ export function assertSupportedConfigPath(configPath: string): void {
  */
 export async function loadConfig(configPath: string): Promise<ProfilePlan> {
   assertSupportedConfigPath(configPath)
+  try {
+    await ensureTsxLoader()
+  } catch (cause) {
+    throw new ConfigError(
+      'config.import_failed',
+      `cannot initialize the TypeScript loader: ${errorMessage(cause)}`,
+    )
+  }
   let stamp: number
   try {
     stamp = statSync(configPath).mtimeMs

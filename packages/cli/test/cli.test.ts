@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
@@ -39,6 +40,25 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<bool
     await delay(50)
   }
   return predicate()
+}
+
+const tempRoot = join(root, 'packages/cli/.tmp')
+
+async function tempDir(prefix: string): Promise<string> {
+  await mkdir(tempRoot, { recursive: true })
+  return mkdtemp(join(tempRoot, prefix))
+}
+
+function watchConfigSource(row: string): string {
+  return `import { bundle, defineProfile, generated, insert, layer } from '@eedsh/config'
+
+export default defineProfile({
+  name: 'cli-watch',
+  dsh: '0.2.1-rc.2',
+  bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+  layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
+})
+`
 }
 
 interface HarnessOptions {
@@ -194,6 +214,70 @@ describe('config discovery', () => {
       expect(h.fs.files.size).toBe(0)
     })
   }
+})
+
+describe('config evaluation', () => {
+  it('evaluates non-erasable TypeScript syntax', async () => {
+    const h = harness()
+    const code = await runCli(['sync', '--config', fixture('enum')], h.deps)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile enum-basic')
+    expect(h.fs.files.has('/home/profiles/enum-basic/.eedsh/generated/package.json')).toBe(true)
+  })
+
+  it('evaluates a config in a CommonJS project', async () => {
+    const h = harness()
+    const code = await runCli(['sync', '--config', fixture('cjs-project')], h.deps)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile cli-cjs')
+    expect(h.fs.files.has('/home/profiles/cli-cjs/.eedsh/generated/package.json')).toBe(true)
+  })
+
+  it('reports a syntax error as config.import_failed', async () => {
+    const dir = await tempDir('syntax-')
+    const configPath = join(dir, 'eedsh.config.ts')
+    await writeFile(configPath, 'export default {\n')
+
+    const h = harness()
+    const code = await runCli(['sync', '--config', configPath], h.deps)
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('applies an edited config in watch mode', async () => {
+    const dir = await tempDir('watch-')
+    const configPath = join(dir, 'eedsh.config.ts')
+    await writeFile(configPath, watchConfigSource('row-a'))
+
+    const h = harness()
+    let onChange: (() => void) | undefined
+    const watch = async (_dir: string, callback: () => void) => {
+      onChange = callback
+      return {
+        close: async () => {},
+      }
+    }
+    const controller = new AbortController()
+    const running = runCli(['sync', '--config', configPath, '--watch'], {
+      ...h.deps,
+      watch,
+      signal: controller.signal,
+    })
+    const patches = () =>
+      [...h.fs.files.entries()]
+        .filter(([path]) => path.includes('/.eedsh/generated/patches/'))
+        .map(([, content]) => content)
+
+    expect(await waitFor(() => patches().some((patch) => patch.includes('row-a')))).toBe(true)
+    await delay(20)
+    await writeFile(configPath, watchConfigSource('row-b'))
+    onChange?.()
+
+    expect(await waitFor(() => patches().some((patch) => patch.includes('row-b')))).toBe(true)
+    controller.abort()
+    expect(await running).toBe(0)
+  })
 })
 
 describe('eedsh arguments', () => {
