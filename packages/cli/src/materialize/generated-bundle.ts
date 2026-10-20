@@ -197,6 +197,7 @@ export function writeGeneratedBundle(
   options: { includeManifest?: boolean } = {},
 ): Effect.Effect<void, FileSystemFailure> {
   return Effect.gen(function* () {
+    yield* io.ensureDir(packageDir)
     for (const file of bundle.files) {
       if (options.includeManifest === false && file.path === 'package.json') continue
       const target = join(packageDir, file.path)

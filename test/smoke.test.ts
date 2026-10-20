@@ -12,7 +12,8 @@ describe('workspace', () => {
   })
 
   it('exposes the @eedsh/runtime public entry', () => {
-    expect(runtime.packageName).toBe('@eedsh/runtime')
+    expect(typeof runtime.apply).toBe('function')
+    expect(runtime.name).toBe('eedsh-runtime')
   })
 
   it('resolves the pinned DSH package', () => {

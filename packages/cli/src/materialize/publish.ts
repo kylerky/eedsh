@@ -71,6 +71,7 @@ export function publishProfile(
     yield* ensureProfileFiles(input.profileDir, fs)
 
     const generatedDir = join(input.profileDir, GENERATED_DIRNAME)
+    yield* fs.ensureDir(generatedDir)
     yield* writeGeneratedBundle(generatedDir, input.generated, fs, { includeManifest: false })
     yield* fs.ensureDir(dirname(join(input.profileDir, PLAN_RELATIVE_PATH)))
     yield* fs.writeFileAtomic(
