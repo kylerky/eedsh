@@ -7,12 +7,17 @@
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
+import { Effect } from 'effect'
+import type { FileSystemFailure } from '../internal/effect/errors.js'
 import { emitPatchesYaml } from './yaml.js'
 
 export { emitPatchesYaml } from './yaml.js'
 
 /** The generated bundle's package name. */
 export const GENERATED_PACKAGE_NAME = '@eedsh/generated'
+
+/** The static runtime bundle's package name. */
+export const RUNTIME_PACKAGE_NAME = '@eedsh/runtime'
 
 /** The generation-record format identifier. */
 export const GENERATION_FORMAT = 'eedsh/generation'
@@ -170,26 +175,33 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
 /** File operations the generated-bundle writer needs. */
 export interface GeneratedBundleIo {
   /** Create a directory hierarchy. */
-  ensureDir(path: string): Promise<void>
+  ensureDir(path: string): Effect.Effect<void, FileSystemFailure>
   /** Write a file atomically. */
-  writeFileAtomic(path: string, content: string): Promise<void>
+  writeFileAtomic(path: string, content: string): Effect.Effect<void, FileSystemFailure>
 }
 
 /**
- * Write every generated artifact, in publication order, below the generated
- * package directory. The package manifest is written last.
+ * Write generated artifacts, in publication order, below the generated package
+ * directory. The package manifest is written last by publication, so it is
+ * skipped here unless explicitly included.
  * @param packageDir - absolute generated bundle directory.
  * @param bundle - the bundle to write.
  * @param io - injected file operations.
+ * @param options - set `includeManifest: false` to defer the commit point.
+ * @returns an effect that writes every requested artifact.
  */
-export async function writeGeneratedBundle(
+export function writeGeneratedBundle(
   packageDir: string,
   bundle: GeneratedBundle,
   io: GeneratedBundleIo,
-): Promise<void> {
-  for (const file of bundle.files) {
-    const target = join(packageDir, file.path)
-    await io.ensureDir(dirname(target))
-    await io.writeFileAtomic(target, file.content)
-  }
+  options: { includeManifest?: boolean } = {},
+): Effect.Effect<void, FileSystemFailure> {
+  return Effect.gen(function* () {
+    for (const file of bundle.files) {
+      if (options.includeManifest === false && file.path === 'package.json') continue
+      const target = join(packageDir, file.path)
+      yield* io.ensureDir(dirname(target))
+      yield* io.writeFileAtomic(target, file.content)
+    }
+  })
 }
