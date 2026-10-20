@@ -9,7 +9,7 @@ its own patch precedence, plugin manager, and HMR keep working.
 
 ## Requirements
 
-- Node.js >= 26
+- Node.js >= 26 (the only supported runtime line; Node 24 and earlier are not supported)
 - pnpm 12.14.0
 - DSH `0.2.1-rc.2` (pinned by `@eedsh/cli` and declared as the runtime bundle engine)
 
@@ -18,7 +18,7 @@ its own patch precedence, plugin manager, and HMR keep working.
 | Package | Role |
 |---|---|
 | `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, validation, and canonical hashing. No DSH runtime or Effect dependency. |
-| `@eedsh/cli` | The `eedsh` command: config discovery and evaluation, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. The only package that depends on Effect. |
+| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. The only package that depends on Effect or the TypeScript toolchain. |
 | `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
 
 ### The Effect island
@@ -28,8 +28,8 @@ pipeline are one Effect program with tagged failures and injectable services
 (`FileSystem`, `PackageManager`, `DshInstallation`, `Preflight`); Node `fs` and
 `spawn` live only in the live layer. `@eedsh/config` is plain data and
 `@eedsh/runtime` is a plain Cordis plugin. `test/architecture.test.ts` enforces the
-boundary: neither package may depend on or import `effect`, and `@eedsh/config`
-may not depend on DSH.
+boundary: neither package may depend on or import `effect`, `tsx`, or `typescript`,
+and `@eedsh/config` may not depend on DSH.
 
 ## Quick start
 
@@ -95,10 +95,14 @@ checkout, or the linked `eedsh` bin once the package is installed.
 
 ## Config authoring
 
-A config is a TypeScript module that must typecheck in its own project. eedsh
-evaluates it with `tsx` at runtime but never typechecks it while loading: type
-correctness is established by your editor, by your project's `tsc --noEmit`, or by
-`eedsh check`.
+A config is a TypeScript module named `eedsh.config.ts` or `eedsh.config.mts` that
+must typecheck in its own project. eedsh evaluates it with `tsx` at runtime, so full
+TypeScript syntax — including enums, namespaces, and decorators — works without a
+build step, but eedsh never typechecks it while loading: type correctness is
+established by your editor, by your project's `tsc --noEmit`, or by `eedsh check`.
+Config imports resolve with tsx's own rules: relative specifiers, package names such
+as `@eedsh/config`, and the tsconfig `paths` mappings of the directory you run eedsh
+from.
 
 ```sh
 eedsh check [--config <path>] [-- <tsc args>]
@@ -201,10 +205,15 @@ restart diagnostic and takes effect on the next start. Without HMR the watcher d
 not register and the current composition keeps running until restart. Editing the
 TypeScript config alone reloads nothing; only a published generation does.
 
-## Quality gate
+## Development
 
 Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` is the type checker;
 Vitest runs the tests.
+
+The root `tsconfig.check.json` is the repository's typecheck project. It covers every
+TypeScript file the repository contains — package sources and tests, the root `test`
+directory, both Vitest configuration files, and the CLI's config fixtures and examples
+— so `pnpm typecheck` fails on a type error anywhere, including in a config fixture.
 
 ```sh
 pnpm format          # biome format --write .
@@ -219,7 +228,7 @@ pnpm check           # biome check . && pnpm typecheck
 pnpm verify          # check + test + build
 ```
 
-CI runs `pnpm verify` on Node 26.
+CI runs `pnpm verify` on Node 26 only.
 
 ## Repository layout
 

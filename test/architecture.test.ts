@@ -50,6 +50,8 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
   return imports
 }
 
+const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
+
 function declaresEffect(name: PackageName): boolean {
   return dependencyNames(name).includes('effect')
 }
@@ -57,6 +59,18 @@ function declaresEffect(name: PackageName): boolean {
 function importsEffect(name: PackageName): boolean {
   return sourceImports(name).some(
     ({ specifier }) => specifier === 'effect' || specifier.startsWith('effect/'),
+  )
+}
+
+function declaresToolchain(name: PackageName): boolean {
+  return dependencyNames(name).some((dependency) => TOOLCHAIN_PACKAGES.includes(dependency))
+}
+
+function importsToolchain(name: PackageName): boolean {
+  return sourceImports(name).some(({ specifier }) =>
+    TOOLCHAIN_PACKAGES.some(
+      (dependency) => specifier === dependency || specifier.startsWith(`${dependency}/`),
+    ),
   )
 }
 
@@ -80,5 +94,15 @@ describe('package boundaries', () => {
   it('declares and uses Effect in @eedsh/cli', () => {
     expect(declaresEffect('cli')).toBe(true)
     expect(importsEffect('cli')).toBe(true)
+  })
+
+  it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {
+    for (const name of ['config', 'runtime'] as const) {
+      expect(declaresToolchain(name), `@eedsh/${name} must not depend on tsx or typescript`).toBe(
+        false,
+      )
+      expect(importsToolchain(name), `@eedsh/${name} must not import tsx or typescript`).toBe(false)
+    }
+    expect(manifest('cli').dependencies?.tsx, '@eedsh/cli must declare tsx').toBeDefined()
   })
 })

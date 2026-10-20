@@ -154,7 +154,11 @@ function runInherited(input: CheckInput, command: string, args: string[]): Promi
  */
 export async function runCheck(input: CheckInput): Promise<number> {
   if (!existsSync(input.configPath)) {
-    return checkFailure(input.stderr, 'config.not_found', `cannot read ${input.configPath}`)
+    return checkFailure(
+      input.stderr,
+      'config.not_found',
+      `cannot read ${input.configPath}; create eedsh.config.ts or pass --config <path>`,
+    )
   }
 
   const tsconfigPath = findTsconfigPath(input.configPath)
