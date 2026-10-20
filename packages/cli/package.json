@@ -1,0 +1,38 @@
+{
+  "name": "@eedsh/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The eedsh command: evaluate a typed profile, materialize it into a DSH profile, and boot it",
+  "type": "module",
+  "bin": {
+    "eedsh": "./lib/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis-plugin-include": "1.0.10",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.6",
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
+    "@eedsh/config": "workspace:*",
+    "@eedsh/runtime": "workspace:*",
+    "chokidar": "4.0.3",
+    "effect": "3.22.3",
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "4.0.9"
+  }
+}
