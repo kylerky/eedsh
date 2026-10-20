@@ -17,19 +17,26 @@ its own patch precedence, plugin manager, and HMR keep working.
 
 | Package | Role |
 |---|---|
-| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, validation, and canonical hashing. No DSH runtime or Effect dependency. |
-| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. The only package that depends on Effect or the TypeScript toolchain. |
+| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, the Effect Schema plan contract, Effect-native validation, and canonical hashing. |
+| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
 | `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
 
-### The Effect island
+### Effect boundaries
 
-Effect is confined to `@eedsh/cli`. The materializer, preflight, and publication
-pipeline are one Effect program with tagged failures and injectable services
-(`FileSystem`, `PackageManager`, `DshInstallation`, `Preflight`); Node `fs` and
-`spawn` live only in the live layer. `@eedsh/config` is plain data and
-`@eedsh/runtime` is a plain Cordis plugin. `test/architecture.test.ts` enforces the
-boundary: neither package may depend on or import `effect`, `tsx`, or `typescript`,
-and `@eedsh/config` may not depend on DSH.
+Effect is the default in `@eedsh/config` and `@eedsh/cli`. `@eedsh/config` uses an
+Effect Schema as the plan's single validator and type source, and its validation API
+is `Either` plus a tagged error carrying native
+`ParseResult.ArrayFormatterIssue` values. `@eedsh/cli` uses the same Effect runtime
+for materialization: tagged failures and injectable `FileSystem`, `PackageManager`,
+`DshInstallation`, and `Preflight` services, with Node `fs` and `spawn` only in the
+live layer. `@eedsh/runtime` remains a plain Cordis plugin because DSH's HMR service
+owns its lifecycle, and `defineProfile`/`assertPlan` remain synchronous because a
+config module must default-export plain data.
+
+`test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
+`effect/Schema`, `effect/Either`, `effect/ParseResult`, and `effect/Data`, may not
+depend on DSH, and must use the same Effect version as `@eedsh/cli`;
+`@eedsh/runtime` may not depend on or import Effect or the TypeScript toolchain.
 
 ## Quick start
 
@@ -103,6 +110,11 @@ established by your editor, by your project's `tsc --noEmit`, or by `eedsh check
 Config imports resolve with tsx's own rules: relative specifiers, package names such
 as `@eedsh/config`, and the tsconfig `paths` mappings of the directory you run eedsh
 from.
+
+Invalid plans fail before sync with located, human-readable issues: the CLI prints
+`path: message` (for example `layers[0].patches[0].config.fn: unsupported function
+value`), using `plan` for a root failure. There are no `plan.*` error codes, and
+`defineProfile` throws the same tagged `PlanValidationError` a frontend can catch.
 
 ```sh
 eedsh check [--config <path>] [-- <tsc args>]
@@ -189,7 +201,9 @@ eedsh --help | --version
   `--profile <name>` and your arguments. It does not import the launcher, so argv,
   signals, and shutdown stay exactly DSH's.
 - Exit codes: `0` success, `1` validation/materialization/launch/check failure, `2`
-  usage error.
+  usage error. Validation failures are reported as `path: message` locations (`plan`
+  for a root failure) from Effect's native issue formatter; there are no stable
+  `plan.*` codes.
 
 ## Hot reload
 

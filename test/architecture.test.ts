@@ -52,6 +52,20 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
+/** The only Effect modules `@eedsh/config` may use for the plan contract. */
+const CONFIG_EFFECT_MODULES = [
+  'effect/Schema',
+  'effect/Either',
+  'effect/ParseResult',
+  'effect/Data',
+]
+
+function effectImports(name: PackageName): { file: string; specifier: string }[] {
+  return sourceImports(name).filter(
+    ({ specifier }) => specifier === 'effect' || specifier.startsWith('effect/'),
+  )
+}
+
 function declaresEffect(name: PackageName): boolean {
   return dependencyNames(name).includes('effect')
 }
@@ -75,10 +89,19 @@ function importsToolchain(name: PackageName): boolean {
 }
 
 describe('package boundaries', () => {
-  it('keeps Effect out of @eedsh/config and @eedsh/runtime', () => {
-    for (const name of ['config', 'runtime'] as const) {
-      expect(declaresEffect(name), `@eedsh/${name} must not depend on effect`).toBe(false)
-      expect(importsEffect(name), `@eedsh/${name} must not import effect`).toBe(false)
+  it('keeps Effect out of @eedsh/runtime', () => {
+    expect(declaresEffect('runtime'), '@eedsh/runtime must not depend on effect').toBe(false)
+    expect(importsEffect('runtime'), '@eedsh/runtime must not import effect').toBe(false)
+  })
+
+  it('allows @eedsh/config to use only the plan contract Effect modules', () => {
+    expect(declaresEffect('config'), '@eedsh/config must declare effect').toBe(true)
+    expect(importsEffect('config'), '@eedsh/config must import effect').toBe(true)
+    for (const { file, specifier } of effectImports('config')) {
+      expect(
+        CONFIG_EFFECT_MODULES,
+        `@eedsh/config must import effect through an allowed module: ${file} imports ${specifier}`,
+      ).toContain(specifier)
     }
   })
 
@@ -94,6 +117,12 @@ describe('package boundaries', () => {
   it('declares and uses Effect in @eedsh/cli', () => {
     expect(declaresEffect('cli')).toBe(true)
     expect(importsEffect('cli')).toBe(true)
+  })
+
+  it('keeps the config and CLI Effect versions in step', () => {
+    const cliEffect = manifest('cli').dependencies?.effect
+    expect(manifest('config').peerDependencies?.effect).toBe(cliEffect)
+    expect(manifest('config').devDependencies?.effect).toBe(cliEffect)
   })
 
   it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {

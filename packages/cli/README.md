@@ -5,30 +5,39 @@ The `eedsh` command. It evaluates a typed config with Node's native ESM loader
 through DSH's own patch algorithm, publishes a normal DSH profile atomically, and
 can boot the pinned launcher.
 
-Effect is used here and only here: tagged failures, `Context.Tag` services for file
-access, package installation, DSH resolution, and preflight, plus a `ManagedRuntime`
-for watch mode. Node `fs` and `spawn` live only in the live service layer.
+Effect is the default here: tagged failures, `Context.Tag` services for file access,
+package installation, DSH resolution, and preflight, plus a `ManagedRuntime` for
+watch mode. Node `fs` and `spawn` live only in the live service layer. `@eedsh/config`
+also uses Effect for the plan schema and validation, while `@eedsh/runtime` stays a
+plain Cordis plugin; `defineProfile` remains synchronous at the config boundary.
 
 ## Commands
 
 ```sh
-eedsh sync [--config <path>] [--strict] [--watch]
-eedsh run  [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh sync  [--config <path>] [--strict] [--watch]
+eedsh check [--config <path>] [-- <tsc args>]
+eedsh run   [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
 - `--config` accepts an absolute or working-directory-relative path. Without it, the
-  CLI looks for `eedsh.config.ts`, `eedsh.config.mts`, `eedsh.config.mjs`, then
-  `eedsh.config.js` in the working directory.
+  CLI looks for `eedsh.config.ts` then `eedsh.config.mts` in the working directory;
+  JavaScript configs (`.js`, `.mjs`) are rejected with
+  `config.unsupported_extension` before they are imported.
 - `--strict` makes unmatched id-targeted patches a failure; the generation record is
   not updated.
 - `--watch` re-evaluates the config when files under its directory change (debounced).
   A compile or validation failure is reported and the previously published generation
   stays in place; one `ManagedRuntime` serves every run.
+- `check` typechecks the config's project with its own `tsc --noEmit -p <tsconfig>`,
+  forwards arguments after `--`, never evaluates the config or publishes a profile,
+  and exits with the compiler's exit code.
 - `run` syncs first unless `--no-sync`, then spawns `node <pinned dsh>/lib/bin.js
   --profile <name> <your args>` with inherited stdio and the invoking environment.
 - Exit codes: `0` success, `1` config/validation/materialization/preflight/launch
-  failure, `2` usage error.
+  failure, `2` usage error. Validation failures print `path: message` locations
+  (`plan` for a root failure) from Effect's native issue formatter; there are no
+  stable `plan.*` codes.
 
 ## Profile layout
 

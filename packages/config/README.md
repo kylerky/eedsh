@@ -1,11 +1,16 @@
 # @eedsh/config
 
 The public typed authoring surface for eedsh profiles: `defineProfile` plus helpers
-that map one-to-one onto DSH Loader patch concepts, a versioned JSON plan, recursive
-validation, a TypeBox schema, and canonical hashing.
+that map one-to-one onto DSH Loader patch concepts, a versioned JSON plan, a public
+Effect Schema that is the plan's single validator and type source, Effect-native
+validation, and canonical hashing.
 
-No DSH runtime and no Effect: this package is plain TypeScript data, so config
-authors install only what they need.
+There is no DSH runtime dependency. Effect is part of the public contract: the plan
+schema, validation result, and validation error are Effect-native, and `effect` is a
+peer dependency (also a dev dependency here). `defineProfile` and `assertPlan` stay
+synchronous because a config module must default-export plain data before tsx and
+DSH can consume it; `validatePlan` and `decodePlan` are the Effect-native entry
+points.
 
 ## Example
 
@@ -43,8 +48,8 @@ export default defineProfile({
 
 ## API
 
-- `defineProfile(input)` — validates and returns a `ProfilePlan`. It throws
-  `PlanValidationError` with stable codes and plan locations; it does not execute
+- `defineProfile(input)` — validates synchronously and returns a `ProfilePlan`. It
+  throws the tagged `PlanValidationError` with located issues; it does not execute
   anything.
 - `bundle(name, { source? })` — one ordered bundle selection. `@eedsh/runtime` and
   `@eedsh/generated` are reserved.
@@ -63,28 +68,46 @@ export default defineProfile({
 
 ## Plan
 
+The plan type is derived from `ProfilePlanSchema`. Its properties and arrays are
+readonly, and patch payloads are opaque `unknown` values:
+
 ```ts
 interface ProfilePlan {
-  format: 'eedsh/profile-plan'
-  version: 1
-  profile: { name: string }
-  dsh: string // exact DSH pin
-  bundles: ({ kind: 'bundle'; name: string; source?: string } | { kind: 'generated' })[]
-  layers: { id: string; patches: Record<string, unknown>[] }[]
-  packages: Record<string, string>
+  readonly format: 'eedsh/profile-plan'
+  readonly version: 1
+  readonly profile: { readonly name: string }
+  readonly dsh: string // exact DSH pin
+  readonly bundles: readonly (
+    | { readonly kind: 'bundle'; readonly name: string; readonly source?: string }
+    | { readonly kind: 'generated' }
+  )[]
+  readonly layers: readonly {
+    readonly id: string
+    readonly patches: readonly { readonly [field: string]: unknown }[]
+  }[]
+  readonly packages: { readonly [name: string]: string }
 }
 ```
 
 The plan is JSON-compatible by contract. Validation rejects functions, symbols,
 BigInt, `undefined`, non-finite numbers, circular references, class instances, and
-malformed expression nodes, with a stable code and the failing location (for
-example `plan.unsupported_value at layers[0].patches[0].config.fn`). It also rejects
-missing identity, duplicate or unsafe layer ids, duplicate bundles or markers,
-reserved names, and invalid package specs.
+malformed expression nodes, and it rejects missing identity, duplicate or unsafe
+layer ids, duplicate bundles or markers, reserved names, and invalid package specs.
+Each failure is a located, human-readable issue with a native path and message (for
+example `layers[0].patches[0].config.fn: unsupported function value`); issues do not
+carry a semantic error code. When a plan has several independent problems, validation
+may report only the failures from the first failing refinement layer; the plan is
+still rejected.
 
 Additional exports:
 
-- `validatePlan(value)` — `{ ok: true, plan } | { ok: false, issues }`.
-- `assertPlan(value)` — validated plan or `PlanValidationError`.
-- `ProfilePlanSchema` — the TypeBox structure contract.
+- `validatePlan(value)` — `Either<ProfilePlan, PlanValidationError>`; identical
+  issues are deduplicated and the right side is a detached plan.
+- `decodePlan(value)` — `Either<ProfilePlan, ParseError>` from the strict decode
+  (`errors: "all"`, `onExcessProperty: "error"`). Decoding `ProfilePlanSchema`
+  directly is more lenient and strips undeclared fields.
+- `assertPlan(value)` — the validated plan, or it throws `PlanValidationError`.
+- `ProfilePlanSchema` — the public Effect Schema and the single plan definition.
+- `PlanValidationError` — a `Data.TaggedError` carrying `issues` and a summary.
+- `PlanIssue` — a `ParseResult.ArrayFormatterIssue` (`_tag`, `path`, `message`).
 - `canonicalJson(value)` / `hashPlan(plan)` — sorted-key JSON and SHA-256.
