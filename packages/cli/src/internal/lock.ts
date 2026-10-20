@@ -5,6 +5,7 @@
  * run never leaves the profile locked.
  * @module @eedsh/cli/internal/lock
  */
+import { dirname } from 'node:path'
 import { Effect } from 'effect'
 import { type FileSystemFailure, SyncLocked } from './effect/errors.js'
 import { FileSystem, type FileSystemShape } from './effect/services.js'
@@ -45,6 +46,7 @@ function acquire(
   return Effect.gen(function* () {
     const fs = yield* FileSystem
     const alive = options.isPidAlive ?? defaultIsPidAlive
+    yield* fs.ensureDir(dirname(options.lockPath))
     if (yield* fs.writeFileExclusive(options.lockPath, lockContent())) return
     const existing = yield* fs
       .readFile(options.lockPath)
