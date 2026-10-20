@@ -85,10 +85,32 @@ node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
 
 # Boot the pinned DSH against the published profile
 node packages/cli/lib/bin.js run --config ./eedsh.config.ts -- --port 3080
+
+# Typecheck the config project without syncing
+node packages/cli/lib/bin.js check --config ./eedsh.config.ts
 ```
 
 `eedsh` is the package bin of `@eedsh/cli`; use `node packages/cli/lib/bin.js` from a
 checkout, or the linked `eedsh` bin once the package is installed.
+
+## Config authoring
+
+A config is a TypeScript module that must typecheck in its own project. eedsh
+evaluates it with `tsx` at runtime but never typechecks it while loading: type
+correctness is established by your editor, by your project's `tsc --noEmit`, or by
+`eedsh check`.
+
+```sh
+eedsh check [--config <path>] [-- <tsc args>]
+```
+
+`eedsh check` finds the nearest `tsconfig.json` at or above the config, resolves
+`typescript` from the config's directory, prints the resolved version, the selected
+tsconfig, and the exact command line, then runs `tsc --noEmit -p <tsconfig>`. It
+forwards everything after `--` to tsc and exits with the compiler's exit code.
+Missing TypeScript or a missing tsconfig fails with a stable `check.*` code rather
+than passing silently, and a config outside the tsconfig's file set fails with
+`check.config_not_in_project` instead of reporting a check that never looked at it.
 
 ## The layer model
 
@@ -142,8 +164,9 @@ longer manages are removed.
 ## CLI
 
 ```sh
-eedsh sync [--config <path>] [--strict] [--watch]
-eedsh run  [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh sync  [--config <path>] [--strict] [--watch]
+eedsh check [--config <path>] [-- <tsc args>]
+eedsh run   [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
@@ -153,11 +176,16 @@ eedsh --help | --version
 - `--strict` turns unmatched patch targets into a failure and skips publication.
 - `--watch` re-evaluates the config when files in its directory change; a compile
   failure keeps the last published generation.
+- `check` runs the config project's own TypeScript compiler: it finds the nearest
+  `tsconfig.json`, resolves `typescript` from the config's directory, prints the exact
+  command line, and runs `tsc --noEmit -p <tsconfig>`. It never evaluates the config
+  or publishes a profile, and exits with the compiler's exit code. Arguments after
+  `--` are forwarded to tsc, for example `eedsh check -- --pretty false`.
 - `run` syncs first (unless `--no-sync`) and then spawns the pinned DSH launcher with
   `--profile <name>` and your arguments. It does not import the launcher, so argv,
   signals, and shutdown stay exactly DSH's.
-- Exit codes: `0` success, `1` validation/materialization/launch failure, `2` usage
-  error.
+- Exit codes: `0` success, `1` validation/materialization/launch/check failure, `2`
+  usage error.
 
 ## Hot reload
 

@@ -1,8 +1,9 @@
 /**
  * The `eedsh` command: parse arguments, evaluate the typed config, publish it
- * into a DSH profile, and optionally boot the pinned launcher. One-shot syncs
- * use `Effect.runPromise`; watch mode keeps one `ManagedRuntime` alive so the
- * materializer's services are reused across runs.
+ * into a DSH profile, optionally boot the pinned launcher, or run the config
+ * project's TypeScript compiler. One-shot syncs use `Effect.runPromise`; watch
+ * mode keeps one `ManagedRuntime` alive so the materializer's services are
+ * reused across runs.
  * @module @eedsh/cli/cli
  */
 import { spawn } from 'node:child_process'
@@ -12,6 +13,7 @@ import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
+import { runCheck } from './check.js'
 import {
   assertSupportedConfigPath,
   CONFIG_FILENAMES,
@@ -22,6 +24,7 @@ import {
   unsupportedConfigExtensionError,
 } from './config.js'
 import { resolveDshInstallation } from './dsh.js'
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit.js'
 import type { DshResolveFailure, MaterializeError } from './internal/effect/errors.js'
 import { liveServiceLayer } from './internal/effect/layer.js'
 import { type MaterializeResult, materialize } from './internal/effect/program.js'
@@ -34,29 +37,28 @@ import type {
 import { preflightLayer } from './preflight.js'
 import { type WatchSession, watchConfigDirectory } from './watch.js'
 
-/** Successful exit. */
-export const EXIT_OK = 0
-/** A validation, materialization, or launch failure. */
-export const EXIT_FAILURE = 1
-/** A usage error. */
-export const EXIT_USAGE = 2
+export { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit.js'
 
 const USAGE = `eedsh — typed configuration for DeepSeek Harness profiles
 
 Usage:
   eedsh sync [--config <path>] [--strict] [--watch]
+  eedsh check [--config <path>] [-- <tsc args>]
   eedsh run [--config <path>] [--no-sync] [-- <dsh args>]
   eedsh --help | --version
 
 Commands:
   sync   evaluate the config, preflight the layers, and publish the profile
+  check  typecheck the config's project with its own tsc; no sync, no publication
   run    sync (unless --no-sync) and boot the pinned dsh against the profile
 
 Options:
   --config <path>  config file to load (default: eedsh.config.ts in the cwd)
   --strict         treat unmatched patch targets as failures
   --watch          re-run sync when files in the config directory change
-  --no-sync        skip publication and boot the last published generation`
+  --no-sync        skip publication and boot the last published generation
+  -- <tsc args>    pass the remaining arguments to the project's tsc
+  -- <dsh args>    pass the remaining arguments to the dsh launcher`
 
 /** The services the materializer needs, built once per CLI run. */
 export type CliServiceLayer = Layer.Layer<
@@ -65,23 +67,37 @@ export type CliServiceLayer = Layer.Layer<
   never
 >
 
-/** One spawned launcher process, as the CLI observes it. */
+/** A readable child stream, as the CLI observes it. */
+export interface ReadableLike {
+  on(event: 'data', listener: (chunk: unknown) => void): unknown
+}
+
+/** One spawned child process, as the CLI observes it. */
 export interface SpawnedProcessLike {
   on(event: 'exit', callback: (code: number | null, signal: string | null) => void): unknown
+  on(event: 'close', callback: (code: number | null, signal: string | null) => void): unknown
   on(event: 'error', callback: (error: Error) => void): unknown
+  stdout?: ReadableLike | null
+  stderr?: ReadableLike | null
   kill(signal?: NodeJS.Signals): boolean
 }
 
-/** Spawn seam for `eedsh run`. */
+/** Spawn options the CLI uses. */
+export interface SpawnOptionsLike {
+  cwd?: string | undefined
+  env?: Record<string, string | undefined>
+  stdio: 'inherit' | 'pipe'
+}
+
+/** Spawn seam for `eedsh run` and `eedsh check`. */
 export type SpawnLike = (
   command: string,
   args: string[],
-  options: {
-    cwd?: string | undefined
-    env?: Record<string, string | undefined>
-    stdio: 'inherit'
-  },
+  options: SpawnOptionsLike,
 ) => SpawnedProcessLike
+
+const defaultSpawn: SpawnLike = (command, args, options) =>
+  spawn(command, args, options as Parameters<typeof spawn>[2])
 
 /** Watch seam for `eedsh sync --watch`. */
 export type WatchFactory = (dir: string, onChange: () => void) => Promise<WatchSession>
@@ -106,12 +122,13 @@ export interface CliDeps {
 
 /** A parsed command line. */
 export interface ParsedCli {
-  command: 'sync' | 'run' | 'help' | 'version'
+  command: 'sync' | 'run' | 'check' | 'help' | 'version'
   configPath?: string
   strict: boolean
   watch: boolean
   noSync: boolean
   dshArgs: string[]
+  tscArgs: string[]
 }
 
 /** A command-line usage error. */
@@ -144,22 +161,28 @@ export function parseCliArgs(argv: readonly string[]): ParsedCli {
     watch: false,
     noSync: false,
     dshArgs: [],
+    tscArgs: [],
   }
   const first = args.shift()
   if (first === undefined || first === '--help' || first === '-h') return parsed
   if (first === '--version' || first === '-v') return { ...parsed, command: 'version' }
-  if (first !== 'sync' && first !== 'run') throw new UsageError(`unknown command "${first}"`)
+  if (first !== 'sync' && first !== 'run' && first !== 'check') {
+    throw new UsageError(`unknown command "${first}"`)
+  }
   parsed.command = first
 
   let afterSeparator = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] as string
     if (afterSeparator) {
-      parsed.dshArgs.push(arg)
+      if (first === 'check') parsed.tscArgs.push(arg)
+      else parsed.dshArgs.push(arg)
       continue
     }
     if (arg === '--') {
-      if (first !== 'run') throw new UsageError('"--" is only accepted by eedsh run')
+      if (first !== 'run' && first !== 'check') {
+        throw new UsageError('"--" is only accepted by eedsh run and eedsh check')
+      }
       afterSeparator = true
       continue
     }
@@ -402,9 +425,7 @@ async function runCommand(context: CommandContext): Promise<number> {
     report(context.stderr, error)
     return EXIT_FAILURE
   }
-  const spawnFn: SpawnLike =
-    context.deps.spawn ??
-    ((command, args, options) => spawn(command, args, options as Parameters<typeof spawn>[2]))
+  const spawnFn: SpawnLike = context.deps.spawn ?? defaultSpawn
   return await new Promise<number>((resolveExit) => {
     const child = spawnFn(
       process.execPath,
@@ -476,6 +497,18 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
       report(stderr, error)
       return EXIT_FAILURE
     }
+  }
+
+  if (parsed.command === 'check') {
+    return runCheck({
+      configPath,
+      tscArgs: parsed.tscArgs,
+      stdout,
+      stderr,
+      env,
+      cwd,
+      spawn: deps.spawn ?? defaultSpawn,
+    })
   }
 
   let plan: ProfilePlan

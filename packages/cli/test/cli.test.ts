@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
@@ -14,7 +15,13 @@ import {
 } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { runCli, type SpawnedProcessLike, type SpawnLike } from '../src/cli.js'
+import {
+  type ReadableLike,
+  runCli,
+  type SpawnedProcessLike,
+  type SpawnLike,
+  type SpawnOptionsLike,
+} from '../src/cli.js'
 import {
   DshInstallation,
   FileSystem,
@@ -47,6 +54,87 @@ const tempRoot = join(root, 'packages/cli/.tmp')
 async function tempDir(prefix: string): Promise<string> {
   await mkdir(tempRoot, { recursive: true })
   return mkdtemp(join(tempRoot, prefix))
+}
+
+class FakeStream implements ReadableLike {
+  private readonly listeners: ((chunk: unknown) => void)[] = []
+
+  on(_event: 'data', listener: (chunk: unknown) => void): this {
+    this.listeners.push(listener)
+    return this
+  }
+
+  push(value: string): void {
+    for (const listener of this.listeners) listener(value)
+  }
+}
+
+class FakeChild implements SpawnedProcessLike {
+  readonly stdout = new FakeStream()
+  readonly stderr = new FakeStream()
+  private exitHandler?: (code: number | null, signal: string | null) => void
+  private closeHandler?: (code: number | null, signal: string | null) => void
+  private errorHandler?: (error: Error) => void
+
+  on(event: 'exit', callback: (code: number | null, signal: string | null) => void): unknown
+  on(event: 'close', callback: (code: number | null, signal: string | null) => void): unknown
+  on(event: 'error', callback: (error: Error) => void): unknown
+  on(
+    event: 'exit' | 'close' | 'error',
+    callback: ((code: number | null, signal: string | null) => void) | ((error: Error) => void),
+  ): unknown {
+    if (event === 'exit') {
+      this.exitHandler = callback as (code: number | null, signal: string | null) => void
+    } else if (event === 'close') {
+      this.closeHandler = callback as (code: number | null, signal: string | null) => void
+    } else {
+      this.errorHandler = callback as (error: Error) => void
+    }
+    return this
+  }
+
+  finish(code: number | null, stdout = '', stderr = ''): void {
+    this.stdout.push(stdout)
+    this.stderr.push(stderr)
+    this.closeHandler?.(code, null)
+    this.exitHandler?.(code, null)
+  }
+
+  fail(error: Error): void {
+    this.errorHandler?.(error)
+  }
+
+  kill(): boolean {
+    return true
+  }
+}
+
+interface FakeSpawnOptions {
+  exitCode?: number
+  stdout?: string
+  stderr?: string
+  listing?: string
+  listingExit?: number
+}
+
+function fakeSpawner(options: FakeSpawnOptions = {}) {
+  const calls: { command: string; args: string[]; options: SpawnOptionsLike }[] = []
+  const spawn: SpawnLike = (command, args, spawnOptions) => {
+    calls.push({ command, args, options: spawnOptions })
+    const child = new FakeChild()
+    if (args.includes('--listFilesOnly')) {
+      const listing = options.listing ?? ''
+      const exitCode = options.listingExit ?? 0
+      queueMicrotask(() => child.finish(exitCode, listing))
+    } else {
+      const exitCode = options.exitCode ?? 0
+      const stdout = options.stdout ?? ''
+      const stderr = options.stderr ?? ''
+      queueMicrotask(() => child.finish(exitCode, stdout, stderr))
+    }
+    return child
+  }
+  return { calls, spawn }
 }
 
 function watchConfigSource(row: string): string {
@@ -293,6 +381,10 @@ describe('eedsh arguments', () => {
     const help = harness()
     expect(await runCli(['--help'], help.deps)).toBe(0)
     expect(help.out.join('\n')).toContain('eedsh sync')
+    const checkHelp = harness()
+    expect(await runCli(['check', '--help'], checkHelp.deps)).toBe(0)
+    expect(checkHelp.out.join('\n')).toContain('--config')
+    expect(checkHelp.out.join('\n')).toContain('<tsc args>')
     const version = harness()
     expect(await runCli(['--version'], version.deps)).toBe(0)
     expect(version.out.join('\n')).toMatch(/\d+\.\d+\.\d+/)
@@ -404,6 +496,107 @@ describe('eedsh sync --watch', () => {
   })
 })
 
+describe('eedsh check', () => {
+  const configPath = fixture('basic')
+
+  it('prints the resolved invocation and runs the compiler without materializing', async () => {
+    const h = harness()
+    const { calls, spawn } = fakeSpawner({ listing: `${configPath}\n` })
+    const code = await runCli(['check', '--config', configPath, '--', '--pretty', 'false'], {
+      ...h.deps,
+      spawn,
+      loadConfig: async () => {
+        throw new Error('eedsh check must not evaluate the config')
+      },
+    })
+    expect(code).toBe(0)
+    const text = h.out.join('\n')
+    expect(text).toMatch(/TypeScript \d+\.\d+\.\d+/)
+    expect(text).toContain(join('packages', 'cli', 'tsconfig.json'))
+    expect(text).toContain('--noEmit')
+    expect(text).toContain('--pretty false')
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.args).toContain('--listFilesOnly')
+    const check = calls[1]
+    expect(check?.command).toBe(process.execPath)
+    expect(check?.args[0]).toMatch(/typescript[\\/]bin[\\/]tsc$/)
+    expect(check?.args).toContain('--noEmit')
+    expect(check?.args).toContain('-p')
+    expect(check?.args.slice(-2)).toEqual(['--pretty', 'false'])
+    expect(check?.options.stdio).toBe('inherit')
+    expect(h.fs.files.size).toBe(0)
+    expect(h.packages.installs).toEqual([])
+  })
+
+  it('returns the compiler exit code and reports failure', async () => {
+    const h = harness()
+    const { spawn } = fakeSpawner({
+      exitCode: 2,
+      stderr: 'error TS2322',
+      listing: `${configPath}\n`,
+    })
+    const code = await runCli(['check', '--config', configPath], { ...h.deps, spawn })
+    expect(code).toBe(2)
+    expect(h.err.join('\n')).toContain('check failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+})
+
+describe('eedsh check failures', () => {
+  async function externalProject(configSource: string, tsconfig?: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'eedsh-check-'))
+    const configPath = join(dir, 'eedsh.config.ts')
+    await writeFile(configPath, configSource)
+    if (tsconfig !== undefined) await writeFile(join(dir, 'tsconfig.json'), tsconfig)
+    return configPath
+  }
+
+  it('fails with config.not_found for a missing config', async () => {
+    const h = harness()
+    const { calls, spawn } = fakeSpawner()
+    const code = await runCli(['check', '--config', join(root, 'nope/eedsh.config.ts')], {
+      ...h.deps,
+      spawn,
+    })
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('config.not_found')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('fails with check.tsconfig_missing when no tsconfig is found', async () => {
+    const configPath = await externalProject('export default {}\n')
+    const h = harness()
+    const { calls, spawn } = fakeSpawner()
+    const code = await runCli(['check', '--config', configPath], { ...h.deps, spawn })
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('check.tsconfig_missing')
+    expect(h.err.join('\n')).toContain('tsconfig.json')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('fails with check.typescript_missing when the project has no TypeScript', async () => {
+    const configPath = await externalProject('export default {}\n', '{}\n')
+    const h = harness()
+    const { calls, spawn } = fakeSpawner()
+    const code = await runCli(['check', '--config', configPath], { ...h.deps, spawn })
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('check.typescript_missing')
+    expect(h.err.join('\n')).toContain('install')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('fails with check.config_not_in_project when the tsconfig excludes the config', async () => {
+    const h = harness()
+    const { calls, spawn } = fakeSpawner({ listing: '/home/project/src/index.ts\n' })
+    const code = await runCli(['check', '--config', fixture('basic')], { ...h.deps, spawn })
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('check.config_not_in_project')
+    expect(h.err.join('\n')).toContain(join('packages', 'cli', 'tsconfig.json'))
+    expect(calls).toHaveLength(1)
+  })
+})
+
 describe('documentation', () => {
   it('keeps the README example a valid plan', async () => {
     const example = './fixtures/readme/eedsh.config.ts'
@@ -416,33 +609,7 @@ describe('documentation', () => {
 describe('eedsh run', () => {
   it('forwards dsh arguments through an injected spawn', async () => {
     const h = harness()
-    const calls: { command: string; args: string[]; options: Record<string, unknown> }[] = []
-    class FakeChild implements SpawnedProcessLike {
-      exit?: (code: number | null, signal: string | null) => void
-      error?: (error: Error) => void
-
-      on(event: 'exit', callback: (code: number | null, signal: string | null) => void): unknown
-      on(event: 'error', callback: (error: Error) => void): unknown
-      on(event: 'exit' | 'error', callback: unknown): unknown {
-        if (event === 'exit') {
-          this.exit = callback as (code: number | null, signal: string | null) => void
-        } else {
-          this.error = callback as (error: Error) => void
-        }
-        return this
-      }
-
-      kill(): boolean {
-        return true
-      }
-    }
-
-    const spawn: SpawnLike = (command, args, options) => {
-      calls.push({ command, args, options: options as Record<string, unknown> })
-      const child = new FakeChild()
-      queueMicrotask(() => child.exit?.(7, null))
-      return child
-    }
+    const { calls, spawn } = fakeSpawner({ exitCode: 7 })
     const code = await runCli(
       ['run', '--config', fixture('basic'), '--no-sync', '--', '--port', '7777'],
       { ...h.deps, spawn },
