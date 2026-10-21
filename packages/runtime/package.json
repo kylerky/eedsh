@@ -4,7 +4,6 @@
   "private": true,
   "description": "The eedsh profile runtime bundle: reloads a published generated layer through DSH HMR",
   "type": "module",
-  "main": "lib/index.js",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -18,7 +17,7 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsdown",
     "typecheck": "tsc -p tsconfig.check.json"
   },
   "engines": {
