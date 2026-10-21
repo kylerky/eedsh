@@ -10,6 +10,7 @@ import { Effect, Layer } from 'effect'
 import { resolveBundleLayers, resolveDshInstallation } from '../../dsh'
 import { writeFileAtomic } from '../atomic-write'
 import { posixSyncLock } from '../lock-posix'
+import { win32SyncLock } from '../lock-win32'
 import { DshResolveFailure, FileSystemFailure, PackageInstallFailure } from './errors'
 import {
   DshInstallation,
@@ -128,17 +129,29 @@ export const dshInstallationLayer = Layer.effect(
   }),
 )
 
+/** Injectable platform implementations for tests and alternate hosts. */
+export interface SyncLockPlatforms {
+  readonly posix?: SyncLockShape
+  readonly win32?: SyncLockShape
+}
+
 /**
- * Platform-selected kernel sync lock. Linux and macOS use their native flock;
- * every other platform fails closed before materialization.
+ * Platform-selected kernel sync lock. Linux and macOS use their native flock,
+ * Windows uses its named semaphore, and every other platform fails closed
+ * before materialization.
  * @param platform - platform to select for; defaults to the running platform.
+ * @param platforms - implementation overrides for tests.
  * @returns the sync lock layer.
  */
 export function syncLockLayer(
   platform: NodeJS.Platform = process.platform,
+  platforms: SyncLockPlatforms = {},
 ): Layer.Layer<SyncLockShape> {
   if (platform === 'linux' || platform === 'darwin') {
-    return Layer.succeed(SyncLock, posixSyncLock)
+    return Layer.succeed(SyncLock, platforms.posix ?? posixSyncLock)
+  }
+  if (platform === 'win32') {
+    return Layer.succeed(SyncLock, platforms.win32 ?? win32SyncLock)
   }
   return Layer.succeed(SyncLock, unsupportedSyncLock(platform))
 }
