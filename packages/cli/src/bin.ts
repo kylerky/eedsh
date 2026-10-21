@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { runCli } from './cli'
+import { runEedsh } from './cli'
 
-runCli(process.argv.slice(2)).then(
+runEedsh(process.argv.slice(2)).then(
   (code) => {
     process.exitCode = code
   },

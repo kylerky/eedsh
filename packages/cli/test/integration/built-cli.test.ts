@@ -35,6 +35,23 @@ describe('built CLI integration', () => {
     expect(dump.stdout).toContain('marker: built')
   }, 180_000)
 
+  it('attributes preflight warnings with sync --explain', async () => {
+    await mkdir(join(root, '.tmp'), { recursive: true })
+    const home = await mkdtemp(join(root, '.tmp', 'explain-home-'))
+    const cli = join(root, 'packages/cli/lib/bin.js')
+    const fixture = join(root, 'packages/cli/test/fixtures/unmatched/eedsh.config.ts')
+
+    const result = await execFileAsync(
+      process.execPath,
+      [cli, 'sync', '--explain', '--config', fixture],
+      { cwd: root, env: { ...process.env, DSH_HOME: home } },
+    )
+    const output = `${result.stdout}\n${result.stderr}`
+    expect(output).toContain('generated:cli:')
+    expect(output).toContain('missing-row')
+    expect(output).not.toContain('add --explain')
+  }, 180_000)
+
   it("typechecks a temporary project with the project's own compiler", async () => {
     await mkdir(join(root, '.tmp'), { recursive: true })
     const project = await mkdtemp(join(root, '.tmp', 'check-'))
