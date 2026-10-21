@@ -81,12 +81,25 @@ export function managedBundleOrder(plan: ProfilePlan): string[] {
   return order
 }
 
+/**
+ * Read a child node as a record, or an empty record when it is absent or not a
+ * record, so callers can treat the manifest shape as total.
+ * @param parent - the containing record, when it exists.
+ * @param key - the child key.
+ * @returns the child record, or an empty record.
+ */
+function childRecord(
+  parent: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> {
+  const value = parent?.[key]
+  return isRecord(value) ? value : {}
+}
+
 /** Read the bundle list of an existing profile manifest. */
 function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
-  if (!manifest) return []
-  const dsh = isRecord(manifest.dsh) ? manifest.dsh : {}
-  const profile = isRecord(dsh.profile) ? dsh.profile : {}
-  return stringArray(profile.bundles)
+  const dsh = childRecord(manifest, 'dsh')
+  return stringArray(childRecord(dsh, 'profile').bundles)
 }
 
 /** Read the dependency map of an existing profile manifest. */
@@ -127,15 +140,17 @@ function buildManifest(
   dependencies: Record<string, string>,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = existing
-    ? (structuredClone(existing) as Record<string, unknown>)
+    ? structuredClone(existing)
     : { name: `dsh-profile-${profileName}`, private: true }
-  const dsh = isRecord(base.dsh) ? { ...base.dsh } : {}
-  const profile = isRecord(dsh.profile) ? { ...dsh.profile } : {}
-  profile.bundles = [...bundles]
-  dsh.profile = profile
-  base.dsh = dsh
-  base.dependencies = dependencies
-  return base
+  const dsh = childRecord(base, 'dsh')
+  return {
+    ...base,
+    dsh: {
+      ...dsh,
+      profile: { ...childRecord(dsh, 'profile'), bundles: [...bundles] },
+    },
+    dependencies,
+  }
 }
 
 function sortedRecord(value: Record<string, string>): Record<string, string> {
