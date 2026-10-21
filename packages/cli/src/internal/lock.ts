@@ -1,16 +1,27 @@
 /**
  * The profile-local sync lock: one materialization at a time per profile, with
- * stale-lock recovery limited to a PID liveness check. The lock is acquired
- * with an exclusive create and released by the surrounding scope, so a failed
- * run never leaves the profile locked.
+ * stale-lock recovery limited to a PID liveness check. The lock file is decoded
+ * with an Effect Schema, so malformed content is treated as a stale lock. The
+ * lock is acquired with an exclusive create and released by the surrounding
+ * scope, so a failed run never leaves the profile locked.
  * @module @eedsh/cli/internal/lock
  */
 import { dirname } from 'node:path'
 import { Effect } from 'effect'
+import * as Either from 'effect/Either'
+import * as Schema from 'effect/Schema'
 import { type FileSystemFailure, SyncLocked } from './effect/errors'
 import { FileSystem, type FileSystemShape } from './effect/services'
 
 const LOCK_POLL_ATTEMPTS = 1
+
+/**
+ * The liveness-relevant lock file shape. Only `pid` is decoded; `startedAt`
+ * and any excess fields are ignored so corrupt metadata cannot make a live
+ * holder look stale.
+ */
+const SyncLockFileSchema = Schema.parseJson(Schema.Struct({ pid: Schema.Int }))
+const decodeSyncLockFile = Schema.decodeUnknownEither(SyncLockFileSchema)
 
 function defaultIsPidAlive(pid: number): boolean {
   try {
@@ -21,13 +32,10 @@ function defaultIsPidAlive(pid: number): boolean {
   }
 }
 
+/** Decode the lock file's PID; malformed content yields `undefined` (stale). */
 function parsePid(content: string): number | undefined {
-  try {
-    const value = JSON.parse(content) as { pid?: unknown }
-    return typeof value.pid === 'number' && Number.isInteger(value.pid) ? value.pid : undefined
-  } catch {
-    return undefined
-  }
+  const decoded = decodeSyncLockFile(content)
+  return Either.isRight(decoded) ? decoded.right.pid : undefined
 }
 
 function lockContent(): string {

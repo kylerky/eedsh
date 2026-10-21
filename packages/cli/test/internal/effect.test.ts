@@ -308,6 +308,32 @@ describe('Effect materialization', () => {
     expect(result.changed).toBe(true)
     expect(test.fs.files.has(lockPath)).toBe(false)
   })
+
+  for (const [name, content] of [
+    ['malformed JSON', 'not-json'],
+    ['a string pid', '{"pid":"4242"}'],
+    ['a fractional pid', '{"pid":4242.5}'],
+  ] as const) {
+    it(`takes over a lock with ${name}`, async () => {
+      const test = harness({
+        files: { [lockPath]: content },
+        isPidAlive: () => true,
+      })
+      const result = await Effect.runPromise(test.program)
+      expect(result.changed).toBe(true)
+      expect(test.fs.files.has(lockPath)).toBe(false)
+    })
+  }
+
+  it('ignores non-liveness metadata in a live lock', async () => {
+    const test = harness({
+      files: { [lockPath]: JSON.stringify({ pid: 4242, startedAt: 5 }) },
+      isPidAlive: (pid) => pid === 4242,
+    })
+    const error = await failureOf(test.program)
+    expect(error._tag).toBe('SyncLocked')
+    expect(test.fs.files.has(lockPath)).toBe(true)
+  })
 })
 describe('atomic write', () => {
   it('replaces a file without leaving temporary files', async () => {
