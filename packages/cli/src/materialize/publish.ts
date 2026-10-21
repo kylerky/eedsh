@@ -41,6 +41,14 @@ export interface PublishProfileResult {
   installed: boolean
 }
 
+/** The profile files publication snapshots before changing them. */
+interface ProfileSnapshot {
+  manifestPath: string
+  lockfilePath: string
+  manifestContent: string | undefined
+  lockfileContent: string | undefined
+}
+
 function readOptional(
   fs: FileSystemShape,
   path: string,
@@ -48,6 +56,99 @@ function readOptional(
   return Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return undefined
     return yield* fs.readFile(path)
+  })
+}
+
+/** Write profile scaffolding, generated layers, and the plan copy. */
+function writePublicationArtifacts(
+  input: PublishProfileInput,
+  generatedDir: string,
+  fs: FileSystemShape,
+): Effect.Effect<void, FileSystemFailure> {
+  return Effect.gen(function* () {
+    yield* ensureProfileFiles(input.profileDir, fs)
+    yield* fs.ensureDir(generatedDir)
+    yield* writeGeneratedBundle(generatedDir, input.generated, fs, { includeManifest: false })
+    const planPath = join(input.profileDir, PLAN_RELATIVE_PATH)
+    yield* fs.ensureDir(dirname(planPath))
+    yield* fs.writeFileAtomic(planPath, input.generated.planContent)
+  })
+}
+
+/** Snapshot the profile manifest and lockfile before publication changes them. */
+function snapshotProfileFiles(
+  fs: FileSystemShape,
+  profileDir: string,
+): Effect.Effect<ProfileSnapshot, FileSystemFailure> {
+  return Effect.gen(function* () {
+    const manifestPath = join(profileDir, 'package.json')
+    const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
+    const manifestContent = yield* readOptional(fs, manifestPath)
+    const lockfileContent = yield* readOptional(fs, lockfilePath)
+    return { manifestPath, lockfilePath, manifestContent, lockfileContent }
+  })
+}
+
+/** Whether publication changes any dependency specification. */
+function profileDependenciesChanged(
+  previousManifest: Record<string, unknown> | undefined,
+  manifest: Record<string, unknown>,
+): boolean {
+  return (
+    canonicalJson(readProfileDependencies(previousManifest)) !==
+    canonicalJson(readProfileDependencies(manifest))
+  )
+}
+
+/** Write the reconciled profile manifest in its formatted on-disk form. */
+function writeProfileManifest(
+  fs: FileSystemShape,
+  path: string,
+  manifest: Record<string, unknown>,
+): Effect.Effect<void, FileSystemFailure> {
+  return fs.writeFileAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`)
+}
+
+/** Restore one snapshotted profile file, removing it when it did not exist. */
+function restoreFile(
+  fs: FileSystemShape,
+  path: string,
+  content: string | undefined,
+): Effect.Effect<void, FileSystemFailure> {
+  return content === undefined ? fs.remove(path) : fs.writeFileAtomic(path, content)
+}
+
+/** Restore the profile manifest and lockfile to their pre-publication state. */
+function restoreProfileFiles(
+  fs: FileSystemShape,
+  snapshot: ProfileSnapshot,
+): Effect.Effect<void, FileSystemFailure> {
+  return Effect.gen(function* () {
+    yield* restoreFile(fs, snapshot.manifestPath, snapshot.manifestContent)
+    yield* restoreFile(fs, snapshot.lockfilePath, snapshot.lockfileContent)
+  })
+}
+
+/** Run a publication step, restoring the profile snapshots if it fails. */
+function restoreOnFailure<A, E>(
+  effect: Effect.Effect<A, E>,
+  restore: Effect.Effect<void, FileSystemFailure>,
+): Effect.Effect<A, E | FileSystemFailure> {
+  return effect.pipe(Effect.catchAll((error) => restore.pipe(Effect.zipRight(Effect.fail(error)))))
+}
+
+/** Write the generated package manifest last; it is the publication commit point. */
+function commitGeneratedManifest(
+  fs: FileSystemShape,
+  generatedDir: string,
+  generated: GeneratedBundle,
+): Effect.Effect<void, FileSystemFailure> {
+  return Effect.gen(function* () {
+    const manifestFile = generated.files.at(-1)
+    if (manifestFile === undefined || manifestFile.path !== 'package.json') {
+      return yield* Effect.die(new Error('generated bundle is missing its package manifest'))
+    }
+    yield* fs.writeFileAtomic(join(generatedDir, manifestFile.path), manifestFile.content)
   })
 }
 
@@ -70,55 +171,30 @@ export function publishProfile(
     const packages = yield* PackageManager
     const preflight = yield* Preflight
 
-    yield* ensureProfileFiles(input.profileDir, fs)
-
     const generatedDir = join(input.profileDir, GENERATED_DIRNAME)
-    yield* fs.ensureDir(generatedDir)
-    yield* writeGeneratedBundle(generatedDir, input.generated, fs, { includeManifest: false })
-    yield* fs.ensureDir(dirname(join(input.profileDir, PLAN_RELATIVE_PATH)))
-    yield* fs.writeFileAtomic(
-      join(input.profileDir, PLAN_RELATIVE_PATH),
-      input.generated.planContent,
-    )
+    yield* writePublicationArtifacts(input, generatedDir, fs)
 
-    const manifestPath = join(input.profileDir, 'package.json')
-    const lockfilePath = join(input.profileDir, 'pnpm-lock.yaml')
-    const manifestSnapshot = yield* readOptional(fs, manifestPath)
-    const lockfileSnapshot = yield* readOptional(fs, lockfilePath)
-    const dependenciesChanged =
-      canonicalJson(readProfileDependencies(input.previousManifest)) !==
-      canonicalJson(readProfileDependencies(input.manifest))
-
-    yield* fs.writeFileAtomic(manifestPath, `${JSON.stringify(input.manifest, null, 2)}\n`)
-
-    const restore = Effect.gen(function* () {
-      if (manifestSnapshot === undefined) yield* fs.remove(manifestPath)
-      else yield* fs.writeFileAtomic(manifestPath, manifestSnapshot)
-      if (lockfileSnapshot === undefined) yield* fs.remove(lockfilePath)
-      else yield* fs.writeFileAtomic(lockfilePath, lockfileSnapshot)
-    })
+    const snapshot = yield* snapshotProfileFiles(fs, input.profileDir)
+    const dependenciesChanged = profileDependenciesChanged(input.previousManifest, input.manifest)
+    yield* writeProfileManifest(fs, snapshot.manifestPath, input.manifest)
+    const restore = restoreProfileFiles(fs, snapshot)
 
     if (dependenciesChanged) {
-      yield* packages
-        .install(input.profileDir)
-        .pipe(Effect.catchAll((error) => restore.pipe(Effect.zipRight(Effect.fail(error)))))
+      yield* restoreOnFailure(packages.install(input.profileDir), restore)
     }
 
-    const checked = yield* preflight
-      .check({
+    const checked = yield* restoreOnFailure(
+      preflight.check({
         plan: input.plan,
         profileDir: input.profileDir,
         generated: input.generated,
         strict: input.strict,
         explain: input.explain,
-      })
-      .pipe(Effect.catchAll((error) => restore.pipe(Effect.zipRight(Effect.fail(error)))))
+      }),
+      restore,
+    )
 
-    const manifestFile = input.generated.files.at(-1)
-    if (manifestFile === undefined || manifestFile.path !== 'package.json') {
-      return yield* Effect.die(new Error('generated bundle is missing its package manifest'))
-    }
-    yield* fs.writeFileAtomic(join(generatedDir, manifestFile.path), manifestFile.content)
+    yield* commitGeneratedManifest(fs, generatedDir, input.generated)
 
     return { warnings: checked.warnings, installed: dependenciesChanged }
   })

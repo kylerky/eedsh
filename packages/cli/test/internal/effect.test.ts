@@ -133,6 +133,7 @@ function fakeDsh(): DshInstallationShape {
 
 interface HarnessOptions {
   files?: Record<string, string>
+  plan?: ProfilePlan
   packages?: PackageManagerShape
   preflight?: PreflightShape
   isPidAlive?: (pid: number) => boolean
@@ -150,7 +151,7 @@ function harness(options: HarnessOptions = {}) {
     Layer.succeed(Preflight, preflight),
   )
   const program = materialize({
-    plan: fixturePlan(),
+    plan: options.plan ?? fixturePlan(),
     profileDir,
     eedshVersion: '0.0.0',
     runtimeSpec,
@@ -212,6 +213,43 @@ describe('Effect materialization', () => {
     expect(second.changed).toBe(false)
     expect(new Map(test.fs.files)).toEqual(published)
     expect(packages.installs).toEqual([profileDir])
+  })
+
+  it('publishes changed layers without reinstalling unchanged dependencies', async () => {
+    const packages = fakePackageManager()
+    const first = harness({ packages: packages.shape })
+    const firstRun = await Effect.runPromise(first.program)
+    const publishedManifest = first.fs.files.get(manifestPath)
+
+    const changedPlan = defineProfile({
+      name: 'work',
+      dsh: '0.2.1-rc.2',
+      bundles: [bundle('@deepseek-ai/dsh-base')],
+      layers: [
+        planLayer('base', [
+          insert({
+            id: 'timer',
+            name: '@deepseek-ai/cordis-plugin-timer',
+            config: { interval: 1000 },
+          }),
+        ]),
+      ],
+      packages: { '@scope/plugin': '1.0.0' },
+    })
+    const second = harness({
+      files: Object.fromEntries(first.fs.files),
+      packages: packages.shape,
+      plan: changedPlan,
+    })
+    const secondRun = await Effect.runPromise(second.program)
+
+    expect(secondRun.changed).toBe(true)
+    expect(secondRun.generationId).not.toBe(firstRun.generationId)
+    expect(packages.installs).toEqual([profileDir])
+    expect(second.fs.files.get(manifestPath)).toBe(publishedManifest)
+
+    const generated = JSON.parse(second.fs.files.get(generatedManifestPath) ?? '{}')
+    expect(generated.eedsh.generationId).toBe(secondRun.generationId)
   })
 
   it('fails with a tagged preflight failure and restores manifest and lockfile', async () => {
