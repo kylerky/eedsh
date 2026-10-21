@@ -6,6 +6,7 @@
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
+import { isRecord } from 'effect/Predicate'
 import { FileSystemFailure, type MaterializeError } from '../internal/effect/errors'
 import {
   DshInstallation,
@@ -56,8 +57,8 @@ function readJsonFile(
     const text = yield* fs.readFile(path)
     try {
       const parsed: unknown = JSON.parse(text)
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-      return parsed as Record<string, unknown>
+      if (!isRecord(parsed)) return undefined
+      return parsed
     } catch (cause) {
       return yield* Effect.fail(new FileSystemFailure({ operation: 'parseJson', path, cause }))
     }

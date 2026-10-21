@@ -6,6 +6,7 @@
  * @module @eedsh/cli/materialize/manifest
  */
 import type { ProfilePlan } from '@eedsh/config'
+import { isRecord } from 'effect/Predicate'
 import { GENERATED_PACKAGE_NAME, GENERATION_FORMAT, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 
 /** What the previous published generation owned. */
@@ -43,10 +44,6 @@ export interface ReconcileManifestResult {
   managedPackages: Record<string, string>
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
@@ -54,7 +51,7 @@ function stringArray(value: unknown): string[] {
 }
 
 function stringRecord(value: unknown): Record<string, string> {
-  if (!isObject(value)) return {}
+  if (!isRecord(value)) return {}
   const out: Record<string, string> = {}
   for (const [key, item] of Object.entries(value)) {
     if (typeof item === 'string') out[key] = item
@@ -87,8 +84,8 @@ export function managedBundleOrder(plan: ProfilePlan): string[] {
 /** Read the bundle list of an existing profile manifest. */
 function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
   if (!manifest) return []
-  const dsh = isObject(manifest.dsh) ? manifest.dsh : {}
-  const profile = isObject(dsh.profile) ? dsh.profile : {}
+  const dsh = isRecord(manifest.dsh) ? manifest.dsh : {}
+  const profile = isRecord(dsh.profile) ? dsh.profile : {}
   return stringArray(profile.bundles)
 }
 
@@ -106,9 +103,9 @@ export function readProfileDependencies(
  * @returns the managed sets, or undefined when no eedsh generation is recorded.
  */
 export function readPreviousGeneration(generatedManifest: unknown): PreviousGeneration | undefined {
-  if (!isObject(generatedManifest)) return undefined
+  if (!isRecord(generatedManifest)) return undefined
   const metadata = generatedManifest.eedsh
-  if (!isObject(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
+  if (!isRecord(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
   const bundles = stringArray(metadata.bundles)
   const packages = stringRecord(metadata.packages)
   if (bundles.length === 0 && Object.keys(packages).length === 0) return undefined
@@ -117,9 +114,9 @@ export function readPreviousGeneration(generatedManifest: unknown): PreviousGene
 
 /** Read the published generation id from a generated package manifest. */
 export function readGenerationId(generatedManifest: unknown): string | undefined {
-  if (!isObject(generatedManifest)) return undefined
+  if (!isRecord(generatedManifest)) return undefined
   const metadata = generatedManifest.eedsh
-  if (!isObject(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
+  if (!isRecord(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
   return typeof metadata.generationId === 'string' ? metadata.generationId : undefined
 }
 
@@ -132,8 +129,8 @@ function buildManifest(
   const base: Record<string, unknown> = existing
     ? (structuredClone(existing) as Record<string, unknown>)
     : { name: `dsh-profile-${profileName}`, private: true }
-  const dsh = isObject(base.dsh) ? { ...base.dsh } : {}
-  const profile = isObject(dsh.profile) ? { ...dsh.profile } : {}
+  const dsh = isRecord(base.dsh) ? { ...base.dsh } : {}
+  const profile = isRecord(dsh.profile) ? { ...dsh.profile } : {}
   profile.bundles = [...bundles]
   dsh.profile = profile
   base.dsh = dsh

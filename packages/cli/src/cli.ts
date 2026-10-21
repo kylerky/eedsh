@@ -12,6 +12,7 @@ import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
+import { isRecord } from 'effect/Predicate'
 import { runCheck } from './check'
 import {
   assertSupportedConfigPath,
@@ -206,8 +207,8 @@ function describeError(error: unknown): string[] {
     return error.issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`)
   }
   if (error instanceof ConfigError) return [`${error.code}: ${error.message}`]
-  if (error !== null && typeof error === 'object' && '_tag' in error) {
-    const tagged = error as Record<string, unknown>
+  if (isRecord(error) && '_tag' in error) {
+    const tagged = error
     switch (tagged._tag) {
       case 'FileSystemFailure':
         return [

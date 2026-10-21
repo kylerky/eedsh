@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { isRecord } from 'effect/Predicate'
 import { ConfigError } from './config'
 import { EXIT_FAILURE } from './exit'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
@@ -70,12 +71,7 @@ export function resolveTypeScript(configDir: string): TypeScriptInstallation | u
     return undefined
   }
   const bin = manifest.bin
-  const relative =
-    typeof bin === 'string'
-      ? bin
-      : bin !== null && typeof bin === 'object'
-        ? (bin as Record<string, unknown>).tsc
-        : undefined
+  const relative = typeof bin === 'string' ? bin : isRecord(bin) ? bin.tsc : undefined
   if (typeof relative !== 'string') return undefined
   return {
     version: typeof manifest.version === 'string' ? manifest.version : 'unknown',

@@ -8,6 +8,7 @@ import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-i
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
+import { isRecord } from 'effect/Predicate'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
 import {
@@ -39,15 +40,11 @@ export interface PreflightComposition {
   duplicateInsertIds: string[]
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 /** Collect ids inserted by a layer, including nested group children. */
 function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
   const ids: string[] = []
   const visitEntry = (entry: unknown) => {
-    if (!isObject(entry)) return
+    if (!isRecord(entry)) return
     if (typeof entry.id === 'string') ids.push(entry.id)
     if (entry.group === true && Array.isArray(entry.config)) entry.config.forEach(visitEntry)
   }
@@ -118,7 +115,7 @@ function assertNoPlanExpression(value: unknown, layerId: string): void {
     })
     return
   }
-  if (!isObject(value)) return
+  if (!isRecord(value)) return
   if ('$eedsh' in value) {
     throw fail(
       `generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`,
@@ -147,7 +144,7 @@ export function parseGeneratedLayers(generated: GeneratedBundle): PreflightLayer
       throw fail(`generated layer ${id} must be a top-level YAML array of patch entries`)
     }
     for (const item of parsed) {
-      if (!isObject(item)) {
+      if (!isRecord(item)) {
         throw fail(`generated layer ${id} contains a non-object patch entry`)
       }
       assertNoPlanExpression(item, id)
