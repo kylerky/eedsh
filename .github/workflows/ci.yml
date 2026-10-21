@@ -7,11 +7,12 @@ on:
 
 jobs:
   verify:
-    name: verify (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: verify (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: [26]
     steps:
       - uses: actions/checkout@v4

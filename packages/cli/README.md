@@ -8,8 +8,8 @@ The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build out
 and there is no library export.
 
 Effect is the default here: tagged failures, `Context.Tag` services for file access,
-package installation, DSH resolution, and preflight, plus a `ManagedRuntime` for
-watch mode. `@effect/cli` parses the command surface; its generated help and usage
+package installation, DSH resolution, preflight, and sync locking, plus a
+`ManagedRuntime` for watch mode. `@effect/cli` parses the command surface; its generated help and usage
 errors are rendered through an injected Console with ANSI escapes stripped, and the
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
 `spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
@@ -77,8 +77,38 @@ specification wins on collision.
 - The profile `package.json` and `pnpm-lock.yaml` are snapshotted before installation
   and restored if installation or preflight fails. Extra packages left in
   `node_modules` are harmless because the restored manifest does not select them.
-- A profile-local lock (`.eedsh/sync.lock`) serializes concurrent syncs; a stale lock
-  is recovered with a PID liveness check.
+- A kernel-held profile lock serializes concurrent syncs; see [Sync locking](#sync-locking).
+
+## Sync locking
+
+`sync` serializes materialization for one profile. The lock is owned by the operating
+system, not by a PID-and-file protocol, and covers the whole transaction: reading the
+previous generation, reconciling the manifest, package installation, preflight, and
+publication.
+
+- **Linux and macOS:** an advisory exclusive `flock` on the persistent
+  `.eedsh/sync.lock` file. The descriptor stays open for the transaction and closing it
+  releases the lock. eedsh never deletes, renames, or replaces the file, and its content
+  is ignored, so an old PID file from a previous version is inert. After acquiring,
+  eedsh verifies the locked inode still matches the path and retries if the file was
+  replaced.
+- **Windows:** a named kernel semaphore derived from the canonical profile lock path in
+  the `Local` namespace. It creates no profile lock file. The lock is scoped to the
+  current Windows login session, so another session, a POSIX process sharing the
+  profile, or another host is not excluded.
+- **Everywhere:** acquisition is non-blocking. A concurrent sync exits non-zero with
+  `another sync is running for this profile; lock: <path>`. The kernel releases the
+  lock when the process exits or crashes, so there is no PID liveness probe, timestamp
+  expiry, stale-lock takeover, or manual lock removal. A live holder keeps the lock
+  until it releases it or exits.
+- **Supported platforms:** Linux, macOS, and Windows. On any other platform, or when the
+  native lock support cannot be loaded, sync fails before materializing with a
+  file-system error naming the lock path; it never falls back to a PID lock.
+- **Scope:** the lock is local and advisory. It does not coordinate hosts, network
+  filesystems, mixed POSIX/Windows processes, or non-eedsh processes. Do not delete
+  `.eedsh/sync.lock` while a POSIX sync is running.
+- Old PID-based eedsh versions and this kernel lock do not interoperate; do not run them
+  concurrently against one profile.
 
 ## Preflight
 
