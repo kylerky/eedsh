@@ -39,6 +39,7 @@ import type {
   FileSystemShape,
   PackageManagerShape,
   PreflightShape,
+  SyncLockShape,
 } from './internal/effect/services'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
@@ -47,7 +48,7 @@ import { type WatchSession, watchConfigDirectory } from './watch'
 
 /** The services the materializer needs, built once per CLI run. */
 export type CliServiceLayer = Layer.Layer<
-  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape,
+  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape | SyncLockShape,
   DshResolveFailure,
   never
 >
@@ -210,11 +211,7 @@ function describeError(error: unknown): string[] {
         return [String(tagged.message), ...warnings]
       }
       case 'SyncLocked':
-        return [
-          `another sync is running for this profile${
-            tagged.pid === undefined ? '' : ` (pid ${String(tagged.pid)})`
-          }; lock: ${String(tagged.lockPath)}`,
-        ]
+        return [`another sync is running for this profile; lock: ${String(tagged.lockPath)}`]
       case 'DshResolveFailure':
         return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
       default:

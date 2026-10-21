@@ -24,10 +24,17 @@ import {
   FileSystem,
   PackageManager,
   Preflight,
+  SyncLock,
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
-import { fakeDsh, fakePackageManager, fakePreflight, memoryFileSystem } from './support/fakes'
+import {
+  fakeDsh,
+  fakePackageManager,
+  fakePreflight,
+  fakeSyncLock,
+  memoryFileSystem,
+} from './support/fakes'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
@@ -157,6 +164,7 @@ interface HarnessOptions {
   preflight?: { fail?: boolean; warnings?: string[] }
   packages?: { fail?: boolean }
   realPreflight?: boolean
+  lockHeld?: boolean
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -164,6 +172,7 @@ function harness(options: HarnessOptions = {}) {
   const packages = fakePackageManager(options.packages)
   const dsh = fakeDsh({ patches: options.basePatches ?? [] })
   const preflight = fakePreflight(options.preflight)
+  const lock = fakeSyncLock({ held: options.lockHeld ?? false })
   const dshLayer = Layer.succeed(DshInstallation, dsh.shape)
   let constructions = 0
   const services = () =>
@@ -186,6 +195,7 @@ function harness(options: HarnessOptions = {}) {
       options.realPreflight
         ? preflightLayer.pipe(Layer.provide(dshLayer))
         : Layer.succeed(Preflight, preflight.shape),
+      Layer.succeed(SyncLock, lock.shape),
     )
   const out: string[] = []
   const err: string[] = []
@@ -201,6 +211,7 @@ function harness(options: HarnessOptions = {}) {
     packages,
     dsh,
     preflight,
+    lock,
     out,
     err,
     constructions: () => constructions,
@@ -543,15 +554,14 @@ describe('tagged failures', () => {
     expect(h.err.join('\n')).toContain('unmatched target')
   })
 
-  it('maps a held sync lock to a diagnostic and exit 1', async () => {
-    const h = harness({
-      files: {
-        '/home/profiles/cli-fixture/.eedsh/sync.lock': JSON.stringify({ pid: process.pid }),
-      },
-    })
+  it('maps a held sync lock to a diagnostic naming the path and no PID', async () => {
+    const h = harness({ lockHeld: true })
     const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
     expect(code).toBe(1)
-    expect(h.err.join('\n')).toContain('another sync')
+    const errors = h.err.join('\n')
+    expect(errors).toContain('another sync is running')
+    expect(errors).toContain('/home/profiles/cli-fixture/.eedsh/sync.lock')
+    expect(errors).not.toMatch(/pid/i)
   })
 
   it('maps a package failure to a diagnostic and exit 1', async () => {

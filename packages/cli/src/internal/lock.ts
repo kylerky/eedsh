@@ -1,96 +1,31 @@
 /**
- * The profile-local sync lock: one materialization at a time per profile, with
- * stale-lock recovery limited to a PID liveness check. The lock file is decoded
- * with an Effect Schema, so malformed content is treated as a stale lock. The
- * lock is acquired with an exclusive create and released by the surrounding
- * scope, so a failed run never leaves the profile locked.
+ * The profile-local sync lock: one materialization at a time per profile. The
+ * lock itself is kernel-owned and provided by the {@link SyncLock} service;
+ * this module only scopes it around the materialization effect, so a failed run
+ * never leaves the profile locked.
  * @module @eedsh/cli/internal/lock
  */
-import { dirname } from 'node:path'
 import { Effect } from 'effect'
-import * as Either from 'effect/Either'
-import * as Schema from 'effect/Schema'
-import { type FileSystemFailure, SyncLocked } from './effect/errors'
-import { FileSystem, type FileSystemShape } from './effect/services'
-
-const LOCK_POLL_ATTEMPTS = 1
-
-/**
- * The liveness-relevant lock file shape. Only `pid` is decoded; `startedAt`
- * and any excess fields are ignored so corrupt metadata cannot make a live
- * holder look stale.
- */
-const SyncLockFileSchema = Schema.parseJson(Schema.Struct({ pid: Schema.Int }))
-const decodeSyncLockFile = Schema.decodeUnknownEither(SyncLockFileSchema)
-
-function defaultIsPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
-/** Decode the lock file's PID; malformed content yields `undefined` (stale). */
-function parsePid(content: string): number | undefined {
-  const decoded = decodeSyncLockFile(content)
-  return Either.isRight(decoded) ? decoded.right.pid : undefined
-}
-
-function lockContent(): string {
-  return `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`
-}
-
-/** Options for {@link withSyncLock}. */
-export interface SyncLockOptions {
-  lockPath: string
-  isPidAlive?: (pid: number) => boolean
-}
-
-function acquire(
-  options: SyncLockOptions,
-): Effect.Effect<void, SyncLocked | FileSystemFailure, FileSystemShape> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem
-    const alive = options.isPidAlive ?? defaultIsPidAlive
-    yield* fs.ensureDir(dirname(options.lockPath))
-    if (yield* fs.writeFileExclusive(options.lockPath, lockContent())) return
-    const existing = yield* fs
-      .readFile(options.lockPath)
-      .pipe(Effect.catchAll(() => Effect.succeed('')))
-    const pid = parsePid(existing)
-    if (pid !== undefined && alive(pid)) {
-      return yield* Effect.fail(new SyncLocked({ lockPath: options.lockPath, pid }))
-    }
-    for (let attempt = 0; attempt < LOCK_POLL_ATTEMPTS; attempt += 1) {
-      yield* fs.remove(options.lockPath)
-      if (yield* fs.writeFileExclusive(options.lockPath, lockContent())) return
-    }
-    return yield* Effect.fail(new SyncLocked({ lockPath: options.lockPath, pid }))
-  })
-}
-
-function release(lockPath: string): Effect.Effect<void, never, FileSystemShape> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem
-    yield* fs.remove(lockPath).pipe(Effect.catchAll(() => Effect.void))
-  })
-}
+import type { FileSystemFailure, SyncLocked } from './effect/errors'
+import { SyncLock, type SyncLockShape } from './effect/services'
 
 /**
  * Run an effect while holding the profile sync lock.
- * @param options - lock path and PID liveness probe.
+ * @param lockPath - the canonical lock path for the profile.
  * @param effect - the work to run under the lock.
  * @returns the effect's result; the lock is released on success or failure.
  */
 export function withSyncLock<A, E, R>(
-  options: SyncLockOptions,
+  lockPath: string,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | SyncLocked | FileSystemFailure, R | FileSystemShape> {
+): Effect.Effect<A, E | SyncLocked | FileSystemFailure, R | SyncLockShape> {
   return Effect.scoped(
-    Effect.acquireRelease(acquire(options), () => release(options.lockPath)).pipe(
-      Effect.flatMap(() => effect),
-    ),
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        const lock = yield* SyncLock
+        return yield* lock.acquire(lockPath)
+      }),
+      (handle) => handle.release,
+    ).pipe(Effect.flatMap(() => effect)),
   )
 }

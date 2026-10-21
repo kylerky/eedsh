@@ -25,10 +25,12 @@ export class PreflightFailure extends Data.TaggedError('PreflightFailure')<{
   readonly warnings: readonly string[]
 }> {}
 
-/** Another sync run holds the profile lock. */
+/**
+ * Another sync run holds the profile lock. Kernel locks expose no portable
+ * holder identity, so the diagnostic carries only the lock path.
+ */
 export class SyncLocked extends Data.TaggedError('SyncLocked')<{
   readonly lockPath: string
-  readonly pid: number | undefined
 }> {}
 
 /** A DSH package or bundle could not be resolved. */

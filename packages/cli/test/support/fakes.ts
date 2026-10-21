@@ -1,10 +1,11 @@
 import { Effect } from 'effect'
-import { FileSystemFailure } from '../../src/internal/effect/errors'
+import { FileSystemFailure, SyncLocked } from '../../src/internal/effect/errors'
 import type {
   DshInstallationShape,
   FileSystemShape,
   PackageManagerShape,
   PreflightShape,
+  SyncLockShape,
 } from '../../src/internal/effect/services'
 
 /** In-memory file system matching the materializer's FileSystem service. */
@@ -40,14 +41,42 @@ export function memoryFileSystem(initial: Record<string, string> = {}) {
       files.set(to, value)
       return Effect.void
     },
-    writeFileExclusive: (path, content) => {
-      if (files.has(path)) return Effect.succeed(false)
-      writeOrder.push(path)
-      files.set(path, content)
-      return Effect.succeed(true)
-    },
   }
   return { shape, files, writeOrder }
+}
+
+/** Sync lock that records acquisition and release, with a simulated holder. */
+export function fakeSyncLock(options: { held?: boolean } = {}) {
+  const heldPaths = new Set<string>()
+  const acquires: string[] = []
+  const releases: string[] = []
+  const contended = options.held ?? false
+  const shape: SyncLockShape = {
+    acquire: (lockPath) =>
+      Effect.suspend(() => {
+        acquires.push(lockPath)
+        if (contended || heldPaths.has(lockPath)) {
+          return Effect.fail(new SyncLocked({ lockPath }))
+        }
+        heldPaths.add(lockPath)
+        let released = false
+        return Effect.succeed({
+          release: Effect.sync(() => {
+            if (released) return
+            released = true
+            heldPaths.delete(lockPath)
+            releases.push(lockPath)
+          }),
+        })
+      }),
+  }
+  return {
+    shape,
+    acquires,
+    releases,
+    isHeld: (lockPath?: string) =>
+      lockPath === undefined ? heldPaths.size > 0 : heldPaths.has(lockPath),
+  }
 }
 
 /** Package manager that records installs and optionally fails. */

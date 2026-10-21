@@ -13,6 +13,7 @@ import type {
   FileSystemFailure,
   PackageInstallFailure,
   PreflightFailure,
+  SyncLocked,
 } from './errors'
 
 /** File operations the materializer needs. */
@@ -23,12 +24,23 @@ export interface FileSystemShape {
   ensureDir(path: string): Effect.Effect<void, FileSystemFailure>
   remove(path: string): Effect.Effect<void, FileSystemFailure>
   rename(from: string, to: string): Effect.Effect<void, FileSystemFailure>
-  /** Create a file only when it does not exist; returns whether it was created. */
-  writeFileExclusive(path: string, content: string): Effect.Effect<boolean, FileSystemFailure>
 }
 
 /** File access service tag. */
 export const FileSystem = Context.GenericTag<FileSystemShape>('eedsh/FileSystem')
+
+/** A held profile sync lock; releasing it returns the lock to the kernel. */
+export interface SyncLockHandle {
+  release: Effect.Effect<void>
+}
+
+/** Kernel-backed serialization of materialization for one profile. */
+export interface SyncLockShape {
+  acquire(lockPath: string): Effect.Effect<SyncLockHandle, SyncLocked | FileSystemFailure>
+}
+
+/** Sync lock service tag. */
+export const SyncLock = Context.GenericTag<SyncLockShape>('eedsh/SyncLock')
 
 /** Package installation service. */
 export interface PackageManagerShape {

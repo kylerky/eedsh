@@ -5,10 +5,11 @@
  * @module @eedsh/cli/internal/effect/layer
  */
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import { Effect, Layer } from 'effect'
 import { resolveBundleLayers, resolveDshInstallation } from '../../dsh'
 import { writeFileAtomic } from '../atomic-write'
+import { posixSyncLock } from '../lock-posix'
 import { DshResolveFailure, FileSystemFailure, PackageInstallFailure } from './errors'
 import {
   DshInstallation,
@@ -17,6 +18,8 @@ import {
   type FileSystemShape,
   PackageManager,
   type PackageManagerShape,
+  SyncLock,
+  type SyncLockShape,
 } from './services'
 
 /** Node-backed file access. */
@@ -62,19 +65,6 @@ export const nodeFileSystem: FileSystemShape = {
     Effect.tryPromise({
       try: () => rename(from, to),
       catch: (cause) => new FileSystemFailure({ operation: 'rename', path: from, cause }),
-    }),
-  writeFileExclusive: (path, content) =>
-    Effect.tryPromise({
-      try: async () => {
-        try {
-          await writeFile(path, content, { flag: 'wx' })
-          return true
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
-          throw error
-        }
-      },
-      catch: (cause) => new FileSystemFailure({ operation: 'writeFileExclusive', path, cause }),
     }),
 }
 
@@ -138,9 +128,38 @@ export const dshInstallationLayer = Layer.effect(
   }),
 )
 
+/**
+ * Platform-selected kernel sync lock. Linux and macOS use their native flock;
+ * every other platform fails closed before materialization.
+ * @param platform - platform to select for; defaults to the running platform.
+ * @returns the sync lock layer.
+ */
+export function syncLockLayer(
+  platform: NodeJS.Platform = process.platform,
+): Layer.Layer<SyncLockShape> {
+  if (platform === 'linux' || platform === 'darwin') {
+    return Layer.succeed(SyncLock, posixSyncLock)
+  }
+  return Layer.succeed(SyncLock, unsupportedSyncLock(platform))
+}
+
+function unsupportedSyncLock(platform: NodeJS.Platform): SyncLockShape {
+  return {
+    acquire: (lockPath) =>
+      Effect.fail(
+        new FileSystemFailure({
+          operation: 'syncLock',
+          path: lockPath,
+          cause: new Error(`kernel-backed profile locking is not supported on ${platform}`),
+        }),
+      ),
+  }
+}
+
 /** Every live service the pipeline needs except preflight. */
 export const liveServiceLayer = Layer.mergeAll(
   nodeFileSystemLayer,
   pnpmPackageManagerLayer,
   dshInstallationLayer,
+  syncLockLayer(),
 )

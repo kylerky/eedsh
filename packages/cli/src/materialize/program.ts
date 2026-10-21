@@ -15,8 +15,9 @@ import {
   type FileSystemShape,
   type PackageManagerShape,
   type PreflightShape,
+  type SyncLockShape,
 } from '../internal/effect/services'
-import { type SyncLockOptions, withSyncLock } from '../internal/lock'
+import { withSyncLock } from '../internal/lock'
 import { buildGeneratedBundle } from './generated-bundle'
 import { readGenerationId, readPreviousGeneration, reconcileManifest } from './manifest'
 import { GENERATED_MANIFEST_RELATIVE_PATH, LOCK_RELATIVE_PATH } from './profile'
@@ -37,8 +38,6 @@ export interface MaterializeOptions {
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
-  /** PID liveness probe for stale-lock recovery. */
-  isPidAlive?: (pid: number) => boolean
 }
 
 /** What a materialization run did. */
@@ -77,13 +76,10 @@ export function materialize(
 ): Effect.Effect<
   MaterializeResult,
   MaterializeError,
-  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape
+  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape | SyncLockShape
 > {
-  const lockOptions: SyncLockOptions = { lockPath: join(options.profileDir, LOCK_RELATIVE_PATH) }
-  if (options.isPidAlive !== undefined) lockOptions.isPidAlive = options.isPidAlive
-
   return withSyncLock(
-    lockOptions,
+    join(options.profileDir, LOCK_RELATIVE_PATH),
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const dsh = yield* DshInstallation

@@ -11,8 +11,10 @@ import {
   type PackageManagerShape,
   Preflight,
   type PreflightShape,
+  SyncLock,
 } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
+import { fakeSyncLock } from '../support/fakes'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'
@@ -67,12 +69,6 @@ function memoryFileSystem(initial: Record<string, string> = {}) {
       files.delete(from)
       files.set(to, value)
       return Effect.void
-    },
-    writeFileExclusive: (path, content) => {
-      if (files.has(path)) return Effect.succeed(false)
-      writes += 1
-      files.set(path, content)
-      return Effect.succeed(true)
     },
   }
   return { shape, files, writeOrder, writeCount: () => writes }
@@ -136,7 +132,7 @@ interface HarnessOptions {
   plan?: ProfilePlan
   packages?: PackageManagerShape
   preflight?: PreflightShape
-  isPidAlive?: (pid: number) => boolean
+  lock?: ReturnType<typeof fakeSyncLock>
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -144,11 +140,13 @@ function harness(options: HarnessOptions = {}) {
   const packages = options.packages ?? fakePackageManager().shape
   const preflight = options.preflight ?? fakePreflight().shape
   const dsh = fakeDsh()
+  const lock = options.lock ?? fakeSyncLock()
   const layer = Layer.mergeAll(
     Layer.succeed(FileSystem, fs.shape),
     Layer.succeed(PackageManager, packages),
     Layer.succeed(DshInstallation, dsh),
     Layer.succeed(Preflight, preflight),
+    Layer.succeed(SyncLock, lock.shape),
   )
   const program = materialize({
     plan: options.plan ?? fixturePlan(),
@@ -158,9 +156,8 @@ function harness(options: HarnessOptions = {}) {
     generatedSpec,
     strict: false,
     explain: false,
-    isPidAlive: options.isPidAlive ?? (() => false),
   }).pipe(Effect.provide(layer))
-  return { fs, program }
+  return { fs, lock, program }
 }
 
 async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
@@ -202,6 +199,9 @@ describe('Effect materialization', () => {
     expect(test.fs.files.has(`${profileDir}/cordis.patch.yml`)).toBe(true)
     expect(test.fs.files.has(lockPath)).toBe(false)
     expect(test.fs.writeOrder.at(-1)).toBe(generatedManifestPath)
+    expect(test.lock.acquires).toEqual([lockPath])
+    expect(test.lock.releases).toEqual([lockPath])
+    expect(test.lock.isHeld()).toBe(false)
   })
 
   it('is a no-op for an unchanged plan', async () => {
@@ -265,6 +265,9 @@ describe('Effect materialization', () => {
     expect(test.fs.files.get(lockfilePath)).toBe(initialLock)
     expect(test.fs.files.has(generatedManifestPath)).toBe(false)
     expect(test.fs.files.has(lockPath)).toBe(false)
+    expect(test.lock.acquires).toEqual([lockPath])
+    expect(test.lock.releases).toEqual([lockPath])
+    expect(test.lock.isHeld()).toBe(false)
   })
 
   it('restores manifest and lockfile after a package failure', async () => {
@@ -280,6 +283,9 @@ describe('Effect materialization', () => {
     expect(test.fs.files.get(lockfilePath)).toBe(initialLock)
     expect(test.fs.files.has(generatedManifestPath)).toBe(false)
     expect(test.fs.files.has(lockPath)).toBe(false)
+    expect(test.lock.acquires).toEqual([lockPath])
+    expect(test.lock.releases).toEqual([lockPath])
+    expect(test.lock.isHeld()).toBe(false)
   })
 
   it('removes a lockfile it had to create when restoring', async () => {
@@ -289,50 +295,15 @@ describe('Effect materialization', () => {
     expect(test.fs.files.has(manifestPath)).toBe(false)
   })
 
-  it('refuses to run while a live lock holder exists', async () => {
-    const test = harness({
-      files: { [lockPath]: JSON.stringify({ pid: 4242 }) },
-      isPidAlive: (pid) => pid === 4242,
-    })
+  it('refuses to enter the transaction while the lock is held', async () => {
+    const lock = fakeSyncLock({ held: true })
+    const test = harness({ lock })
     const error = await failureOf(test.program)
     expect(error._tag).toBe('SyncLocked')
-    expect(test.fs.files.has(lockPath)).toBe(true)
-  })
-
-  it('takes over a stale lock', async () => {
-    const test = harness({
-      files: { [lockPath]: JSON.stringify({ pid: 4242 }) },
-      isPidAlive: () => false,
-    })
-    const result = await Effect.runPromise(test.program)
-    expect(result.changed).toBe(true)
-    expect(test.fs.files.has(lockPath)).toBe(false)
-  })
-
-  for (const [name, content] of [
-    ['malformed JSON', 'not-json'],
-    ['a string pid', '{"pid":"4242"}'],
-    ['a fractional pid', '{"pid":4242.5}'],
-  ] as const) {
-    it(`takes over a lock with ${name}`, async () => {
-      const test = harness({
-        files: { [lockPath]: content },
-        isPidAlive: () => true,
-      })
-      const result = await Effect.runPromise(test.program)
-      expect(result.changed).toBe(true)
-      expect(test.fs.files.has(lockPath)).toBe(false)
-    })
-  }
-
-  it('ignores non-liveness metadata in a live lock', async () => {
-    const test = harness({
-      files: { [lockPath]: JSON.stringify({ pid: 4242, startedAt: 5 }) },
-      isPidAlive: (pid) => pid === 4242,
-    })
-    const error = await failureOf(test.program)
-    expect(error._tag).toBe('SyncLocked')
-    expect(test.fs.files.has(lockPath)).toBe(true)
+    expect(error.lockPath).toBe(lockPath)
+    expect(test.fs.files.has(manifestPath)).toBe(false)
+    expect(lock.acquires).toEqual([lockPath])
+    expect(lock.releases).toEqual([])
   })
 })
 describe('atomic write', () => {
