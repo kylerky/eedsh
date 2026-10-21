@@ -1,4 +1,11 @@
-import { bundle, defineProfile, generated, type PlanBundle, type ProfilePlan } from '@eedsh/config'
+import {
+  bundle,
+  canonicalJson,
+  defineProfile,
+  generated,
+  type PlanBundle,
+  type ProfilePlan,
+} from '@eedsh/config'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
@@ -88,6 +95,80 @@ describe('manifest reconciliation', () => {
     const result = reconcile(plan([bundle(BUNDLE)]), { manifest })
     expect(result.manifest.name).toBe('mine')
     expect(result.manifest.description).toBe('keep me')
+  })
+
+  it('creates the dsh section when the manifest has none', () => {
+    const manifest = { name: 'mine', description: 'keep me' }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest })
+    expect(result.manifest.dsh).toEqual({
+      profile: { bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'] },
+    })
+    expect(result.manifest.name).toBe('mine')
+    expect(result.manifest.description).toBe('keep me')
+  })
+
+  const malformedSections: [string, unknown][] = [
+    ['null', null],
+    ['an array', []],
+    ['a scalar', 'not-a-record'],
+  ]
+
+  it.each(malformedSections)('replaces a dsh section that is %s', (_label, value) => {
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest: { dsh: value } })
+    expect(result.manifest.dsh).toEqual({
+      profile: { bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'] },
+    })
+  })
+
+  it.each(malformedSections)('replaces a profile section that is %s', (_label, value) => {
+    const manifest = { dsh: { runtime: 'keep', profile: value } }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest })
+    expect(result.manifest.dsh).toEqual({
+      runtime: 'keep',
+      profile: { bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'] },
+    })
+  })
+
+  it('preserves unrelated fields inside the dsh and profile sections', () => {
+    const manifest = {
+      dsh: {
+        runtime: 'keep',
+        profile: { bundles: [], theme: 'dark' },
+      },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest })
+    expect(result.manifest.dsh).toEqual({
+      runtime: 'keep',
+      profile: { theme: 'dark', bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'] },
+    })
+  })
+
+  it('does not mutate the input manifest', () => {
+    const manifest = {
+      name: 'mine',
+      dsh: {
+        runtime: 'keep',
+        profile: { bundles: [BUNDLE, '@edsh/adapted-ptc'], theme: 'dark' },
+      },
+    }
+    const before = structuredClone(manifest)
+    reconcile(plan([bundle(BUNDLE)]), { manifest })
+    expect(manifest).toEqual(before)
+  })
+
+  it('reconciles deterministically and reaches a canonical fixed point', () => {
+    const manifest = {
+      name: 'mine',
+      dsh: {
+        runtime: 'keep',
+        profile: { bundles: [BUNDLE, '@edsh/adapted-ptc'], theme: 'dark' },
+      },
+    }
+    const first = reconcile(plan([bundle(BUNDLE)]), { manifest })
+    const repeated = reconcile(plan([bundle(BUNDLE)]), { manifest })
+    const fixedPoint = reconcile(plan([bundle(BUNDLE)]), { manifest: first.manifest })
+    expect(canonicalJson(repeated.manifest)).toBe(canonicalJson(first.manifest))
+    expect(canonicalJson(fixedPoint.manifest)).toBe(canonicalJson(first.manifest))
   })
 
   it('preserves user-added bundles after the managed bundles', () => {
