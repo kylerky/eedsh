@@ -159,46 +159,63 @@ function sortedRecord(value: Record<string, string>): Record<string, string> {
   return out
 }
 
-/**
- * Reconcile the managed bundle list and dependency map with user-owned state.
- * @param input - plan, existing manifest, previous managed sets, and link specs.
- * @returns the reconciled manifest and its declared sets.
- */
-export function reconcileManifest(input: ReconcileManifestInput): ReconcileManifestResult {
+/** Reconcile the managed bundle order with user-added bundles. */
+function reconcileBundles(input: ReconcileManifestInput): {
+  bundles: string[]
+  managedBundles: string[]
+} {
   const managedBundles = managedBundleOrder(input.plan)
-  const managedSet = new Set(managedBundles)
+  const seen = new Set(managedBundles)
   const previousBundles = new Set(input.previous?.bundles ?? [])
-
-  const existingBundles = readProfileBundles(input.manifest)
   const userBundles: string[] = []
-  const seen = new Set(managedSet)
-  for (const name of existingBundles) {
+  for (const name of readProfileBundles(input.manifest)) {
     if (seen.has(name) || previousBundles.has(name)) continue
     seen.add(name)
     userBundles.push(name)
   }
-  const bundles = [...managedBundles, ...userBundles]
+  return { bundles: [...managedBundles, ...userBundles], managedBundles }
+}
 
-  const managedPackages: Record<string, string> = {
+/** Build the managed package map: plan packages plus the runtime and generated specs. */
+function managedPackageSpecs(input: ReconcileManifestInput): Record<string, string> {
+  return sortedRecord({
     ...input.plan.packages,
     [RUNTIME_PACKAGE_NAME]: input.runtimeSpec,
     [GENERATED_PACKAGE_NAME]: input.generatedSpec,
-  }
-  const managedPackageNames = new Set(Object.keys(managedPackages))
-  const previousPackageNames = new Set(Object.keys(input.previous?.packages ?? {}))
+  })
+}
 
+/** Reconcile managed package specifications with user-owned dependencies. */
+function reconcileDependencies(
+  input: ReconcileManifestInput,
+  managedPackages: Record<string, string>,
+): Record<string, string> {
+  const managedNames = new Set(Object.keys(managedPackages))
+  const previousNames = new Set(Object.keys(input.previous?.packages ?? {}))
   const userDependencies: Record<string, string> = {}
   for (const [name, spec] of Object.entries(readProfileDependencies(input.manifest))) {
-    if (managedPackageNames.has(name) || previousPackageNames.has(name)) continue
+    if (managedNames.has(name) || previousNames.has(name)) continue
     userDependencies[name] = spec
   }
-  const dependencies = sortedRecord({ ...userDependencies, ...managedPackages })
+  return sortedRecord({ ...userDependencies, ...managedPackages })
+}
+
+/**
+ * Reconcile the managed bundle list, package map, and dependency map with
+ * user-owned state.
+ * @param input - plan, existing manifest, previous managed sets, and link specs.
+ * @returns the reconciled manifest and its declared sets.
+ */
+export function reconcileManifest(input: ReconcileManifestInput): ReconcileManifestResult {
+  const { bundles, managedBundles } = reconcileBundles(input)
+  const managedPackages = managedPackageSpecs(input)
+  const dependencies = reconcileDependencies(input, managedPackages)
 
   return {
     manifest: buildManifest(input.manifest, input.profileName, bundles, dependencies),
     bundles,
     managedBundles,
     dependencies,
-    managedPackages: sortedRecord(managedPackages),
+    managedPackages,
   }
 }

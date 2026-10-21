@@ -83,6 +83,11 @@ describe('manifest reconciliation', () => {
       '@eedsh/generated': generatedSpec,
     })
     expect(result.manifest.dependencies).toEqual(result.dependencies)
+    expect(result.managedPackages).toEqual({
+      '@eedsh/generated': generatedSpec,
+      '@eedsh/runtime': runtimeSpec,
+      '@scope/plugin': '1.2.3',
+    })
   })
 
   it('preserves unrelated manifest fields', () => {
