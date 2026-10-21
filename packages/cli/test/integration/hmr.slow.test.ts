@@ -8,7 +8,7 @@ import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
 import { liveServiceLayer } from '../../src/internal/effect/layer'
-import { materialize } from '../../src/internal/effect/program'
+import { materialize } from '../../src/materialize/program'
 import { preflightLayer } from '../../src/preflight'
 
 const execFileAsync = promisify(execFile)

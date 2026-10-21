@@ -18,13 +18,7 @@ import {
 import { Effect, Layer } from 'effect'
 import * as Either from 'effect/Either'
 import { beforeAll, describe, expect, it } from 'vitest'
-import {
-  type ReadableLike,
-  runCli,
-  type SpawnedProcessLike,
-  type SpawnLike,
-  type SpawnOptionsLike,
-} from '../src/cli'
+import { runCli } from '../src/cli'
 import {
   DshInstallation,
   FileSystem,
@@ -32,6 +26,7 @@ import {
   Preflight,
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
+import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
 import { fakeDsh, fakePackageManager, fakePreflight, memoryFileSystem } from './support/fakes'
 
 const execFileAsync = promisify(execFile)

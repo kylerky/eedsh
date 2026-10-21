@@ -6,12 +6,11 @@
  * reused across runs.
  * @module @eedsh/cli/cli
  */
-import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { type PlanIssue, PlanValidationError, type ProfilePlan } from '@eedsh/config'
+import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { runCheck } from './check'
 import {
@@ -27,17 +26,16 @@ import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import type { DshResolveFailure, MaterializeError } from './internal/effect/errors'
 import { liveServiceLayer } from './internal/effect/layer'
-import { type MaterializeResult, materialize } from './internal/effect/program'
 import type {
   DshInstallationShape,
   FileSystemShape,
   PackageManagerShape,
   PreflightShape,
 } from './internal/effect/services'
+import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
+import { defaultSpawn, type SpawnLike } from './spawn'
 import { type WatchSession, watchConfigDirectory } from './watch'
-
-export { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 
 const USAGE = `eedsh — typed configuration for DeepSeek Harness profiles
 
@@ -66,38 +64,6 @@ export type CliServiceLayer = Layer.Layer<
   DshResolveFailure,
   never
 >
-
-/** A readable child stream, as the CLI observes it. */
-export interface ReadableLike {
-  on(event: 'data', listener: (chunk: unknown) => void): unknown
-}
-
-/** One spawned child process, as the CLI observes it. */
-export interface SpawnedProcessLike {
-  on(event: 'exit', callback: (code: number | null, signal: string | null) => void): unknown
-  on(event: 'close', callback: (code: number | null, signal: string | null) => void): unknown
-  on(event: 'error', callback: (error: Error) => void): unknown
-  stdout?: ReadableLike | null
-  stderr?: ReadableLike | null
-  kill(signal?: NodeJS.Signals): boolean
-}
-
-/** Spawn options the CLI uses. */
-export interface SpawnOptionsLike {
-  cwd?: string | undefined
-  env?: Record<string, string | undefined>
-  stdio: 'inherit' | 'pipe'
-}
-
-/** Spawn seam for `eedsh run` and `eedsh check`. */
-export type SpawnLike = (
-  command: string,
-  args: string[],
-  options: SpawnOptionsLike,
-) => SpawnedProcessLike
-
-const defaultSpawn: SpawnLike = (command, args, options) =>
-  spawn(command, args, options as Parameters<typeof spawn>[2])
 
 /** Watch seam for `eedsh sync --watch`. */
 export type WatchFactory = (dir: string, onChange: () => void) => Promise<WatchSession>
@@ -243,10 +209,6 @@ function describeError(error: unknown): string[] {
   if (error !== null && typeof error === 'object' && '_tag' in error) {
     const tagged = error as Record<string, unknown>
     switch (tagged._tag) {
-      case 'PlanInvalid': {
-        const issues = Array.isArray(tagged.issues) ? (tagged.issues as readonly PlanIssue[]) : []
-        return issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`)
-      }
       case 'FileSystemFailure':
         return [
           `cannot ${String(tagged.operation)} ${String(tagged.path)}: ${String(tagged.cause)}`,

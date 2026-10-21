@@ -4,13 +4,7 @@
  * without matching message text.
  * @module @eedsh/cli/internal/effect/errors
  */
-import type { PlanIssue } from '@eedsh/config'
 import { Data } from 'effect'
-
-/** The plan failed validation. */
-export class PlanInvalid extends Data.TaggedError('PlanInvalid')<{
-  readonly issues: readonly PlanIssue[]
-}> {}
 
 /** A file operation failed. */
 export class FileSystemFailure extends Data.TaggedError('FileSystemFailure')<{
@@ -45,7 +39,6 @@ export class DshResolveFailure extends Data.TaggedError('DshResolveFailure')<{
 
 /** Every failure the materializer can report. */
 export type MaterializeError =
-  | PlanInvalid
   | FileSystemFailure
   | PackageInstallFailure
   | PreflightFailure

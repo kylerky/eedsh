@@ -2,7 +2,6 @@ import { bundle, defineProfile, insert, type ProfilePlan, layer as planLayer } f
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { FileSystemFailure } from '../../src/internal/effect/errors'
-import { materialize } from '../../src/internal/effect/program'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -13,6 +12,7 @@ import {
   Preflight,
   type PreflightShape,
 } from '../../src/internal/effect/services'
+import { materialize } from '../../src/materialize/program'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'

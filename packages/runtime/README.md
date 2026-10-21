@@ -6,9 +6,12 @@ It has no Effect dependency and imports only Node builtins at runtime.
 
 ```
 cordis.patch.yml   inserts the '@eedsh/runtime' row
-lib/index.js       the Cordis plugin (exports name + apply)
-lib/watcher.js     the factored watcher used by tests
+lib/index.js       the bundled Cordis plugin (exports name + apply) and watcher
 ```
+
+The package builds one bundled ESM entry, `lib/index.js`, with its declaration and
+source maps in `lib/`; the watcher is inlined and tests import the source module
+directly.
 
 `dsh.bundle.patch` points at `./cordis.patch.yml`, and `engines.dsh` pins the
 compatible DSH release (`0.2.1-rc.2`). The materializer places this bundle

@@ -85,7 +85,7 @@ export function managedBundleOrder(plan: ProfilePlan): string[] {
 }
 
 /** Read the bundle list of an existing profile manifest. */
-export function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
+function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
   if (!manifest) return []
   const dsh = isObject(manifest.dsh) ? manifest.dsh : {}
   const profile = isObject(dsh.profile) ? dsh.profile : {}

@@ -1,11 +1,8 @@
 import type { ProfilePlan } from '@eedsh/config'
 import { bundle, defineProfile, generated, insert, js, layer, override } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
-import {
-  buildGeneratedBundle,
-  emitPatchesYaml,
-  generationIdFor,
-} from '../../src/materialize/generated-bundle'
+import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
+import { emitPatchesYaml } from '../../src/materialize/yaml'
 
 function fixturePlan(): ProfilePlan {
   return defineProfile({

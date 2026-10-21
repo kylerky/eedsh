@@ -11,8 +11,6 @@ import { Effect } from 'effect'
 import type { FileSystemFailure } from '../internal/effect/errors'
 import { emitPatchesYaml } from './yaml'
 
-export { emitPatchesYaml } from './yaml'
-
 /** The generated bundle's package name. */
 export const GENERATED_PACKAGE_NAME = '@eedsh/generated'
 

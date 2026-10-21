@@ -1,9 +1,11 @@
 # @eedsh/cli
 
-The `eedsh` command. It evaluates a typed config with Node's native ESM loader
-(`.ts` files use type stripping), validates the plan, preflights the composition
-through DSH's own patch algorithm, publishes a normal DSH profile atomically, and
-can boot the pinned launcher.
+The `eedsh` command. It evaluates a typed config with `tsx`, validates the plan,
+preflights the composition through DSH's own patch algorithm, publishes a normal
+DSH profile atomically, and can boot the pinned launcher.
+
+The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build output,
+and there is no library export.
 
 Effect is the default here: tagged failures, `Context.Tag` services for file access,
 package installation, DSH resolution, and preflight, plus a `ManagedRuntime` for

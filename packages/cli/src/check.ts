@@ -7,9 +7,9 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
-import type { SpawnLike, SpawnOptionsLike } from './cli'
 import { ConfigError } from './config'
 import { EXIT_FAILURE } from './exit'
+import type { SpawnLike, SpawnOptionsLike } from './spawn'
 
 const TSCONFIG_FILENAME = 'tsconfig.json'
 
