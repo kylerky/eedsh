@@ -7,13 +7,6 @@
   "bin": {
     "eedsh": "./lib/bin.js"
   },
-  "exports": {
-    ".": {
-      "types": "./lib/index.d.ts",
-      "default": "./lib/index.js"
-    },
-    "./package.json": "./package.json"
-  },
   "files": [
     "lib"
   ],
@@ -21,7 +14,7 @@
     "node": ">=26"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsdown",
     "typecheck": "tsc -p tsconfig.check.json"
   },
   "dependencies": {
