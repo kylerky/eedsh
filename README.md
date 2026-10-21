@@ -85,7 +85,7 @@ export default defineProfile({
 
 ```sh
 pnpm install
-pnpm -r build
+pnpm build
 
 # Publish into $DSH_HOME/profiles/work
 node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
@@ -224,22 +224,33 @@ TypeScript config alone reloads nothing; only a published generation does.
 Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` is the type checker;
 Vitest runs the tests.
 
-The root `tsconfig.check.json` is the repository's typecheck project. It covers every
-TypeScript file the repository contains — package sources and tests, the root `test`
-directory, both Vitest configuration files, and the CLI's config fixtures and examples
-— so `pnpm typecheck` fails on a type error anywhere, including in a config fixture.
+The root `tsconfig.json` is the repository's typecheck project. It extends
+`tsconfig.base.json`, which holds the editor/build compiler options with no `paths`
+and no `noEmit`, and adds `noEmit`, the `@eedsh/*` path mappings, and the full
+include set: package sources and tests, the root `test` directory, both Vitest
+configuration files, and every package `tsdown.config.ts`. `pnpm typecheck` therefore
+fails on a type error anywhere, including in a config fixture.
+
+Each package builds with `tsdown` to one bundled ESM entry under `lib/`:
+`@eedsh/config` and `@eedsh/runtime` emit `lib/index.js` with `lib/index.d.ts` and
+source maps, while `@eedsh/cli` emits only the executable `lib/bin.js` and has no
+library entry. Dependencies and workspace packages stay external to the bundles.
+Relative imports in `packages/*/src` and `packages/*/test` are extensionless;
+`tsdown` and Vitest resolve them, and `tsc` typechecks them with bundler resolution.
 
 ```sh
 pnpm format          # biome format --write .
 pnpm format:check    # biome format .
 pnpm lint            # biome lint .
 pnpm lint:fix        # biome lint --write .
-pnpm typecheck       # tsc -p tsconfig.check.json (whole repository)
+pnpm build           # typecheck, then pnpm -r run build
+pnpm build:packages  # pnpm -r run build without the typecheck
+pnpm typecheck       # tsc -p tsconfig.json (whole repository)
 pnpm typecheck:watch # the same project in watch mode
 pnpm test            # vitest run (slow Web HMR test excluded)
 pnpm test:slow       # the slow Web-profile HMR integration test
 pnpm check           # biome check . && pnpm typecheck
-pnpm verify          # check + test + build
+pnpm verify          # check + test + build:packages
 ```
 
 CI runs `pnpm verify` on Node 26 only.
