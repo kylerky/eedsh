@@ -102,7 +102,9 @@ describe('preflight composition', () => {
       generatedLayerLabels: ['generated:middle'],
     })
     expect(result.warnings).toHaveLength(3)
-    expect(result.warnings.join('\n')).toMatch(/missing-first[\s\S]*missing-middle[\s\S]*missing-last/)
+    expect(result.warnings.join('\n')).toMatch(
+      /missing-first[\s\S]*missing-middle[\s\S]*missing-last/,
+    )
 
     const attributed = attributePreflightWarnings(layers, result.warnings)
     expect(attributed.map((warning) => warning.layer)).toEqual([
@@ -121,10 +123,7 @@ describe('preflight composition', () => {
   it('returns no attributed warnings when there are no raw warnings', () => {
     expect(attributePreflightWarnings([], [])).toEqual([])
     expect(
-      attributePreflightWarnings(
-        [{ label: 'bundle:only', patches: basePatches }],
-        [],
-      ),
+      attributePreflightWarnings([{ label: 'bundle:only', patches: basePatches }], []),
     ).toEqual([])
   })
 

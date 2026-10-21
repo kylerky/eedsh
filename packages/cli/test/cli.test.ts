@@ -48,7 +48,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<bool
 }
 
 function hasAnsi(text: string): boolean {
-  return /\u001b\[[0-9;]*m/.test(text)
+  return new RegExp(`${String.fromCharCode(27)}[[][0-9;]*m`).test(text)
 }
 
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -261,7 +261,10 @@ describe('eedsh sync', () => {
         message: 'invalid eedsh profile plan',
       })
     }
-    const code = await runEedsh(['sync', '--config', fixture('basic')], { ...h.options, loadConfig })
+    const code = await runEedsh(['sync', '--config', fixture('basic')], {
+      ...h.options,
+      loadConfig,
+    })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('eedsh: layers[0].patches[1].config.fn: unsupported function value')
@@ -443,10 +446,10 @@ describe('eedsh arguments', () => {
   it('rejects --explain on run and check before spawning', async () => {
     const runHarness = harness()
     const runSpawn = fakeSpawner()
-    const runCode = await runEedsh(
-      ['run', '--explain', '--config', fixture('basic')],
-      { ...runHarness.options, spawn: runSpawn.spawn },
-    )
+    const runCode = await runEedsh(['run', '--explain', '--config', fixture('basic')], {
+      ...runHarness.options,
+      spawn: runSpawn.spawn,
+    })
     expect(runCode).toBe(2)
     expect(runSpawn.calls).toHaveLength(0)
     expect(runHarness.packages.installs).toEqual([])
@@ -454,10 +457,10 @@ describe('eedsh arguments', () => {
 
     const checkHarness = harness()
     const checkSpawn = fakeSpawner()
-    const checkCode = await runEedsh(
-      ['check', '--explain', '--config', fixture('basic')],
-      { ...checkHarness.options, spawn: checkSpawn.spawn },
-    )
+    const checkCode = await runEedsh(['check', '--explain', '--config', fixture('basic')], {
+      ...checkHarness.options,
+      spawn: checkSpawn.spawn,
+    })
     expect(checkCode).toBe(2)
     expect(checkSpawn.calls).toHaveLength(0)
     expect(checkHarness.fs.files.size).toBe(0)
@@ -488,10 +491,7 @@ describe('strict mode', () => {
 
   it('attributes warnings with --explain and omits the hint', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(
-      ['sync', '--explain', '--config', fixture('unmatched')],
-      h.options,
-    )
+    const code = await runEedsh(['sync', '--explain', '--config', fixture('unmatched')], h.options)
     expect(code).toBe(0)
     const errors = h.err.join('\n')
     expect(errors).toContain('generated:cli:')

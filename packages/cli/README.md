@@ -9,14 +9,17 @@ and there is no library export.
 
 Effect is the default here: tagged failures, `Context.Tag` services for file access,
 package installation, DSH resolution, and preflight, plus a `ManagedRuntime` for
-watch mode. Node `fs` and `spawn` live only in the live service layer. `@eedsh/config`
-also uses Effect for the plan schema and validation, while `@eedsh/runtime` stays a
-plain Cordis plugin; `defineProfile` remains synchronous at the config boundary.
+watch mode. `@effect/cli` parses the command surface; its generated help and usage
+errors are rendered through an injected Console with ANSI escapes stripped, and the
+CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
+`spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
+plan schema and validation, while `@eedsh/runtime` stays a plain Cordis plugin;
+`defineProfile` remains synchronous at the config boundary.
 
 ## Commands
 
 ```sh
-eedsh sync  [--config <path>] [--strict] [--watch]
+eedsh sync  [--config <path>] [--strict] [--watch] [--explain]
 eedsh check [--config <path>] [-- <tsc args>]
 eedsh run   [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
@@ -26,8 +29,12 @@ eedsh --help | --version
   CLI looks for `eedsh.config.ts` then `eedsh.config.mts` in the working directory;
   JavaScript configs (`.js`, `.mjs`) are rejected with
   `config.unsupported_extension` before they are imported.
-- `--strict` makes unmatched id-targeted patches a failure; the generation record is
-  not updated.
+- Preflight warnings are raw DSH messages by default, without a source-layer prefix.
+  Raw warnings are followed by a one-line hint pointing at `--explain`.
+- `--explain` attributes each preflight warning as `<layer>: <message>`. It is
+  sync-only; `run` and `check` reject it as a usage error.
+- `--strict` makes unmatched id-targeted patches a failure; strict failures stay raw
+  unless `--explain` is also supplied, and the generation record is not updated.
 - `--watch` re-evaluates the config when files under its directory change (debounced).
   A compile or validation failure is reported and the previously published generation
   stays in place; one `ManagedRuntime` serves every run.
@@ -77,10 +84,17 @@ specification wins on collision.
 
 Before publication the CLI resolves every selected bundle from the pinned DSH
 installation and the profile, reads its patch files, and composes them with the
-generated layers through `composeEntries` — the same algorithm boot uses. It reports
-unmatched id-targeted patches with their layer, rejects duplicate ids inserted by
-generated layers, rejects malformed patch files, and evaluates nothing (plugin
-config schemas run only at Loader activation).
+generated layers once through `composeEntries` — the same algorithm boot uses. That
+composition returns the entries, the raw unmatched-target warnings, and duplicate
+ids inserted by generated layers.
+
+Warnings stay raw by default. `sync --explain` attributes them by recomposing only
+layer prefixes and pairing each warning with the layer that introduced it; attribution
+stops once every raw warning is placed, never recomposes the full stack, and never
+runs without the flag or when there are no warnings.
+
+Preflight rejects duplicate ids inserted by generated layers, rejects malformed patch
+files, and evaluates nothing (plugin config schemas run only at Loader activation).
 
 ## Limitations
 

@@ -9,13 +9,13 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
+import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
+import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { CliApp, Command, Options } from '@effect/cli'
 import * as ValidationError from '@effect/cli/ValidationError'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
 import * as NodeTerminal from '@effect/platform-node/NodeTerminal'
-import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import * as Console from 'effect/Console'
 import * as Option from 'effect/Option'
@@ -104,8 +104,10 @@ function splitPassthrough(argv: readonly string[]): ParsedArgv | { error: string
   }
 }
 
+const ANSI_SGR = new RegExp(`${String.fromCharCode(27)}[[][0-9;]*m`, 'g')
+
 function stripAnsi(text: string): string {
-  return text.replace(/\u001b\[[0-9;]*m/g, '')
+  return text.replace(ANSI_SGR, '')
 }
 
 function cliConsole(
@@ -231,11 +233,7 @@ function rawPreflightWarnings(error: unknown): string[] {
   return Array.isArray(error.warnings) ? error.warnings.map(String) : []
 }
 
-function reportSyncError(
-  stderr: (line: string) => void,
-  error: unknown,
-  explain: boolean,
-): void {
+function reportSyncError(stderr: (line: string) => void, error: unknown, explain: boolean): void {
   report(stderr, error)
   if (!explain && rawPreflightWarnings(error).length > 0) stderr(EXPLAIN_HINT)
 }
@@ -345,13 +343,7 @@ async function syncWatch(context: CommandContext): Promise<number> {
         reportSyncError(context.stderr, outcome.left, context.invocation.explain)
         return
       }
-      printResult(
-        context.stdout,
-        context.stderr,
-        plan,
-        outcome.right,
-        context.invocation.explain,
-      )
+      printResult(context.stdout, context.stderr, plan, outcome.right, context.invocation.explain)
     } catch (error) {
       reportSyncError(context.stderr, error, context.invocation.explain)
     }
@@ -588,20 +580,17 @@ export async function runEedsh(
       }),
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
 
-  const checkCommandLine = Command.make(
-    'check',
-    { config: configOption },
-    (parsed) =>
-      dispatchEffect({
-        command: 'check',
-        configPath: Option.getOrUndefined(parsed.config),
-        strict: false,
-        watch: false,
-        explain: false,
-        noSync: false,
-        dshArgs: [],
-        tscArgs: [...split.passthrough],
-      }),
+  const checkCommandLine = Command.make('check', { config: configOption }, (parsed) =>
+    dispatchEffect({
+      command: 'check',
+      configPath: Option.getOrUndefined(parsed.config),
+      strict: false,
+      watch: false,
+      explain: false,
+      noSync: false,
+      dshArgs: [],
+      tscArgs: [...split.passthrough],
+    }),
   ).pipe(Command.withDescription("typecheck the config's project with its own tsc"))
 
   const rootCommand = Command.make('eedsh').pipe(
