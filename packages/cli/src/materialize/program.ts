@@ -35,6 +35,8 @@ export interface MaterializeOptions {
   generatedSpec: string
   /** Treat unmatched patch targets as failures. */
   strict: boolean
+  /** Attribute preflight warnings to their source layers. */
+  explain: boolean
   /** PID liveness probe for stale-lock recovery. */
   isPidAlive?: (pid: number) => boolean
 }
@@ -130,6 +132,7 @@ export function materialize(
         generated,
         previousManifest: existingManifest,
         strict: options.strict,
+        explain: options.explain,
       })
 
       return {

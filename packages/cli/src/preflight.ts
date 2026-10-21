@@ -35,7 +35,8 @@ export interface PreflightWarning {
 /** The result of composing a preflight layer stack. */
 export interface PreflightComposition {
   entries: Record<string, unknown>[]
-  warnings: PreflightWarning[]
+  /** Raw DSH diagnostics, in patch application order. */
+  warnings: string[]
   /** Row ids inserted twice by generated layers. */
   duplicateInsertIds: string[]
 }
@@ -57,33 +58,19 @@ function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
 /**
  * Compose preflight layers in application order. Bundle layers are composed
  * first; the generated layers sit at the plan's marker position. Warnings are
- * attributed to the layer that introduced them, and duplicate ids inserted by
- * generated layers are reported.
+ * kept raw, and duplicate ids inserted by generated layers are reported.
  * @param layers - layers in application order.
  * @param options - labels of the generated layers.
- * @returns the composed entries, attributed warnings, and duplicate ids.
+ * @returns the composed entries, raw warnings, and duplicate ids.
  */
 export function composePreflightLayers(
   layers: readonly PreflightLayer[],
   options: { generatedLayerLabels?: readonly string[] } = {},
 ): PreflightComposition {
-  const warnings: PreflightWarning[] = []
-  let previousWarnings: string[] = []
-  for (let index = 0; index < layers.length; index += 1) {
-    const current: string[] = []
-    const prefix = layers.slice(0, index + 1)
-    composeEntries(
-      prefix.map((layer) => layer.patches as PatchOptions[]),
-      (message) => current.push(message),
-    )
-    const added = current.slice(previousWarnings.length)
-    for (const message of added) warnings.push({ layer: layers[index]!.label, message })
-    previousWarnings = current
-  }
-
+  const warnings: string[] = []
   const entries = composeEntries(
     layers.map((layer) => layer.patches as PatchOptions[]),
-    () => {},
+    (message) => warnings.push(message),
   ) as unknown as Record<string, unknown>[]
 
   const generatedLabels = new Set(options.generatedLayerLabels ?? [])
@@ -102,6 +89,44 @@ export function composePreflightLayers(
     warnings,
     duplicateInsertIds: [...duplicates].sort(),
   }
+}
+
+/**
+ * Attribute raw warnings to the layer whose patches produced them. Prefixes are
+ * recomposed only when warnings exist, and the full stack is never recomposed:
+ * the last layer receives any remaining warnings.
+ * @param layers - layers in application order.
+ * @param warnings - the raw warning list from one-pass composition.
+ * @returns warnings paired with their source layer, in raw order.
+ */
+export function attributePreflightWarnings(
+  layers: readonly PreflightLayer[],
+  warnings: readonly string[],
+): PreflightWarning[] {
+  if (warnings.length === 0) return []
+  const first = layers[0]
+  if (first === undefined) return []
+  if (layers.length === 1) return warnings.map((message) => ({ layer: first.label, message }))
+
+  const attributed: PreflightWarning[] = []
+  let placed = 0
+  for (let index = 0; index < layers.length - 1 && placed < warnings.length; index += 1) {
+    const prefixWarnings: string[] = []
+    composeEntries(
+      layers.slice(0, index + 1).map((layer) => layer.patches as PatchOptions[]),
+      (message) => prefixWarnings.push(message),
+    )
+    const added = Math.min(prefixWarnings.length - placed, warnings.length - placed)
+    if (added <= 0) continue
+    for (const message of warnings.slice(placed, placed + added)) {
+      attributed.push({ layer: layers[index]!.label, message })
+    }
+    placed += added
+  }
+
+  const last = layers[layers.length - 1]!
+  for (const message of warnings.slice(placed)) attributed.push({ layer: last.label, message })
+  return attributed
 }
 
 function fail(message: string, warnings: readonly string[] = []): PreflightFailure {
@@ -204,9 +229,13 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
           const composition = composePreflightLayers(layers, {
             generatedLayerLabels: generatedLayers.map((layer) => layer.label),
           })
-          const messages = composition.warnings.map(
-            (warning) => `${warning.layer}: ${warning.message}`,
-          )
+          const raw = composition.warnings
+          const messages =
+            input.explain && raw.length > 0
+              ? attributePreflightWarnings(layers, raw).map(
+                  (warning) => `${warning.layer}: ${warning.message}`,
+                )
+              : raw
           if (composition.duplicateInsertIds.length > 0) {
             return yield* Effect.fail(
               fail(

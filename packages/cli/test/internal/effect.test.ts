@@ -156,6 +156,7 @@ function harness(options: HarnessOptions = {}) {
     runtimeSpec,
     generatedSpec,
     strict: false,
+    explain: false,
     isPidAlive: options.isPidAlive ?? (() => false),
   }).pipe(Effect.provide(layer))
   return { fs, program }

@@ -17,7 +17,12 @@ import {
   type PreflightInput,
 } from '../../src/internal/effect/services'
 import { buildGeneratedBundle, type GeneratedBundle } from '../../src/materialize/generated-bundle'
-import { composePreflightLayers, type PreflightLayer, preflightLayer } from '../../src/preflight'
+import {
+  attributePreflightWarnings,
+  composePreflightLayers,
+  type PreflightLayer,
+  preflightLayer,
+} from '../../src/preflight'
 
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 
@@ -61,7 +66,7 @@ async function runCheck(input: PreflightInput, dsh: DshInstallationShape) {
 }
 
 describe('preflight composition', () => {
-  it('reports unmatched targets with their layer', () => {
+  it('composes once and reports raw unmatched targets', () => {
     const layers: PreflightLayer[] = [
       { label: 'bundle:@deepseek-ai/dsh-base', patches: basePatches },
       {
@@ -74,8 +79,53 @@ describe('preflight composition', () => {
     })
     expect(result.entries).toEqual(basePatches[0]!.insert)
     expect(result.warnings).toHaveLength(1)
-    expect(result.warnings[0]?.layer).toBe('generated:overrides')
-    expect(result.warnings[0]?.message).toContain('"missing-row"')
+    expect(result.warnings[0]).toContain('"missing-row"')
+    expect(result.warnings[0]).not.toContain('generated:overrides:')
+  })
+
+  it('attributes warnings from the first, middle, and last layers in raw order', () => {
+    const layers: PreflightLayer[] = [
+      {
+        label: 'bundle:first',
+        patches: [{ id: 'missing-first', config: {} }],
+      },
+      {
+        label: 'generated:middle',
+        patches: [{ id: 'missing-middle', config: {} }],
+      },
+      {
+        label: 'bundle:last',
+        patches: [{ id: 'missing-last', config: {} }],
+      },
+    ]
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:middle'],
+    })
+    expect(result.warnings).toHaveLength(3)
+    expect(result.warnings.join('\n')).toMatch(/missing-first[\s\S]*missing-middle[\s\S]*missing-last/)
+
+    const attributed = attributePreflightWarnings(layers, result.warnings)
+    expect(attributed.map((warning) => warning.layer)).toEqual([
+      'bundle:first',
+      'generated:middle',
+      'bundle:last',
+    ])
+    expect(attributed.map((warning) => warning.message)).toEqual(result.warnings)
+    expect(attributed.map((warning) => `${warning.layer}: ${warning.message}`)).toEqual([
+      `bundle:first: ${result.warnings[0]}`,
+      `generated:middle: ${result.warnings[1]}`,
+      `bundle:last: ${result.warnings[2]}`,
+    ])
+  })
+
+  it('returns no attributed warnings when there are no raw warnings', () => {
+    expect(attributePreflightWarnings([], [])).toEqual([])
+    expect(
+      attributePreflightWarnings(
+        [{ label: 'bundle:only', patches: basePatches }],
+        [],
+      ),
+    ).toEqual([])
   })
 
   it('composes the generated layer at the marker position', () => {
@@ -119,28 +169,82 @@ describe('preflight composition', () => {
 })
 
 describe('preflight checks', () => {
-  it('warns about unmatched targets outside strict mode', async () => {
+  it('returns raw warnings by default', async () => {
     const plan = fixturePlan([planLayer('overrides', [override('missing-row', { interval: 1 })])])
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: buildGenerated(plan), strict: false },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: false,
+        explain: false,
+      },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Right')
     if (result._tag !== 'Right') return
     expect(result.right.warnings).toHaveLength(1)
     expect(result.right.warnings[0]).toContain('missing-row')
+    expect(result.right.warnings[0]).not.toContain('generated:overrides:')
   })
 
-  it('fails with a tagged preflight failure in strict mode', async () => {
+  it('attributes warnings when explain is enabled', async () => {
     const plan = fixturePlan([planLayer('overrides', [override('missing-row', { interval: 1 })])])
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: buildGenerated(plan), strict: true },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: false,
+        explain: true,
+      },
+      fakeDsh(() => Effect.succeed(basePatches)),
+    )
+    expect(result._tag).toBe('Right')
+    if (result._tag !== 'Right') return
+    expect(result.right.warnings).toHaveLength(1)
+    expect(result.right.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.right.warnings[0]).toContain('missing-row')
+  })
+
+  it('fails with raw warnings in strict mode by default', async () => {
+    const plan = fixturePlan([planLayer('overrides', [override('missing-row', { interval: 1 })])])
+    const result = await runCheck(
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: true,
+        explain: false,
+      },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Left')
     if (result._tag !== 'Left') return
     expect(result.left._tag).toBe('PreflightFailure')
     expect(result.left.warnings).toHaveLength(1)
+    expect(result.left.warnings[0]).toContain('missing-row')
+    expect(result.left.warnings[0]).not.toContain('generated:overrides:')
+  })
+
+  it('fails with attributed warnings in strict mode when explain is enabled', async () => {
+    const plan = fixturePlan([planLayer('overrides', [override('missing-row', { interval: 1 })])])
+    const result = await runCheck(
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: true,
+        explain: true,
+      },
+      fakeDsh(() => Effect.succeed(basePatches)),
+    )
+    expect(result._tag).toBe('Left')
+    if (result._tag !== 'Left') return
+    expect(result.left._tag).toBe('PreflightFailure')
+    expect(result.left.warnings).toHaveLength(1)
+    expect(result.left.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.left.warnings[0]).toContain('missing-row')
   })
 
   it('rejects duplicate inserted ids before publication', async () => {
@@ -149,7 +253,13 @@ describe('preflight checks', () => {
       planLayer('two', [insert({ id: 'dup', name: 'b' })]),
     ])
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: buildGenerated(plan), strict: false },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: false,
+        explain: false,
+      },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Left')
@@ -168,7 +278,13 @@ describe('preflight checks', () => {
       ),
     }
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: tampered, strict: false },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: tampered,
+        strict: false,
+        explain: false,
+      },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Left')
@@ -188,7 +304,13 @@ describe('preflight checks', () => {
       ),
     }
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: leaked, strict: false },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: leaked,
+        strict: false,
+        explain: false,
+      },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Left')
@@ -199,7 +321,13 @@ describe('preflight checks', () => {
   it('fails with a tagged preflight failure when a target bundle cannot be resolved', async () => {
     const plan = fixturePlan([planLayer('base', [override('timer', { interval: 1 })])])
     const result = await runCheck(
-      { plan, profileDir: '/profiles/work', generated: buildGenerated(plan), strict: false },
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: false,
+        explain: false,
+      },
       fakeDsh(() =>
         Effect.fail(new DshResolveFailure({ packageName: '@deepseek-ai/dsh-base', cause: 'gone' })),
       ),

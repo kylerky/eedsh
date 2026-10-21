@@ -51,6 +51,7 @@ describe('bootable profile integration', () => {
         runtimeSpec: `link:${join(root, 'packages/runtime')}`,
         generatedSpec: 'link:./.eedsh/generated',
         strict: true,
+        explain: false,
       }).pipe(Effect.provide(services)),
     )
     expect(result.changed).toBe(true)

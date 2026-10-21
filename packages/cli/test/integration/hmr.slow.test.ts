@@ -87,6 +87,7 @@ describe('slow Web HMR integration', () => {
           runtimeSpec,
           generatedSpec: 'link:./.eedsh/generated',
           strict: false,
+          explain: false,
         }).pipe(Effect.provide(services())),
       )
 

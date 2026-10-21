@@ -31,6 +31,8 @@ export interface PublishProfileInput {
   /** The profile manifest as it was before this run, when it existed. */
   previousManifest: Record<string, unknown> | undefined
   strict: boolean
+  /** Attribute preflight warnings to their source layers. */
+  explain: boolean
 }
 
 /** What publication did. */
@@ -108,6 +110,7 @@ export function publishProfile(
         profileDir: input.profileDir,
         generated: input.generated,
         strict: input.strict,
+        explain: input.explain,
       })
       .pipe(Effect.catchAll((error) => restore.pipe(Effect.zipRight(Effect.fail(error)))))
 

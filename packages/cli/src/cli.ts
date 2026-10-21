@@ -283,6 +283,7 @@ function programFor(context: CommandContext, plan: ProfilePlan) {
     runtimeSpec: runtimeLinkSpec(),
     generatedSpec: 'link:./.eedsh/generated',
     strict: context.parsed.strict,
+    explain: false,
   })
 }
 

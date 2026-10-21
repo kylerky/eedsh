@@ -62,6 +62,8 @@ export interface PreflightInput {
   profileDir: string
   generated: GeneratedBundle
   strict: boolean
+  /** Attribute warnings to their source layers. */
+  explain: boolean
 }
 
 /** Preflight output. */
