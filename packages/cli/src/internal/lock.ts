@@ -7,8 +7,8 @@
  */
 import { dirname } from 'node:path'
 import { Effect } from 'effect'
-import { type FileSystemFailure, SyncLocked } from './effect/errors.js'
-import { FileSystem, type FileSystemShape } from './effect/services.js'
+import { type FileSystemFailure, SyncLocked } from './effect/errors'
+import { FileSystem, type FileSystemShape } from './effect/services'
 
 const LOCK_POLL_ATTEMPTS = 1
 

@@ -9,14 +9,14 @@ import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import * as yaml from 'js-yaml'
-import { PreflightFailure } from './internal/effect/errors.js'
+import { PreflightFailure } from './internal/effect/errors'
 import {
   DshInstallation,
   type DshInstallationShape,
   Preflight,
   type PreflightShape,
-} from './internal/effect/services.js'
-import type { GeneratedBundle } from './materialize/generated-bundle.js'
+} from './internal/effect/services'
+import type { GeneratedBundle } from './materialize/generated-bundle'
 
 /** One preflight composition layer. */
 export interface PreflightLayer {

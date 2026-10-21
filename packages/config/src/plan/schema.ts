@@ -5,8 +5,8 @@
  */
 import * as ParseResult from 'effect/ParseResult'
 import * as Schema from 'effect/Schema'
-import { PLAN_FORMAT, PLAN_VERSION } from './constants.js'
-import { planJsonIssues } from './json.js'
+import { PLAN_FORMAT, PLAN_VERSION } from './constants'
+import { planJsonIssues } from './json'
 
 /** Package names the materializer owns; authors may not select them. */
 export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/generated']

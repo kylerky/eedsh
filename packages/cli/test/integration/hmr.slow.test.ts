@@ -6,10 +6,10 @@ import { promisify } from 'node:util'
 import { bundle, defineProfile, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { resolveDshInstallation } from '../../src/dsh.js'
-import { liveServiceLayer } from '../../src/internal/effect/layer.js'
-import { materialize } from '../../src/internal/effect/program.js'
-import { preflightLayer } from '../../src/preflight.js'
+import { resolveDshInstallation } from '../../src/dsh'
+import { liveServiceLayer } from '../../src/internal/effect/layer'
+import { materialize } from '../../src/internal/effect/program'
+import { preflightLayer } from '../../src/preflight'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()

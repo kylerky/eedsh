@@ -7,13 +7,13 @@
  */
 import type { ProfilePlan } from '@eedsh/config'
 import { Context, type Effect } from 'effect'
-import type { GeneratedBundle } from '../../materialize/generated-bundle.js'
+import type { GeneratedBundle } from '../../materialize/generated-bundle'
 import type {
   DshResolveFailure,
   FileSystemFailure,
   PackageInstallFailure,
   PreflightFailure,
-} from './errors.js'
+} from './errors'
 
 /** File operations the materializer needs. */
 export interface FileSystemShape {

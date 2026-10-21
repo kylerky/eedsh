@@ -6,7 +6,7 @@
  */
 import { join } from 'node:path'
 import { Effect } from 'effect'
-import type { FileSystemFailure } from '../internal/effect/errors.js'
+import type { FileSystemFailure } from '../internal/effect/errors'
 
 /** The profile's user-owned patch layer. */
 export const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'

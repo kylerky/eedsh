@@ -8,8 +8,8 @@
 import * as Either from 'effect/Either'
 import * as ParseResult from 'effect/ParseResult'
 import * as Schema from 'effect/Schema'
-import { type ProfilePlan, ProfilePlanSchema } from './schema.js'
-import { type PlanIssue, PlanValidationError } from './types.js'
+import { type ProfilePlan, ProfilePlanSchema } from './schema'
+import { type PlanIssue, PlanValidationError } from './types'
 
 const decode = Schema.decodeUnknownEither(ProfilePlanSchema, {
   errors: 'all',

@@ -8,7 +8,7 @@
 import { dirname, join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import type { FileSystemFailure, MaterializeError } from '../internal/effect/errors.js'
+import type { FileSystemFailure, MaterializeError } from '../internal/effect/errors'
 import {
   FileSystem,
   type FileSystemShape,
@@ -16,10 +16,10 @@ import {
   type PackageManagerShape,
   Preflight,
   type PreflightShape,
-} from '../internal/effect/services.js'
-import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle.js'
-import { readProfileDependencies } from './manifest.js'
-import { ensureProfileFiles, GENERATED_DIRNAME, PLAN_RELATIVE_PATH } from './profile.js'
+} from '../internal/effect/services'
+import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle'
+import { readProfileDependencies } from './manifest'
+import { ensureProfileFiles, GENERATED_DIRNAME, PLAN_RELATIVE_PATH } from './profile'
 
 /** Inputs for {@link publishProfile}. */
 export interface PublishProfileInput {

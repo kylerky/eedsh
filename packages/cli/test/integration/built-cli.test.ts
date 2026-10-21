@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { resolveDshInstallation } from '../../src/dsh.js'
+import { resolveDshInstallation } from '../../src/dsh'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()

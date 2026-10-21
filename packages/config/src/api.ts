@@ -4,7 +4,7 @@
  * nothing here executes configuration or hides patch semantics.
  * @module @eedsh/config/api
  */
-import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants.js'
+import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants'
 import type {
   ExpressionNode,
   GeneratedBundle,
@@ -13,9 +13,9 @@ import type {
   PlanLayer,
   PlanPatch,
   ProfilePlan,
-} from './plan/schema.js'
-import type { JsonObject, JsonValue } from './plan/types.js'
-import { assertPlan } from './plan/validate.js'
+} from './plan/schema'
+import type { JsonObject, JsonValue } from './plan/types'
+import { assertPlan } from './plan/validate'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject

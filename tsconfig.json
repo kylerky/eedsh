@@ -13,6 +13,7 @@
     "vitest.config.ts",
     "vitest.slow.config.ts",
     "packages/*/src",
-    "packages/*/test"
+    "packages/*/test",
+    "packages/*/tsdown.config.ts"
   ]
 }

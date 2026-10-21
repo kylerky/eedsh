@@ -5,8 +5,8 @@ import {
   managedBundleOrder,
   readPreviousGeneration,
   reconcileManifest,
-} from '../../src/materialize/manifest.js'
-import { ensureProfileFiles } from '../../src/materialize/profile.js'
+} from '../../src/materialize/manifest'
+import { ensureProfileFiles } from '../../src/materialize/profile'
 
 const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'

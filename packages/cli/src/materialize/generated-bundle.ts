@@ -8,10 +8,10 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import type { FileSystemFailure } from '../internal/effect/errors.js'
-import { emitPatchesYaml } from './yaml.js'
+import type { FileSystemFailure } from '../internal/effect/errors'
+import { emitPatchesYaml } from './yaml'
 
-export { emitPatchesYaml } from './yaml.js'
+export { emitPatchesYaml } from './yaml'
 
 /** The generated bundle's package name. */
 export const GENERATED_PACKAGE_NAME = '@eedsh/generated'

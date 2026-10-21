@@ -1,8 +1,8 @@
 import { bundle, defineProfile, insert, type ProfilePlan, layer as planLayer } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { FileSystemFailure } from '../../src/internal/effect/errors.js'
-import { materialize } from '../../src/internal/effect/program.js'
+import { FileSystemFailure } from '../../src/internal/effect/errors'
+import { materialize } from '../../src/internal/effect/program'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -12,7 +12,7 @@ import {
   type PackageManagerShape,
   Preflight,
   type PreflightShape,
-} from '../../src/internal/effect/services.js'
+} from '../../src/internal/effect/services'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'
@@ -274,7 +274,7 @@ describe('atomic write', () => {
   it('replaces a file without leaving temporary files', async () => {
     const { mkdir, mkdtemp, readdir, readFile, writeFile } = await import('node:fs/promises')
     const { join } = await import('node:path')
-    const { writeFileAtomic } = await import('../../src/internal/atomic-write.js')
+    const { writeFileAtomic } = await import('../../src/internal/atomic-write')
     await mkdir(join(process.cwd(), '.tmp'), { recursive: true })
     const dir = await mkdtemp(join(process.cwd(), '.tmp', 'atomic-'))
     const target = join(dir, 'file.json')

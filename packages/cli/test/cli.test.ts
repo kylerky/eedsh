@@ -24,15 +24,15 @@ import {
   type SpawnedProcessLike,
   type SpawnLike,
   type SpawnOptionsLike,
-} from '../src/cli.js'
+} from '../src/cli'
 import {
   DshInstallation,
   FileSystem,
   PackageManager,
   Preflight,
-} from '../src/internal/effect/services.js'
-import { preflightLayer } from '../src/preflight.js'
-import { fakeDsh, fakePackageManager, fakePreflight, memoryFileSystem } from './support/fakes.js'
+} from '../src/internal/effect/services'
+import { preflightLayer } from '../src/preflight'
+import { fakeDsh, fakePackageManager, fakePreflight, memoryFileSystem } from './support/fakes'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
@@ -542,7 +542,7 @@ describe('eedsh check', () => {
     expect(code).toBe(0)
     const text = h.out.join('\n')
     expect(text).toMatch(/TypeScript \d+\.\d+\.\d+/)
-    expect(text).toContain(join('packages', 'cli', 'tsconfig.json'))
+    expect(text).toContain(join(root, 'tsconfig.json'))
     expect(text).toContain('--noEmit')
     expect(text).toContain('--pretty false')
 
@@ -622,7 +622,7 @@ describe('eedsh check failures', () => {
     const code = await runCli(['check', '--config', fixture('basic')], { ...h.deps, spawn })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.config_not_in_project')
-    expect(h.err.join('\n')).toContain(join('packages', 'cli', 'tsconfig.json'))
+    expect(h.err.join('\n')).toContain(join(root, 'tsconfig.json'))
     expect(calls).toHaveLength(1)
   })
 })

@@ -6,7 +6,7 @@ import {
   type ReconcileOutcome,
   registerGeneratedLayerWatcher,
   type WatcherLogger,
-} from '../src/watcher.js'
+} from '../src/watcher'
 
 const root = process.cwd()
 const GENERATED = '.eedsh/generated/package.json'

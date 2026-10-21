@@ -17,8 +17,7 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc -p tsconfig.check.json"
+    "build": "tsdown"
   },
   "engines": {
     "node": ">=26",

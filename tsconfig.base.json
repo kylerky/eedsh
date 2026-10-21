@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "es2024",
     "lib": ["es2024"],
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "module": "preserve",
+    "moduleResolution": "bundler",
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -17,9 +17,6 @@
     "isolatedModules": true,
     "useDefineForClassFields": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
+    "forceConsistentCasingInFileNames": true
   }
 }

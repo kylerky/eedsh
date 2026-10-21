@@ -6,16 +6,16 @@
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import { buildGeneratedBundle } from '../../materialize/generated-bundle.js'
+import { buildGeneratedBundle } from '../../materialize/generated-bundle'
 import {
   readGenerationId,
   readPreviousGeneration,
   reconcileManifest,
-} from '../../materialize/manifest.js'
-import { GENERATED_MANIFEST_RELATIVE_PATH, LOCK_RELATIVE_PATH } from '../../materialize/profile.js'
-import { publishProfile } from '../../materialize/publish.js'
-import { type SyncLockOptions, withSyncLock } from '../lock.js'
-import { FileSystemFailure, type MaterializeError } from './errors.js'
+} from '../../materialize/manifest'
+import { GENERATED_MANIFEST_RELATIVE_PATH, LOCK_RELATIVE_PATH } from '../../materialize/profile'
+import { publishProfile } from '../../materialize/publish'
+import { type SyncLockOptions, withSyncLock } from '../lock'
+import { FileSystemFailure, type MaterializeError } from './errors'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -23,7 +23,7 @@ import {
   type FileSystemShape,
   type PackageManagerShape,
   type PreflightShape,
-} from './services.js'
+} from './services'
 
 /** Inputs for {@link materialize}. */
 export interface MaterializeOptions {

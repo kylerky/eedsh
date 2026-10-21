@@ -5,7 +5,7 @@ import {
   buildGeneratedBundle,
   emitPatchesYaml,
   generationIdFor,
-} from '../../src/materialize/generated-bundle.js'
+} from '../../src/materialize/generated-bundle'
 
 function fixturePlan(): ProfilePlan {
   return defineProfile({

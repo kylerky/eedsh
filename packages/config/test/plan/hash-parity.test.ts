@@ -1,7 +1,7 @@
 import { canonicalJson, hashPlan, validatePlan } from '@eedsh/config'
 import * as Either from 'effect/Either'
 import { describe, expect, it } from 'vitest'
-import readme from '../../../cli/test/fixtures/readme/eedsh.config.js'
+import readme from '../../../cli/test/fixtures/readme/eedsh.config'
 
 /**
  * Canonical JSON and SHA-256 recorded with the pre-Effect validator for the

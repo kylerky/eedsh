@@ -14,8 +14,7 @@
     "node": ">=26"
   },
   "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc -p tsconfig.check.json"
+    "build": "tsdown"
   },
   "dependencies": {
     "@deepseek-ai/cordis-plugin-include": "1.0.10",

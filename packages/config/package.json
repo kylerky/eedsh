@@ -18,8 +18,7 @@
     "node": ">=26"
   },
   "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc -p tsconfig.check.json"
+    "build": "tsdown"
   },
   "peerDependencies": {
     "effect": "3.22.3"

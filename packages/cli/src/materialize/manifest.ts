@@ -6,11 +6,7 @@
  * @module @eedsh/cli/materialize/manifest
  */
 import type { ProfilePlan } from '@eedsh/config'
-import {
-  GENERATED_PACKAGE_NAME,
-  GENERATION_FORMAT,
-  RUNTIME_PACKAGE_NAME,
-} from './generated-bundle.js'
+import { GENERATED_PACKAGE_NAME, GENERATION_FORMAT, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 
 /** What the previous published generation owned. */
 export interface PreviousGeneration {

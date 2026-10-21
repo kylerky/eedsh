@@ -10,8 +10,8 @@
   "scripts": {
     "build": "pnpm typecheck && pnpm -r run build",
     "build:packages": "pnpm -r run build",
-    "typecheck": "tsc -p tsconfig.check.json",
-    "typecheck:watch": "tsc -p tsconfig.check.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "test": "vitest run",
     "test:slow": "vitest run --config vitest.slow.config.ts",
     "format": "biome format --write .",

@@ -5,7 +5,7 @@
  * @module @eedsh/runtime
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { type HmrLike, registerGeneratedLayerWatcher, type WatcherLogger } from './watcher.js'
+import { type HmrLike, registerGeneratedLayerWatcher, type WatcherLogger } from './watcher'
 
 /** Plugin name shown in Loader diagnostics. */
 export const name = 'eedsh-runtime'

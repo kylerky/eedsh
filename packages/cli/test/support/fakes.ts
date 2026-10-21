@@ -1,11 +1,11 @@
 import { Effect } from 'effect'
-import { FileSystemFailure } from '../../src/internal/effect/errors.js'
+import { FileSystemFailure } from '../../src/internal/effect/errors'
 import type {
   DshInstallationShape,
   FileSystemShape,
   PackageManagerShape,
   PreflightShape,
-} from '../../src/internal/effect/services.js'
+} from '../../src/internal/effect/services'
 
 /** In-memory file system matching the materializer's FileSystem service. */
 export function memoryFileSystem(initial: Record<string, string> = {}) {

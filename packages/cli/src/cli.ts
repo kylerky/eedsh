@@ -13,7 +13,7 @@ import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { type PlanIssue, PlanValidationError, type ProfilePlan } from '@eedsh/config'
 import { Effect, Layer, ManagedRuntime } from 'effect'
-import { runCheck } from './check.js'
+import { runCheck } from './check'
 import {
   assertSupportedConfigPath,
   CONFIG_FILENAMES,
@@ -22,22 +22,22 @@ import {
   findUnsupportedConfigPath,
   loadConfig,
   unsupportedConfigExtensionError,
-} from './config.js'
-import { resolveDshInstallation } from './dsh.js'
-import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit.js'
-import type { DshResolveFailure, MaterializeError } from './internal/effect/errors.js'
-import { liveServiceLayer } from './internal/effect/layer.js'
-import { type MaterializeResult, materialize } from './internal/effect/program.js'
+} from './config'
+import { resolveDshInstallation } from './dsh'
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
+import type { DshResolveFailure, MaterializeError } from './internal/effect/errors'
+import { liveServiceLayer } from './internal/effect/layer'
+import { type MaterializeResult, materialize } from './internal/effect/program'
 import type {
   DshInstallationShape,
   FileSystemShape,
   PackageManagerShape,
   PreflightShape,
-} from './internal/effect/services.js'
-import { preflightLayer } from './preflight.js'
-import { type WatchSession, watchConfigDirectory } from './watch.js'
+} from './internal/effect/services'
+import { preflightLayer } from './preflight'
+import { type WatchSession, watchConfigDirectory } from './watch'
 
-export { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit.js'
+export { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 
 const USAGE = `eedsh — typed configuration for DeepSeek Harness profiles
 

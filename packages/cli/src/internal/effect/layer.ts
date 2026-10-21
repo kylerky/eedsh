@@ -7,9 +7,9 @@
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { Effect, Layer } from 'effect'
-import { resolveBundleLayers, resolveDshInstallation } from '../../dsh.js'
-import { writeFileAtomic } from '../atomic-write.js'
-import { DshResolveFailure, FileSystemFailure, PackageInstallFailure } from './errors.js'
+import { resolveBundleLayers, resolveDshInstallation } from '../../dsh'
+import { writeFileAtomic } from '../atomic-write'
+import { DshResolveFailure, FileSystemFailure, PackageInstallFailure } from './errors'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -17,7 +17,7 @@ import {
   type FileSystemShape,
   PackageManager,
   type PackageManagerShape,
-} from './services.js'
+} from './services'
 
 /** Node-backed file access. */
 export const nodeFileSystem: FileSystemShape = {

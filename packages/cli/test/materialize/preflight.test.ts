@@ -9,18 +9,15 @@ import {
 } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { DshResolveFailure } from '../../src/internal/effect/errors.js'
+import { DshResolveFailure } from '../../src/internal/effect/errors'
 import {
   DshInstallation,
   type DshInstallationShape,
   Preflight,
   type PreflightInput,
-} from '../../src/internal/effect/services.js'
-import {
-  buildGeneratedBundle,
-  type GeneratedBundle,
-} from '../../src/materialize/generated-bundle.js'
-import { composePreflightLayers, type PreflightLayer, preflightLayer } from '../../src/preflight.js'
+} from '../../src/internal/effect/services'
+import { buildGeneratedBundle, type GeneratedBundle } from '../../src/materialize/generated-bundle'
+import { composePreflightLayers, type PreflightLayer, preflightLayer } from '../../src/preflight'
 
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 
