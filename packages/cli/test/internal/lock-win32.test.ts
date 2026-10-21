@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
@@ -74,7 +74,8 @@ function fakeWin32(
 
 describe('Windows semaphore name', () => {
   it('derives a Local-namespace name from the case-folded canonical path', () => {
-    const digest = createHash('sha256').update('/profiles/work/.eedsh/sync.lock').digest('hex')
+    const canonical = resolve('/profiles/work/.eedsh/sync.lock').toLowerCase()
+    const digest = createHash('sha256').update(canonical).digest('hex')
     const expected = `${String.raw`Local\eedsh-profile-lock-`}${digest}`
     expect(win32LockName('/profiles/work/.eedsh/sync.lock')).toBe(expected)
     expect(win32LockName('/PROFILES/WORK/.EEDSH/SYNC.LOCK')).toBe(expected)

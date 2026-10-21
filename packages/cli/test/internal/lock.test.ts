@@ -12,6 +12,7 @@ import {
 } from '../../src/internal/effect/services'
 import { withSyncLock } from '../../src/internal/lock'
 import { makePosixSyncLock, type PosixLockIo } from '../../src/internal/lock-posix'
+import { fakeSyncLock } from '../support/fakes'
 
 const tempRoot = join(process.cwd(), '.tmp')
 const dirs: string[] = []
@@ -97,15 +98,19 @@ describe('withSyncLock service boundary', () => {
 
 describe('sync lock platform selection', () => {
   it('selects the POSIX implementation on linux and darwin', async () => {
-    const lockPath = await tempLockPath()
+    const lock = fakeSyncLock()
     for (const platform of ['linux', 'darwin'] as const) {
       const result = await Effect.runPromise(
-        withSyncLock(lockPath, Effect.succeed(platform)).pipe(
-          Effect.provide(syncLockLayer(platform)),
+        withSyncLock('/profiles/work/.eedsh/sync.lock', Effect.succeed(platform)).pipe(
+          Effect.provide(syncLockLayer(platform, { posix: lock.shape })),
         ),
       )
       expect(result).toBe(platform)
     }
+    expect(lock.acquires).toEqual([
+      '/profiles/work/.eedsh/sync.lock',
+      '/profiles/work/.eedsh/sync.lock',
+    ])
   })
 
   it('fails closed on an unsupported platform before running the effect', async () => {
@@ -125,7 +130,7 @@ describe('sync lock platform selection', () => {
   })
 })
 
-describe('POSIX sync lock', () => {
+describe.skipIf(process.platform === 'win32')('POSIX sync lock', () => {
   it('creates the lock file and rejects a second acquisition', async () => {
     const lockPath = await tempLockPath()
     const lock = makePosixSyncLock()
