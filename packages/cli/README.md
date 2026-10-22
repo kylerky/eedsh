@@ -88,34 +88,32 @@ specification wins on collision.
 
 ## Sync locking
 
-`sync` serializes materialization for one profile. The lock is owned by the operating
-system, not by a PID-and-file protocol, and covers the whole transaction: reading the
-previous generation, reconciling the manifest, package installation, preflight, and
+`sync` serializes materialization for one profile. The lock is owned by the
+operating system, and covers the whole transaction: reading the previous
+generation, reconciling the manifest, package installation, preflight, and
 publication.
 
 - **Linux and macOS:** an advisory exclusive `flock` on the persistent
-  `.eedsh/sync.lock` file. The descriptor stays open for the transaction and closing it
-  releases the lock. eedsh never deletes, renames, or replaces the file, and its content
-  is ignored, so an old PID file from a previous version is inert. After acquiring,
-  eedsh verifies the locked inode still matches the path and retries if the file was
-  replaced.
-- **Windows:** a named kernel semaphore derived from the canonical profile lock path in
-  the `Local` namespace. It creates no profile lock file. The lock is scoped to the
-  current Windows login session, so another session, a POSIX process sharing the
-  profile, or another host is not excluded.
-- **Everywhere:** acquisition is non-blocking. A concurrent sync exits non-zero with
-  `another sync is running for this profile; lock: <path>`. The kernel releases the
-  lock when the process exits or crashes, so there is no PID liveness probe, timestamp
-  expiry, stale-lock takeover, or manual lock removal. A live holder keeps the lock
-  until it releases it or exits.
-- **Supported platforms:** Linux, macOS, and Windows. On any other platform, or when the
-  native lock support cannot be loaded, sync fails before materializing with a
-  file-system error naming the lock path; it never falls back to a PID lock.
-- **Scope:** the lock is local and advisory. It does not coordinate hosts, network
-  filesystems, mixed POSIX/Windows processes, or non-eedsh processes. Do not delete
-  `.eedsh/sync.lock` while a POSIX sync is running.
-- Old PID-based eedsh versions and this kernel lock do not interoperate; do not run them
-  concurrently against one profile.
+  `.eedsh/sync.lock` file. The descriptor stays open for the transaction and
+  closing it releases the lock. eedsh never deletes, renames, or replaces the
+  file. After acquiring, eedsh verifies that the locked inode still matches the
+  path and retries if the file was replaced.
+- **Windows:** a named kernel semaphore derived from the canonical profile lock
+  path in the `Local` namespace. It creates no profile lock file. The lock is
+  scoped to the current Windows login session, so another session, a POSIX
+  process sharing the profile, or another host is not excluded.
+- **On both platforms:** acquisition is non-blocking. A concurrent sync exits
+  non-zero with `another sync is running for this profile; lock: <path>`. The
+  kernel releases the lock when the process exits or crashes. A live holder
+  keeps the lock until it releases it or exits.
+- **Supported platforms:** Linux, macOS, and Windows. On any other platform, or
+  when the native lock support cannot be loaded, sync fails before materializing
+  with a file-system error naming the lock path.
+- **Scope:** the lock is local and advisory. It does not coordinate hosts,
+  network filesystems, mixed POSIX/Windows processes, or non-eedsh processes. Do
+  not delete `.eedsh/sync.lock` while a POSIX sync is running.
+- Old PID-based eedsh versions and this kernel lock do not interoperate; do not
+  run them concurrently against one profile.
 
 ## Preflight
 
