@@ -70,6 +70,8 @@ specification wins on collision.
 
 ## Publication guarantees
 
+- Every profile file is replaced atomically: a failed write or rename leaves the
+  target with its previous content and no temporary file behind.
 - Patch files and `plan.json` are written before the generated package manifest,
   which is the commit point. A reader never sees a partial generation.
 - The generation id covers the canonical plan and every emitted layer hash, so an

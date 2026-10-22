@@ -43,11 +43,7 @@ export const nodeFileSystem: FileSystemShape = {
       try: () => readFile(path, 'utf8'),
       catch: (cause) => new FileSystemFailure({ operation: 'readFile', path, cause }),
     }),
-  writeFileAtomic: (path, content) =>
-    Effect.tryPromise({
-      try: () => writeFileAtomic(path, content),
-      catch: (cause) => new FileSystemFailure({ operation: 'writeFileAtomic', path, cause }),
-    }),
+  writeFileAtomic,
   ensureDir: (path) =>
     Effect.tryPromise({
       try: async () => {

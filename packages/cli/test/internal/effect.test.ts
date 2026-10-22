@@ -315,7 +315,7 @@ describe('atomic write', () => {
     const dir = await mkdtemp(join(process.cwd(), '.tmp', 'atomic-'))
     const target = join(dir, 'file.json')
     await writeFile(target, 'old')
-    await writeFileAtomic(target, 'new')
+    await Effect.runPromise(writeFileAtomic(target, 'new'))
     expect(await readFile(target, 'utf8')).toBe('new')
     expect(await readdir(dir)).toEqual(['file.json'])
   })
