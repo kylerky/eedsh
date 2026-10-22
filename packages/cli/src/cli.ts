@@ -2,8 +2,8 @@
  * The `eedsh` command: evaluate the typed config, publish it into a DSH
  * profile, optionally boot the pinned launcher, or run the config project's
  * TypeScript compiler. The command surface is parsed by `@effect/cli`; one-shot
- * syncs use `Effect.runPromise`, while watch mode keeps one `ManagedRuntime`
- * alive so the materializer's services are reused across runs.
+ * syncs use `Effect.runPromise`, while watch mode is one scoped Effect program
+ * that builds the materializer's services once for the whole session.
  * @module @eedsh/cli/cli
  */
 import { readFileSync } from 'node:fs'
@@ -16,7 +16,7 @@ import * as ValidationError from '@effect/cli/ValidationError'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
 import * as NodeTerminal from '@effect/platform-node/NodeTerminal'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
 import * as Option from 'effect/Option'
 import { isRecord } from 'effect/Predicate'
@@ -47,11 +47,15 @@ import { defaultSpawn, type SpawnLike } from './spawn'
 import { type WatchSession, watchConfigDirectory } from './watch'
 
 /** The services the materializer needs, built once per CLI run. */
-export type CliServiceLayer = Layer.Layer<
-  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape | SyncLockShape,
-  DshResolveFailure,
-  never
->
+type CliService =
+  | FileSystemShape
+  | PackageManagerShape
+  | DshInstallationShape
+  | PreflightShape
+  | SyncLockShape
+
+/** A layer providing every CLI service. */
+export type CliServiceLayer = Layer.Layer<CliService, DshResolveFailure, never>
 
 /** Watch seam for `eedsh sync --watch`. */
 export type WatchFactory = (dir: string, onChange: () => void) => Promise<WatchSession>
@@ -315,74 +319,121 @@ async function syncOnce(context: CommandContext): Promise<SyncOutcome> {
   return { ok: true, result: outcome.right }
 }
 
-function waitForStop(signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolveStop) => {
+/** A stop signal from an injected `AbortSignal`, SIGINT, or SIGTERM. */
+function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
+  return Effect.async<void>((resume) => {
     if (signal !== undefined) {
-      if (signal.aborted) return resolveStop()
-      signal.addEventListener('abort', () => resolveStop(), { once: true })
+      if (signal.aborted) {
+        resume(Effect.void)
+        return
+      }
+      const onAbort = () => resume(Effect.void)
+      signal.addEventListener('abort', onAbort, { once: true })
+      return Effect.sync(() => signal.removeEventListener('abort', onAbort))
+    }
+    const onSignal = () => resume(Effect.void)
+    process.once('SIGINT', onSignal)
+    process.once('SIGTERM', onSignal)
+    return Effect.sync(() => {
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+    })
+  })
+}
+
+/** Run one watch-mode sync, reporting failures and stopping on interruption. */
+function runWatch(
+  context: CommandContext,
+  planEffect: Effect.Effect<ProfilePlan, unknown>,
+): Effect.Effect<void, never, CliService> {
+  return Effect.gen(function* () {
+    const planExit = yield* Effect.exit(planEffect)
+    if (Exit.isFailure(planExit)) {
+      if (Cause.isInterruptedOnly(planExit.cause)) return yield* Effect.interrupt
+      yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
       return
     }
-    process.once('SIGINT', () => resolveStop())
-    process.once('SIGTERM', () => resolveStop())
+    const runExit = yield* Effect.exit(programFor(context, planExit.value))
+    if (Exit.isFailure(runExit)) {
+      if (Cause.isInterruptedOnly(runExit.cause)) return yield* Effect.interrupt
+      yield* Effect.sync(() =>
+        reportSyncError(context.stderr, Cause.squash(runExit.cause), context.invocation.explain),
+      )
+      return
+    }
+    yield* Effect.sync(() =>
+      printResult(
+        context.stdout,
+        context.stderr,
+        planExit.value,
+        runExit.value,
+        context.invocation.explain,
+      ),
+    )
   })
 }
 
 async function syncWatch(context: CommandContext): Promise<number> {
   const layer = (context.options.services ?? defaultServices)()
-  const runtime = ManagedRuntime.make(layer)
-  let running = false
-  let queued = false
-
-  const runWith = async (plan: ProfilePlan): Promise<void> => {
-    try {
-      const outcome = await runtime.runPromise(Effect.either(programFor(context, plan)))
-      if (outcome._tag === 'Left') {
-        reportSyncError(context.stderr, outcome.left, context.invocation.explain)
-        return
-      }
-      printResult(context.stdout, context.stderr, plan, outcome.right, context.invocation.explain)
-    } catch (error) {
-      reportSyncError(context.stderr, error, context.invocation.explain)
-    }
-  }
-
-  const runOnce = async (): Promise<void> => {
-    if (running) {
-      queued = true
-      return
-    }
-    running = true
-    try {
-      let plan: ProfilePlan
-      try {
-        plan = await (context.options.loadConfig ?? loadConfig)(context.configPath)
-      } catch (error) {
-        report(context.stderr, error)
-        return
-      }
-      await runWith(plan)
-    } finally {
-      running = false
-      if (queued) {
-        queued = false
-        void runOnce()
-      }
-    }
-  }
-
-  await runWith(context.plan)
   const dir = dirname(context.configPath)
-  const onChange = () => {
-    void runOnce()
-  }
-  const session =
-    context.options.watch === undefined
-      ? await watchConfigDirectory({ dir, onChange })
-      : await context.options.watch(dir, onChange)
-  await waitForStop(context.options.signal)
-  await session.close()
-  await runtime.dispose()
-  return EXIT_OK
+
+  const program = Effect.gen(function* () {
+    const changes = yield* Effect.acquireRelease(Queue.sliding<void>(1), (queue) =>
+      Queue.shutdown(queue),
+    )
+    yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () =>
+          context.options.watch === undefined
+            ? watchConfigDirectory({
+                dir,
+                onChange: () => {
+                  Queue.unsafeOffer(changes, undefined)
+                },
+              })
+            : context.options.watch(dir, () => {
+                Queue.unsafeOffer(changes, undefined)
+              }),
+        catch: (cause) => cause,
+      }),
+      (session) =>
+        Effect.tryPromise({
+          try: () => session.close(),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.catchAll((error) =>
+            Effect.sync(() => {
+              for (const line of describeError(error)) {
+                context.stderr(`eedsh: warning: ${line}`)
+              }
+            }),
+          ),
+        ),
+    )
+
+    const loop = Effect.gen(function* () {
+      while (true) {
+        yield* Queue.take(changes)
+        yield* runWatch(
+          context,
+          Effect.tryPromise({
+            try: () => (context.options.loadConfig ?? loadConfig)(context.configPath),
+            catch: (cause) => cause,
+          }),
+        )
+      }
+    })
+
+    yield* Effect.race(
+      runWatch(context, Effect.succeed(context.plan)).pipe(Effect.zipRight(loop)),
+      stopSignal(context.options.signal),
+    )
+  })
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program).pipe(Effect.provide(layer)))
+  if (Exit.isSuccess(exit)) return EXIT_OK
+  report(context.stderr, Cause.squash(exit.cause))
+  return EXIT_FAILURE
 }
 
 async function runBoot(context: CommandContext): Promise<number> {

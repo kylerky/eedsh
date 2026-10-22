@@ -8,8 +8,8 @@ The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build out
 and there is no library export.
 
 Effect is the default here: tagged failures, `Context.Tag` services for file access,
-package installation, DSH resolution, preflight, and sync locking, plus a
-`ManagedRuntime` for watch mode. `@effect/cli` parses the command surface; its generated help and usage
+package installation, DSH resolution, preflight, and sync locking, plus one scoped
+service layer per watch session. `@effect/cli` parses the command surface; its generated help and usage
 errors are rendered through an injected Console with ANSI escapes stripped, and the
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
 `spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
@@ -36,8 +36,13 @@ eedsh --help | --version
 - `--strict` makes unmatched id-targeted patches a failure; strict failures stay raw
   unless `--explain` is also supplied, and the generation record is not updated.
 - `--watch` re-evaluates the config when files under its directory change (debounced).
-  A compile or validation failure is reported and the previously published generation
-  stays in place; one `ManagedRuntime` serves every run.
+  The watcher is ready before the initial sync; changes during a run coalesce into at
+  most one follow-up, and one service layer serves the whole session. A compile or
+  validation failure is reported and the previously published generation stays in
+  place. A stop signal interrupts an in-flight sync and releases its profile lock
+  before the command exits 0. Layer or watcher construction failure exits 1 before
+  any sync; a watcher-close failure is reported as a warning without changing the
+  exit status.
 - `check` typechecks the config's project with its own `tsc --noEmit -p <tsconfig>`,
   forwards arguments after `--`, never evaluates the config or publishes a profile,
   and exits with the compiler's exit code.

@@ -15,10 +15,11 @@ import {
   type ProfilePlan,
   validatePlan,
 } from '@eedsh/config'
-import { Effect, Layer } from 'effect'
+import { Deferred, Effect, Layer } from 'effect'
 import * as Either from 'effect/Either'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
+import { DshResolveFailure } from '../src/internal/effect/errors'
 import {
   DshInstallation,
   FileSystem,
@@ -162,9 +163,10 @@ interface HarnessOptions {
   files?: Record<string, string>
   basePatches?: Record<string, unknown>[]
   preflight?: { fail?: boolean; warnings?: string[] }
-  packages?: { fail?: boolean }
+  packages?: { fail?: boolean; beforeInstall?: (count: number) => Effect.Effect<void> }
   realPreflight?: boolean
   lockHeld?: boolean
+  failLayer?: boolean
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -173,17 +175,35 @@ function harness(options: HarnessOptions = {}) {
   const dsh = fakeDsh({ patches: options.basePatches ?? [] })
   const preflight = fakePreflight(options.preflight)
   const lock = fakeSyncLock({ held: options.lockHeld ?? false })
-  const dshLayer = Layer.succeed(DshInstallation, dsh.shape)
+  const dshLayer = options.failLayer
+    ? Layer.effect(
+        DshInstallation,
+        Effect.fail(
+          new DshResolveFailure({
+            packageName: '@deepseek-ai/dsh',
+            cause: new Error('missing DSH installation'),
+          }),
+        ),
+      )
+    : Layer.succeed(DshInstallation, dsh.shape)
   let constructions = 0
+  let finalizers = 0
+  const fileSystemLayer = Layer.scoped(
+    FileSystem,
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        constructions += 1
+        return fs.shape
+      }),
+      () =>
+        Effect.sync(() => {
+          finalizers += 1
+        }),
+    ),
+  )
   const services = () =>
     Layer.mergeAll(
-      Layer.effect(
-        FileSystem,
-        Effect.sync(() => {
-          constructions += 1
-          return fs.shape
-        }),
-      ),
+      fileSystemLayer,
       Layer.effect(
         PackageManager,
         Effect.sync(() => {
@@ -215,6 +235,7 @@ function harness(options: HarnessOptions = {}) {
     out,
     err,
     constructions: () => constructions,
+    finalizers: () => finalizers,
     text: () => ({ out: out.join('\n'), err: err.join('\n') }),
   }
 }
@@ -627,6 +648,228 @@ describe('eedsh sync --watch', () => {
     controller.abort()
     expect(await running).toBe(0)
     expect(closed).toBe(1)
+  })
+
+  it('releases the layer and reports when the watcher cannot start', async () => {
+    const h = harness()
+    const watch = async () => {
+      throw new Error('watcher failed')
+    }
+    const code = await runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+    })
+    expect(code).toBe(1)
+    expect(h.packages.installs).toEqual([])
+    expect(h.fs.files.size).toBe(0)
+    expect(h.finalizers()).toBe(1)
+    expect(h.err.join('\n')).toContain('watcher failed')
+  })
+
+  it('releases the layer and skips the watcher when the service layer cannot be built', async () => {
+    const h = harness({ failLayer: true })
+    let watchCalls = 0
+    const watch = async () => {
+      watchCalls += 1
+      return { close: async () => {} }
+    }
+    const code = await runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+      signal: AbortSignal.abort(),
+    })
+    expect(code).toBe(1)
+    expect(watchCalls).toBe(0)
+    expect(h.packages.installs).toEqual([])
+    expect(h.fs.files.size).toBe(0)
+    expect(h.finalizers()).toBe(1)
+    expect(h.err.join('\n')).toContain('cannot resolve DSH package')
+  })
+
+  it('starts the initial sync only after the watcher is ready', async () => {
+    const h = harness()
+    let releaseWatcher: (() => void) | undefined
+    const watcherReady = new Promise<void>((resolve) => {
+      releaseWatcher = resolve
+    })
+    let watchCalled = false
+    const watch = async () => {
+      watchCalled = true
+      await watcherReady
+      return { close: async () => {} }
+    }
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => watchCalled)).toBe(true)
+    const installsBeforeReady = h.packages.installs.length
+    releaseWatcher?.()
+    expect(installsBeforeReady).toBe(0)
+    expect(h.fs.files.size).toBe(0)
+    expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('runs exactly one follow-up sync when a change arrives during the initial sync', async () => {
+    const gate = Effect.runSync(Deferred.make<void>())
+    const h = harness({
+      packages: { beforeInstall: (count) => (count === 1 ? Deferred.await(gate) : Effect.void) },
+    })
+    let onChange: (() => void) | undefined
+    const watch = async (_dir: string, callback: () => void) => {
+      onChange = callback
+      return { close: async () => {} }
+    }
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+      signal: controller.signal,
+    })
+    const runs = () =>
+      h.out.filter(
+        (line) => line.startsWith('eedsh: published') || line.startsWith('eedsh: unchanged'),
+      ).length
+
+    expect(await waitFor(() => h.packages.installs.length === 1)).toBe(true)
+    const hasOnChange = typeof onChange === 'function'
+    onChange?.()
+    await Effect.runPromise(Deferred.succeed(gate, undefined))
+    expect(hasOnChange).toBe(true)
+    expect(await waitFor(() => runs() === 2)).toBe(true)
+    await delay(100)
+    expect(runs()).toBe(2)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('coalesces a burst of changes during a sync into one follow-up sync', async () => {
+    const gate = Effect.runSync(Deferred.make<void>())
+    const h = harness({
+      packages: { beforeInstall: (count) => (count === 1 ? Deferred.await(gate) : Effect.void) },
+    })
+    let onChange: (() => void) | undefined
+    const watch = async (_dir: string, callback: () => void) => {
+      onChange = callback
+      return { close: async () => {} }
+    }
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+      signal: controller.signal,
+    })
+    const runs = () =>
+      h.out.filter(
+        (line) => line.startsWith('eedsh: published') || line.startsWith('eedsh: unchanged'),
+      ).length
+
+    expect(await waitFor(() => h.packages.installs.length === 1)).toBe(true)
+    const hasOnChange = typeof onChange === 'function'
+    onChange?.()
+    onChange?.()
+    onChange?.()
+    await Effect.runPromise(Deferred.succeed(gate, undefined))
+    expect(hasOnChange).toBe(true)
+    expect(await waitFor(() => runs() === 2)).toBe(true)
+    await delay(100)
+    expect(runs()).toBe(2)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('interrupts an in-flight rerun and releases the lock, watcher, and layer', async () => {
+    const gate = Effect.runSync(Deferred.make<void>())
+    const h = harness({
+      packages: { beforeInstall: (count) => (count === 2 ? Deferred.await(gate) : Effect.void) },
+    })
+    const planA = defineProfile({
+      name: 'cli-fixture',
+      dsh: '0.2.1-rc.2',
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: 'row-a', name: '@scope/row-a' })])],
+    })
+    const planB: ProfilePlan = defineProfile({
+      name: 'cli-fixture',
+      dsh: '0.2.1-rc.2',
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: 'row-b', name: '@scope/row-b' })])],
+      packages: { '@scope/plugin': '1.0.0' },
+    })
+    let onChange: (() => void) | undefined
+    let closed = 0
+    const watch = async (_dir: string, callback: () => void) => {
+      onChange = callback
+      return {
+        close: async () => {
+          closed += 1
+        },
+      }
+    }
+    let calls = 0
+    const loadConfig = async (): Promise<ProfilePlan> => {
+      calls += 1
+      return calls === 1 ? planA : planB
+    }
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      loadConfig,
+      watch,
+      signal: controller.signal,
+    })
+
+    await waitFor(() => h.fs.files.has(generatedManifest))
+    onChange?.()
+    const started = await waitFor(() => h.packages.installs.length === 2)
+
+    controller.abort()
+    const code = await running
+    const lockHeldAtStop = h.lock.isHeld()
+    const releasesAtStop = [...h.lock.releases]
+    const watcherClosesAtStop = closed
+    const layerFinalizersAtStop = h.finalizers()
+    await Effect.runPromise(Deferred.succeed(gate, undefined))
+
+    expect(code).toBe(0)
+    expect(started).toBe(true)
+    expect(lockHeldAtStop).toBe(false)
+    expect(releasesAtStop).toContain('/home/profiles/cli-fixture/.eedsh/sync.lock')
+    expect(watcherClosesAtStop).toBe(1)
+    expect(layerFinalizersAtStop).toBe(1)
+  })
+
+  it('warns but exits 0 when the watcher fails to close on a normal stop', async () => {
+    const h = harness()
+    let closed = 0
+    const watch = async () => ({
+      close: async () => {
+        closed += 1
+        throw new Error('close failed')
+      },
+    })
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
+      ...h.options,
+      watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
+    controller.abort()
+
+    expect(await running).toBe(0)
+    expect(closed).toBe(1)
+    expect(h.err.join('\n')).toContain('warning: close failed')
+    expect(h.finalizers()).toBe(1)
   })
 })
 

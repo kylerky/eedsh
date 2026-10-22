@@ -79,19 +79,26 @@ export function fakeSyncLock(options: { held?: boolean } = {}) {
   }
 }
 
-/** Package manager that records installs and optionally fails. */
-export function fakePackageManager(options: { fail?: boolean } = {}) {
+/** Package manager that records installs and optionally fails or waits. */
+export function fakePackageManager(
+  options: {
+    fail?: boolean
+    /** Run before a successful install; used to gate an installation. */
+    beforeInstall?: (count: number) => Effect.Effect<void>
+  } = {},
+) {
   const installs: string[] = []
   const shape: PackageManagerShape = {
     install: (dir) => {
       installs.push(dir)
-      return options.fail
-        ? (Effect.fail({
-            _tag: 'PackageInstallFailure',
-            profileDir: dir,
-            cause: 'boom',
-          }) as never)
-        : Effect.void
+      if (options.fail) {
+        return Effect.fail({
+          _tag: 'PackageInstallFailure',
+          profileDir: dir,
+          cause: 'boom',
+        }) as never
+      }
+      return options.beforeInstall?.(installs.length) ?? Effect.void
     },
   }
   return { shape, installs }
