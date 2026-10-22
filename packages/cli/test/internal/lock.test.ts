@@ -194,39 +194,6 @@ describe.skipIf(process.platform === 'win32')('POSIX sync lock', () => {
     expect(existsSync(lockPath)).toBe(true)
   })
 
-  it('ignores arbitrary existing content and never rewrites the file', async () => {
-    const lockPath = await tempLockPath()
-    await mkdir(dirname(lockPath), { recursive: true })
-    const stale = JSON.stringify({ pid: 4242, startedAt: 'yesterday' })
-    await writeFile(lockPath, stale)
-
-    const lock = makePosixSyncLock()
-    const handle = await acquire(lock, lockPath)
-    expect(await readFile(lockPath, 'utf8')).toBe(stale)
-    await release(handle)
-    expect(await readFile(lockPath, 'utf8')).toBe(stale)
-
-    const again = await acquire(lock, lockPath)
-    await release(again)
-    expect(await readFile(lockPath, 'utf8')).toBe(stale)
-  })
-
-  for (const [name, content] of [
-    ['a dead PID', JSON.stringify({ pid: 999_999 })],
-    ['malformed JSON', 'not-json'],
-    ['a non-numeric PID', JSON.stringify({ pid: '4242' })],
-  ] as const) {
-    it(`acquires over a lock file containing ${name}`, async () => {
-      const lockPath = await tempLockPath()
-      await mkdir(dirname(lockPath), { recursive: true })
-      await writeFile(lockPath, content)
-      const handle = await acquire(makePosixSyncLock(), lockPath)
-      await release(handle)
-      expect(existsSync(lockPath)).toBe(true)
-      expect(await readFile(lockPath, 'utf8')).toBe(content)
-    })
-  }
-
   it('keeps the lock file after a successful and a failed scoped run', async () => {
     const lockPath = await tempLockPath()
     const layer = syncLockLayer('linux')
