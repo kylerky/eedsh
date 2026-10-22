@@ -19,13 +19,12 @@ export function withSyncLock<A, E, R>(
   lockPath: string,
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | SyncLocked | FileSystemFailure, R | SyncLockShape> {
-  return Effect.scoped(
-    Effect.acquireRelease(
-      Effect.gen(function* () {
-        const lock = yield* SyncLock
-        return yield* lock.acquire(lockPath)
-      }),
-      (handle) => handle.release,
-    ).pipe(Effect.flatMap(() => effect)),
+  return Effect.acquireUseRelease(
+    Effect.gen(function* () {
+      const lock = yield* SyncLock
+      return yield* lock.acquire(lockPath)
+    }),
+    () => effect,
+    (handle) => handle.release,
   )
 }

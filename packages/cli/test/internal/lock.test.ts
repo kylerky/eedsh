@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { Effect } from 'effect'
+import { Deferred, Effect, Exit, Fiber } from 'effect'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
 import { syncLockLayer } from '../../src/internal/effect/layer'
@@ -93,6 +93,52 @@ describe('withSyncLock service boundary', () => {
     )
     expect(result._tag).toBe('Left')
     expect(events).toEqual(['release'])
+  })
+
+  it('releases the lock exactly once when the scoped effect dies', async () => {
+    const releases: string[] = []
+    const lock: SyncLockShape = {
+      acquire: () =>
+        Effect.succeed({
+          release: Effect.sync(() => {
+            releases.push('release')
+          }),
+        }),
+    }
+    const exit = await Effect.runPromiseExit(
+      withSyncLock(
+        '/profiles/work/.eedsh/sync.lock',
+        Effect.die(new Error('boom')),
+      ).pipe(Effect.provideService(SyncLock, lock)),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(releases).toEqual(['release'])
+  })
+
+  it('releases the lock exactly once when the scoped effect is interrupted', async () => {
+    const releases: string[] = []
+    const lock: SyncLockShape = {
+      acquire: () =>
+        Effect.succeed({
+          release: Effect.sync(() => {
+            releases.push('release')
+          }),
+        }),
+    }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const fiber = yield* Effect.fork(
+          withSyncLock(
+            '/profiles/work/.eedsh/sync.lock',
+            Deferred.succeed(started, undefined).pipe(Effect.zipRight(Effect.never)),
+          ).pipe(Effect.provideService(SyncLock, lock)),
+        )
+        yield* Deferred.await(started)
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+    expect(releases).toEqual(['release'])
   })
 })
 
