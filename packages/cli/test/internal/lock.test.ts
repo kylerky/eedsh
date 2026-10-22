@@ -106,10 +106,9 @@ describe('withSyncLock service boundary', () => {
         }),
     }
     const exit = await Effect.runPromiseExit(
-      withSyncLock(
-        '/profiles/work/.eedsh/sync.lock',
-        Effect.die(new Error('boom')),
-      ).pipe(Effect.provideService(SyncLock, lock)),
+      withSyncLock('/profiles/work/.eedsh/sync.lock', Effect.die(new Error('boom'))).pipe(
+        Effect.provideService(SyncLock, lock),
+      ),
     )
     expect(Exit.isFailure(exit)).toBe(true)
     expect(releases).toEqual(['release'])
