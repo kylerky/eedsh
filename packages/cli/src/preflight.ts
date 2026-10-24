@@ -8,7 +8,7 @@ import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-i
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
-import { isRecord } from 'effect/Predicate'
+import * as Predicate from 'effect/Predicate'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
 import {
@@ -41,13 +41,19 @@ export interface PreflightComposition {
   duplicateInsertIds: string[]
 }
 
+/** Read a value as a plain record, when it is one. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
+}
+
 /** Collect ids inserted by a layer, including nested group children. */
 function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
   const ids: string[] = []
   const visitEntry = (entry: unknown) => {
-    if (!isRecord(entry)) return
-    if (typeof entry.id === 'string') ids.push(entry.id)
-    if (entry.group === true && Array.isArray(entry.config)) entry.config.forEach(visitEntry)
+    const record = asRecord(entry)
+    if (record === undefined) return
+    if (typeof record.id === 'string') ids.push(record.id)
+    if (record.group === true && Array.isArray(record.config)) record.config.forEach(visitEntry)
   }
   for (const patch of patches) {
     if (Array.isArray(patch.insert)) patch.insert.forEach(visitEntry)
@@ -140,13 +146,14 @@ function assertNoPlanExpression(value: unknown, layerId: string): void {
     })
     return
   }
-  if (!isRecord(value)) return
-  if ('$eedsh' in value) {
+  const record = asRecord(value)
+  if (record === undefined) return
+  if ('$eedsh' in record) {
     throw fail(
       `generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`,
     )
   }
-  for (const item of Object.values(value)) assertNoPlanExpression(item, layerId)
+  for (const item of Object.values(record)) assertNoPlanExpression(item, layerId)
 }
 
 /**
@@ -169,7 +176,7 @@ export function parseGeneratedLayers(generated: GeneratedBundle): PreflightLayer
       throw fail(`generated layer ${id} must be a top-level YAML array of patch entries`)
     }
     for (const item of parsed) {
-      if (!isRecord(item)) {
+      if (asRecord(item) === undefined) {
         throw fail(`generated layer ${id} contains a non-object patch entry`)
       }
       assertNoPlanExpression(item, id)
@@ -196,7 +203,7 @@ function bundleLayers(
       const patches = yield* dsh
         .resolveBundlePatches(item.name, profileDir)
         .pipe(
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             Effect.fail(
               fail(
                 `cannot resolve profile bundle ${JSON.stringify(item.name)}: ${String(error.cause)}`,

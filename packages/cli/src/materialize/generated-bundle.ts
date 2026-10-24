@@ -8,7 +8,9 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import type { FileSystemFailure } from '../internal/effect/errors'
+import type * as FileSystem from 'effect/FileSystem'
+import type * as PlatformError from 'effect/PlatformError'
+import { writeFileAtomic } from '../internal/atomic-write'
 import { emitPatchesYaml } from './yaml'
 
 /** The generated bundle's package name. */
@@ -170,37 +172,29 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
   }
 }
 
-/** File operations the generated-bundle writer needs. */
-export interface GeneratedBundleIo {
-  /** Create a directory hierarchy. */
-  ensureDir(path: string): Effect.Effect<void, FileSystemFailure>
-  /** Write a file atomically. */
-  writeFileAtomic(path: string, content: string): Effect.Effect<void, FileSystemFailure>
-}
-
 /**
  * Write generated artifacts, in publication order, below the generated package
  * directory. The package manifest is written last by publication, so it is
  * skipped here unless explicitly included.
  * @param packageDir - absolute generated bundle directory.
  * @param bundle - the bundle to write.
- * @param io - injected file operations.
+ * @param fs - the platform file-system service.
  * @param options - set `includeManifest: false` to defer the commit point.
  * @returns an effect that writes every requested artifact.
  */
 export function writeGeneratedBundle(
   packageDir: string,
   bundle: GeneratedBundle,
-  io: GeneratedBundleIo,
+  fs: FileSystem.FileSystem,
   options: { includeManifest?: boolean } = {},
-): Effect.Effect<void, FileSystemFailure> {
+): Effect.Effect<void, PlatformError.PlatformError> {
   return Effect.gen(function* () {
-    yield* io.ensureDir(packageDir)
+    yield* fs.makeDirectory(packageDir, { recursive: true })
     for (const file of bundle.files) {
       if (options.includeManifest === false && file.path === 'package.json') continue
       const target = join(packageDir, file.path)
-      yield* io.ensureDir(dirname(target))
-      yield* io.writeFileAtomic(target, file.content)
+      yield* fs.makeDirectory(dirname(target), { recursive: true })
+      yield* writeFileAtomic(fs, target, file.content)
     }
   })
 }

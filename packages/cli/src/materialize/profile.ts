@@ -6,7 +6,9 @@
  */
 import { join } from 'node:path'
 import { Effect } from 'effect'
-import type { FileSystemFailure } from '../internal/effect/errors'
+import type * as FileSystem from 'effect/FileSystem'
+import type * as PlatformError from 'effect/PlatformError'
+import { writeFileAtomic } from '../internal/atomic-write'
 
 /** The profile's user-owned patch layer. */
 export const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
@@ -46,13 +48,6 @@ nodeLinker: hoisted
 autoInstallPeers: false
 `
 
-/** File operations {@link ensureProfileFiles} needs. */
-export interface ProfileFilesIo {
-  exists(path: string): Effect.Effect<boolean, FileSystemFailure>
-  writeFileAtomic(path: string, content: string): Effect.Effect<void, FileSystemFailure>
-  ensureDir(path: string): Effect.Effect<void, FileSystemFailure>
-}
-
 /** Which profile files this call created. */
 export interface EnsureProfileFilesResult {
   createdRoot: boolean
@@ -64,16 +59,16 @@ export interface EnsureProfileFilesResult {
  * Create the profile's root configuration, patch layer, and pnpm workspace
  * when they are missing. Existing files are never touched.
  * @param dir - absolute profile directory.
- * @param io - injected file operations.
+ * @param fs - the platform file-system service.
  * @returns which files were created.
  */
 export function ensureProfileFiles(
   dir: string,
-  io: ProfileFilesIo,
-): Effect.Effect<EnsureProfileFilesResult, FileSystemFailure> {
+  fs: FileSystem.FileSystem,
+): Effect.Effect<EnsureProfileFilesResult, PlatformError.PlatformError> {
   return Effect.gen(function* () {
-    yield* io.ensureDir(dir)
-    yield* io.ensureDir(join(dir, EEDSH_DIRNAME))
+    yield* fs.makeDirectory(dir, { recursive: true })
+    yield* fs.makeDirectory(join(dir, EEDSH_DIRNAME), { recursive: true })
     const root = join(dir, PROFILE_ROOT_FILENAME)
     const patch = join(dir, PROFILE_PATCH_FILENAME)
     const workspace = join(dir, PROFILE_WORKSPACE_FILENAME)
@@ -81,16 +76,16 @@ export function ensureProfileFiles(
     let createdRoot = false
     let createdPatch = false
     let createdWorkspace = false
-    if (!(yield* io.exists(root))) {
-      yield* io.writeFileAtomic(root, PROFILE_ROOT_TEMPLATE)
+    if (!(yield* fs.exists(root))) {
+      yield* writeFileAtomic(fs, root, PROFILE_ROOT_TEMPLATE)
       createdRoot = true
     }
-    if (!(yield* io.exists(patch))) {
-      yield* io.writeFileAtomic(patch, PROFILE_PATCH_TEMPLATE)
+    if (!(yield* fs.exists(patch))) {
+      yield* writeFileAtomic(fs, patch, PROFILE_PATCH_TEMPLATE)
       createdPatch = true
     }
-    if (!(yield* io.exists(workspace))) {
-      yield* io.writeFileAtomic(workspace, PROFILE_WORKSPACE_TEMPLATE)
+    if (!(yield* fs.exists(workspace))) {
+      yield* writeFileAtomic(fs, workspace, PROFILE_WORKSPACE_TEMPLATE)
       createdWorkspace = true
     }
     return { createdRoot, createdPatch, createdWorkspace }

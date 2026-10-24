@@ -10,16 +10,17 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { PlanValidationError, type ProfilePlan } from '@eedsh/config'
+import type { ProfilePlan } from '@eedsh/config'
 import { CliApp, Command, Options } from '@effect/cli'
 import * as ValidationError from '@effect/cli/ValidationError'
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
-import * as NodePath from '@effect/platform-node/NodePath'
-import * as NodeTerminal from '@effect/platform-node/NodeTerminal'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
+import * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
-import { isRecord } from 'effect/Predicate'
+import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import {
   assertSupportedConfigPath,
@@ -36,7 +37,6 @@ import type { DshResolveFailure, MaterializeError } from './internal/effect/erro
 import { liveServiceLayer } from './internal/effect/layer'
 import type {
   DshInstallationShape,
-  FileSystemShape,
   PackageManagerShape,
   PreflightShape,
   SyncLockShape,
@@ -48,7 +48,7 @@ import { type WatchSession, watchConfigDirectory } from './watch'
 
 /** The services the materializer needs, built once per CLI run. */
 type CliService =
-  | FileSystemShape
+  | FileSystem.FileSystem
   | PackageManagerShape
   | DshInstallationShape
   | PreflightShape
@@ -121,51 +121,37 @@ function cliConsole(
 ): Console.Console {
   const render = (args: ReadonlyArray<unknown>): string =>
     stripAnsi(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '))
-  const write = (sink: (line: string) => void, args: ReadonlyArray<unknown>) =>
-    Effect.sync(() => sink(render(args)))
-  const unsafe = {
-    assert: () => {},
+  const write =
+    (sink: (line: string) => void) =>
+    (...args: ReadonlyArray<unknown>): void => {
+      sink(render(args))
+    }
+  return {
+    assert: (condition, ...args) => {
+      if (!condition) stderr(`Assertion failed: ${render(args)}`)
+    },
     clear: () => {},
     count: () => {},
     countReset: () => {},
-    debug: () => {},
-    dir: () => {},
-    dirxml: () => {},
-    error: () => {},
+    debug: write(stderr),
+    dir: (item) => {
+      stderr(render([item]))
+    },
+    dirxml: write(stderr),
+    error: write(stderr),
     group: () => {},
     groupCollapsed: () => {},
     groupEnd: () => {},
-    info: () => {},
-    log: () => {},
-    table: () => {},
+    info: write(stderr),
+    log: write(stdout),
+    table: (tabularData) => {
+      stdout(render([tabularData]))
+    },
     time: () => {},
     timeEnd: () => {},
-    timeLog: () => {},
-    trace: () => {},
-    warn: () => {},
-  }
-  return {
-    [Console.TypeId]: Console.TypeId,
-    assert: (condition, ...args) =>
-      condition ? Effect.void : write(stderr, ['Assertion failed:', ...args]),
-    clear: Effect.void,
-    count: () => Effect.void,
-    countReset: () => Effect.void,
-    debug: (...args) => write(stderr, args),
-    dir: (item) => write(stderr, [item]),
-    dirxml: (...args) => write(stderr, args),
-    error: (...args) => write(stderr, args),
-    group: () => Effect.void,
-    groupEnd: Effect.void,
-    info: (...args) => write(stderr, args),
-    log: (...args) => write(stdout, args),
-    table: (tabularData) => write(stdout, [tabularData]),
-    time: () => Effect.void,
-    timeEnd: () => Effect.void,
-    timeLog: () => Effect.void,
-    trace: (...args) => write(stderr, args),
-    warn: (...args) => write(stderr, args),
-    unsafe,
+    timeLog: write(stderr),
+    trace: write(stderr),
+    warn: write(stderr),
   }
 }
 
@@ -185,27 +171,17 @@ function cliVersion(): string {
   }
 }
 
-function formatIssuePath(path: ReadonlyArray<PropertyKey>): string {
-  let text = ''
-  for (const segment of path) {
-    if (typeof segment === 'number') text += `[${segment}]`
-    else text += text === '' ? String(segment) : `.${String(segment)}`
-  }
-  return text === '' ? 'plan' : text
+/** Read a value as a plain record, when it is one. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
 }
 
 function describeError(error: unknown): string[] {
-  if (error instanceof PlanValidationError) {
-    return error.issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`)
-  }
+  if (Schema.isSchemaError(error)) return error.message.split('\n')
   if (error instanceof ConfigError) return [`${error.code}: ${error.message}`]
-  if (isRecord(error) && '_tag' in error) {
-    const tagged = error
+  const tagged = asRecord(error)
+  if (tagged !== undefined && '_tag' in tagged) {
     switch (tagged._tag) {
-      case 'FileSystemFailure':
-        return [
-          `cannot ${String(tagged.operation)} ${String(tagged.path)}: ${String(tagged.cause)}`,
-        ]
       case 'PackageInstallFailure':
         return [
           `package installation failed in ${String(tagged.profileDir)}: ${String(tagged.cause)}`,
@@ -230,8 +206,9 @@ function report(stderr: (line: string) => void, error: unknown): void {
 }
 
 function rawPreflightWarnings(error: unknown): string[] {
-  if (!isRecord(error) || error._tag !== 'PreflightFailure') return []
-  return Array.isArray(error.warnings) ? error.warnings.map(String) : []
+  const tagged = asRecord(error)
+  if (tagged === undefined || tagged._tag !== 'PreflightFailure') return []
+  return Array.isArray(tagged.warnings) ? tagged.warnings.map(String) : []
 }
 
 function reportSyncError(stderr: (line: string) => void, error: unknown, explain: boolean): void {
@@ -265,7 +242,10 @@ interface CommandContext {
 }
 
 function defaultServices(): CliServiceLayer {
-  return Layer.mergeAll(liveServiceLayer, preflightLayer.pipe(Layer.provide(liveServiceLayer)))
+  return Layer.mergeAll(
+    liveServiceLayer,
+    preflightLayer.pipe(Layer.provide(liveServiceLayer)),
+  ).pipe(Layer.provideMerge(NodeServices.layer))
 }
 
 function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {
@@ -295,28 +275,28 @@ interface SyncOutcome {
 async function syncOnce(context: CommandContext): Promise<SyncOutcome> {
   const layer = (context.options.services ?? defaultServices)()
   let outcome:
-    | { _tag: 'Left'; left: MaterializeError }
-    | { _tag: 'Right'; right: MaterializeResult }
+    | { _tag: 'Failure'; failure: MaterializeError }
+    | { _tag: 'Success'; success: MaterializeResult }
   try {
     outcome = await Effect.runPromise(
-      Effect.either(programFor(context, context.plan).pipe(Effect.provide(layer))),
+      Effect.result(programFor(context, context.plan).pipe(Effect.provide(layer))),
     )
   } catch (error) {
     reportSyncError(context.stderr, error, context.invocation.explain)
     return { ok: false }
   }
-  if (outcome._tag === 'Left') {
-    reportSyncError(context.stderr, outcome.left, context.invocation.explain)
+  if (outcome._tag === 'Failure') {
+    reportSyncError(context.stderr, outcome.failure, context.invocation.explain)
     return { ok: false }
   }
   printResult(
     context.stdout,
     context.stderr,
     context.plan,
-    outcome.right,
+    outcome.success,
     context.invocation.explain,
   )
-  return { ok: true, result: outcome.right }
+  return { ok: true, result: outcome.success }
 }
 
 /** A stop signal from an injected `AbortSignal`, SIGINT, or SIGTERM. */
@@ -388,11 +368,11 @@ async function syncWatch(context: CommandContext): Promise<number> {
             ? watchConfigDirectory({
                 dir,
                 onChange: () => {
-                  Queue.unsafeOffer(changes, undefined)
+                  Queue.offerUnsafe(changes, undefined)
                 },
               })
             : context.options.watch(dir, () => {
-                Queue.unsafeOffer(changes, undefined)
+                Queue.offerUnsafe(changes, undefined)
               }),
         catch: (cause) => cause,
       }),
@@ -401,7 +381,7 @@ async function syncWatch(context: CommandContext): Promise<number> {
           try: () => session.close(),
           catch: (cause) => cause,
         }).pipe(
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             Effect.sync(() => {
               for (const line of describeError(error)) {
                 context.stderr(`eedsh: warning: ${line}`)
@@ -425,7 +405,7 @@ async function syncWatch(context: CommandContext): Promise<number> {
     })
 
     yield* Effect.race(
-      runWatch(context, Effect.succeed(context.plan)).pipe(Effect.zipRight(loop)),
+      runWatch(context, Effect.succeed(context.plan)).pipe(Effect.andThen(loop)),
       stopSignal(context.options.signal),
     )
   })
@@ -566,7 +546,7 @@ export async function runEedsh(
       },
       catch: (error) => error,
     }).pipe(
-      Effect.catchAll((error) =>
+      Effect.catch((error) =>
         Effect.sync(() => {
           report(stderr, error)
           exitCode = EXIT_FAILURE
@@ -656,17 +636,17 @@ export async function runEedsh(
   const program = CliApp.run(app, ['node', 'eedsh', ...parsedArgs], (parsed) =>
     rootCommand.handler(parsed),
   ).pipe(
-    Effect.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, NodeTerminal.layer)),
-    Console.withConsole(cliConsole(stdout, stderr)),
+    Effect.provide(NodeServices.layer),
+    Effect.provideService(Console.Console, cliConsole(stdout, stderr)),
     // The published CliApp.run signature swaps the handler's error and
     // environment slots; the runtime result is a ValidationError failure.
   ) as unknown as Effect.Effect<void, ValidationError.ValidationError, never>
 
   try {
-    const result = await Effect.runPromise(Effect.either(program))
-    if (result._tag === 'Left') {
-      if (ValidationError.isValidationError(result.left)) return EXIT_USAGE
-      report(stderr, result.left)
+    const result = await Effect.runPromise(Effect.result(program))
+    if (result._tag === 'Failure') {
+      if (ValidationError.isValidationError(result.failure)) return EXIT_USAGE
+      report(stderr, result.failure)
       return EXIT_FAILURE
     }
     return exitCode

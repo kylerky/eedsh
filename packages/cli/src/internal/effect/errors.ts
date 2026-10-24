@@ -1,17 +1,12 @@
 /**
  * Tagged failures for the materialization pipeline. Every failure carries a
  * stable `_tag` so callers can map it to an exit code and a diagnostic
- * without matching message text.
+ * without matching message text. File-operation failures surface as the
+ * platform's own `PlatformError` instead of a project-defined type.
  * @module @eedsh/cli/internal/effect/errors
  */
 import { Data } from 'effect'
-
-/** A file operation failed. */
-export class FileSystemFailure extends Data.TaggedError('FileSystemFailure')<{
-  readonly operation: string
-  readonly path: string
-  readonly cause: unknown
-}> {}
+import type * as PlatformError from 'effect/PlatformError'
 
 /** Installing profile packages failed. */
 export class PackageInstallFailure extends Data.TaggedError('PackageInstallFailure')<{
@@ -41,7 +36,7 @@ export class DshResolveFailure extends Data.TaggedError('DshResolveFailure')<{
 
 /** Every failure the materializer can report. */
 export type MaterializeError =
-  | FileSystemFailure
+  | PlatformError.PlatformError
   | PackageInstallFailure
   | PreflightFailure
   | SyncLocked

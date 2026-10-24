@@ -6,7 +6,7 @@
  * @module @eedsh/cli/materialize/manifest
  */
 import type { ProfilePlan } from '@eedsh/config'
-import { isRecord } from 'effect/Predicate'
+import * as Predicate from 'effect/Predicate'
 import { GENERATED_PACKAGE_NAME, GENERATION_FORMAT, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 
 /** What the previous published generation owned. */
@@ -50,10 +50,16 @@ function stringArray(value: unknown): string[] {
     : []
 }
 
+/** Read a value as a plain record, when it is one. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
+}
+
 function stringRecord(value: unknown): Record<string, string> {
-  if (!isRecord(value)) return {}
+  const record = asRecord(value)
+  if (record === undefined) return {}
   const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(value)) {
+  for (const [key, item] of Object.entries(record)) {
     if (typeof item === 'string') out[key] = item
   }
   return out
@@ -92,8 +98,7 @@ function childRecord(
   parent: Record<string, unknown> | undefined,
   key: string,
 ): Record<string, unknown> {
-  const value = parent?.[key]
-  return isRecord(value) ? value : {}
+  return asRecord(parent?.[key]) ?? {}
 }
 
 /** Read the bundle list of an existing profile manifest. */
@@ -116,9 +121,10 @@ export function readProfileDependencies(
  * @returns the managed sets, or undefined when no eedsh generation is recorded.
  */
 export function readPreviousGeneration(generatedManifest: unknown): PreviousGeneration | undefined {
-  if (!isRecord(generatedManifest)) return undefined
-  const metadata = generatedManifest.eedsh
-  if (!isRecord(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
+  const manifest = asRecord(generatedManifest)
+  if (manifest === undefined) return undefined
+  const metadata = asRecord(manifest.eedsh)
+  if (metadata === undefined || metadata.format !== GENERATION_FORMAT) return undefined
   const bundles = stringArray(metadata.bundles)
   const packages = stringRecord(metadata.packages)
   if (bundles.length === 0 && Object.keys(packages).length === 0) return undefined
@@ -127,9 +133,10 @@ export function readPreviousGeneration(generatedManifest: unknown): PreviousGene
 
 /** Read the published generation id from a generated package manifest. */
 export function readGenerationId(generatedManifest: unknown): string | undefined {
-  if (!isRecord(generatedManifest)) return undefined
-  const metadata = generatedManifest.eedsh
-  if (!isRecord(metadata) || metadata.format !== GENERATION_FORMAT) return undefined
+  const manifest = asRecord(generatedManifest)
+  if (manifest === undefined) return undefined
+  const metadata = asRecord(manifest.eedsh)
+  if (metadata === undefined || metadata.format !== GENERATION_FORMAT) return undefined
   return typeof metadata.generationId === 'string' ? metadata.generationId : undefined
 }
 

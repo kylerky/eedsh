@@ -4,6 +4,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { bundle, defineProfile, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
@@ -15,7 +16,10 @@ const execFileAsync = promisify(execFile)
 const root = process.cwd()
 
 function services() {
-  return Layer.mergeAll(liveServiceLayer, preflightLayer.pipe(Layer.provide(liveServiceLayer)))
+  return Layer.mergeAll(
+    liveServiceLayer,
+    preflightLayer.pipe(Layer.provide(liveServiceLayer)),
+  ).pipe(Layer.provideMerge(NodeServices.layer))
 }
 
 async function freePort(): Promise<number> {

@@ -1,33 +1,20 @@
 /**
- * Service tags for the Effect island: file access, package installation, the
- * pinned DSH installation, and preflight composition. Node `fs`/`spawn` live
- * only inside the live layer implementations, so the pipeline stays testable
- * with plain test layers.
+ * Service tags for the Effect island: package installation, the pinned DSH
+ * installation, and preflight composition. File access is the core
+ * `effect/FileSystem` service, and child processes are the core
+ * `effect/process` spawner, so the pipeline has no hand-written Node seam.
  * @module @eedsh/cli/internal/effect/services
  */
 import type { ProfilePlan } from '@eedsh/config'
 import { Context, type Effect } from 'effect'
+import type * as PlatformError from 'effect/PlatformError'
 import type { GeneratedBundle } from '../../materialize/generated-bundle'
 import type {
   DshResolveFailure,
-  FileSystemFailure,
   PackageInstallFailure,
   PreflightFailure,
   SyncLocked,
 } from './errors'
-
-/** File operations the materializer needs. */
-export interface FileSystemShape {
-  exists(path: string): Effect.Effect<boolean, FileSystemFailure>
-  readFile(path: string): Effect.Effect<string, FileSystemFailure>
-  writeFileAtomic(path: string, content: string): Effect.Effect<void, FileSystemFailure>
-  ensureDir(path: string): Effect.Effect<void, FileSystemFailure>
-  remove(path: string): Effect.Effect<void, FileSystemFailure>
-  rename(from: string, to: string): Effect.Effect<void, FileSystemFailure>
-}
-
-/** File access service tag. */
-export const FileSystem = Context.GenericTag<FileSystemShape>('eedsh/FileSystem')
 
 /** A held profile sync lock; releasing it returns the lock to the kernel. */
 export interface SyncLockHandle {
@@ -36,11 +23,13 @@ export interface SyncLockHandle {
 
 /** Kernel-backed serialization of materialization for one profile. */
 export interface SyncLockShape {
-  acquire(lockPath: string): Effect.Effect<SyncLockHandle, SyncLocked | FileSystemFailure>
+  acquire(
+    lockPath: string,
+  ): Effect.Effect<SyncLockHandle, SyncLocked | PlatformError.PlatformError>
 }
 
 /** Sync lock service tag. */
-export const SyncLock = Context.GenericTag<SyncLockShape>('eedsh/SyncLock')
+export const SyncLock = Context.Service<SyncLockShape>('eedsh/SyncLock')
 
 /** Package installation service. */
 export interface PackageManagerShape {
@@ -48,7 +37,7 @@ export interface PackageManagerShape {
 }
 
 /** Package installation service tag. */
-export const PackageManager = Context.GenericTag<PackageManagerShape>('eedsh/PackageManager')
+export const PackageManager = Context.Service<PackageManagerShape>('eedsh/PackageManager')
 
 /** The pinned DSH installation. */
 export interface DshInstallationShape {
@@ -66,7 +55,7 @@ export interface DshInstallationShape {
 }
 
 /** DSH installation service tag. */
-export const DshInstallation = Context.GenericTag<DshInstallationShape>('eedsh/DshInstallation')
+export const DshInstallation = Context.Service<DshInstallationShape>('eedsh/DshInstallation')
 
 /** Inputs for preflight composition. */
 export interface PreflightInput {
@@ -89,4 +78,4 @@ export interface PreflightShape {
 }
 
 /** Preflight service tag. */
-export const Preflight = Context.GenericTag<PreflightShape>('eedsh/Preflight')
+export const Preflight = Context.Service<PreflightShape>('eedsh/Preflight')

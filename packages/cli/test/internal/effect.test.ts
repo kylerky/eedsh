@@ -1,12 +1,12 @@
 import { bundle, defineProfile, insert, type ProfilePlan, layer as planLayer } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { FileSystemFailure } from '../../src/internal/effect/errors'
+import { writeFileAtomic } from '../../src/internal/atomic-write'
 import {
   DshInstallation,
-  type DshInstallationShape,
-  FileSystem,
-  type FileSystemShape,
   PackageManager,
   type PackageManagerShape,
   Preflight,
@@ -14,7 +14,13 @@ import {
   SyncLock,
 } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
-import { fakeSyncLock } from '../support/fakes'
+import {
+  fakeDsh,
+  fakePackageManager,
+  fakePreflight,
+  fakeSyncLock,
+  memoryFileSystem,
+} from '../support/fakes'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'
@@ -36,97 +42,6 @@ function fixturePlan(): ProfilePlan {
   })
 }
 
-function memoryFileSystem(initial: Record<string, string> = {}) {
-  const files = new Map(Object.entries(initial))
-  const writeOrder: string[] = []
-  let writes = 0
-  const shape: FileSystemShape = {
-    exists: (path) => Effect.succeed(files.has(path)),
-    readFile: (path) => {
-      const value = files.get(path)
-      return value === undefined
-        ? Effect.fail(new FileSystemFailure({ operation: 'readFile', path, cause: 'ENOENT' }))
-        : Effect.succeed(value)
-    },
-    writeFileAtomic: (path, content) => {
-      writes += 1
-      writeOrder.push(path)
-      files.set(path, content)
-      return Effect.void
-    },
-    ensureDir: () => Effect.void,
-    remove: (path) => {
-      files.delete(path)
-      return Effect.void
-    },
-    rename: (from, to) => {
-      const value = files.get(from)
-      if (value === undefined) {
-        return Effect.fail(
-          new FileSystemFailure({ operation: 'rename', path: from, cause: 'ENOENT' }),
-        )
-      }
-      files.delete(from)
-      files.set(to, value)
-      return Effect.void
-    },
-  }
-  return { shape, files, writeOrder, writeCount: () => writes }
-}
-
-function fakePackageManager() {
-  const installs: string[] = []
-  const shape: PackageManagerShape = {
-    install: (dir) => {
-      installs.push(dir)
-      return Effect.void
-    },
-  }
-  return { shape, installs }
-}
-
-function failingPackageManager() {
-  const installs: string[] = []
-  const shape: PackageManagerShape = {
-    install: (dir) => {
-      installs.push(dir)
-      return Effect.fail({
-        _tag: 'PackageInstallFailure',
-        profileDir: dir,
-        cause: 'boom',
-      } as never)
-    },
-  }
-  return { shape, installs }
-}
-
-function fakePreflight(options: { fail?: boolean; warnings?: string[] } = {}) {
-  const calls: unknown[] = []
-  const shape: PreflightShape = {
-    check: (input) => {
-      calls.push(input)
-      if (options.fail) {
-        return Effect.fail({
-          _tag: 'PreflightFailure',
-          message: 'unmatched target',
-          warnings: ['patch: entry %C not found'],
-        } as never)
-      }
-      return Effect.succeed({ warnings: options.warnings ?? [] })
-    },
-  }
-  return { shape, calls }
-}
-
-function fakeDsh(): DshInstallationShape {
-  return {
-    version: '0.2.1-rc.2',
-    installAnchor: '/dsh/package.json',
-    binPath: '/dsh/bin.js',
-    resolveBundlePatches: () => Effect.succeed([]),
-  }
-}
-
 interface HarnessOptions {
   files?: Record<string, string>
   plan?: ProfilePlan
@@ -139,10 +54,10 @@ function harness(options: HarnessOptions = {}) {
   const fs = memoryFileSystem(options.files)
   const packages = options.packages ?? fakePackageManager().shape
   const preflight = options.preflight ?? fakePreflight().shape
-  const dsh = fakeDsh()
+  const dsh = fakeDsh().shape
   const lock = options.lock ?? fakeSyncLock()
   const layer = Layer.mergeAll(
-    Layer.succeed(FileSystem, fs.shape),
+    Layer.succeed(FileSystem.FileSystem, fs.fs),
     Layer.succeed(PackageManager, packages),
     Layer.succeed(DshInstallation, dsh),
     Layer.succeed(Preflight, preflight),
@@ -161,9 +76,9 @@ function harness(options: HarnessOptions = {}) {
 }
 
 async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.either(effect))
-  if (result._tag === 'Right') throw new Error('expected the effect to fail')
-  return result.left
+  const result = await Effect.runPromise(Effect.result(effect))
+  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
+  return result.failure
 }
 
 describe('Effect materialization', () => {
@@ -198,7 +113,7 @@ describe('Effect materialization', () => {
     expect(test.fs.files.has(`${profileDir}/.eedsh/plan.json`)).toBe(true)
     expect(test.fs.files.has(`${profileDir}/cordis.patch.yml`)).toBe(true)
     expect(test.fs.files.has(lockPath)).toBe(false)
-    expect(test.fs.writeOrder.at(-1)).toBe(generatedManifestPath)
+    expect(test.fs.renameOrder.at(-1)).toBe(generatedManifestPath)
     expect(test.lock.acquires).toEqual([lockPath])
     expect(test.lock.releases).toEqual([lockPath])
     expect(test.lock.isHeld()).toBe(false)
@@ -275,7 +190,7 @@ describe('Effect materialization', () => {
     const initialLock = 'lockfile-version: 9\n'
     const test = harness({
       files: { [manifestPath]: initialManifest, [lockfilePath]: initialLock },
-      packages: failingPackageManager().shape,
+      packages: fakePackageManager({ fail: true }).shape,
     })
     const error = await failureOf(test.program)
     expect(error._tag).toBe('PackageInstallFailure')
@@ -310,12 +225,16 @@ describe('atomic write', () => {
   it('replaces a file without leaving temporary files', async () => {
     const { mkdir, mkdtemp, readdir, readFile, writeFile } = await import('node:fs/promises')
     const { join } = await import('node:path')
-    const { writeFileAtomic } = await import('../../src/internal/atomic-write')
     await mkdir(join(process.cwd(), '.tmp'), { recursive: true })
     const dir = await mkdtemp(join(process.cwd(), '.tmp', 'atomic-'))
     const target = join(dir, 'file.json')
     await writeFile(target, 'old')
-    await Effect.runPromise(writeFileAtomic(target, 'new'))
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        yield* writeFileAtomic(fs, target, 'new')
+      }).pipe(Effect.provide(NodeFileSystem.layer)),
+    )
     expect(await readFile(target, 'utf8')).toBe('new')
     expect(await readdir(dir)).toEqual(['file.json'])
   })

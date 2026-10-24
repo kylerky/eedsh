@@ -6,13 +6,13 @@
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import { isRecord } from 'effect/Predicate'
-import { FileSystemFailure, type MaterializeError } from '../internal/effect/errors'
+import * as FileSystem from 'effect/FileSystem'
+import * as PlatformError from 'effect/PlatformError'
+import * as Predicate from 'effect/Predicate'
+import type { MaterializeError } from '../internal/effect/errors'
 import {
   DshInstallation,
   type DshInstallationShape,
-  FileSystem,
-  type FileSystemShape,
   type PackageManagerShape,
   type PreflightShape,
   type SyncLockShape,
@@ -50,18 +50,25 @@ export interface MaterializeResult {
 }
 
 function readJsonFile(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   path: string,
-): Effect.Effect<Record<string, unknown> | undefined, FileSystemFailure> {
+): Effect.Effect<Record<string, unknown> | undefined, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return undefined
-    const text = yield* fs.readFile(path)
+    const text = yield* fs.readFileString(path)
     try {
       const parsed: unknown = JSON.parse(text)
-      if (!isRecord(parsed)) return undefined
-      return parsed
+      return Predicate.isObject(parsed) ? (parsed as Record<string, unknown>) : undefined
     } catch (cause) {
-      return yield* Effect.fail(new FileSystemFailure({ operation: 'parseJson', path, cause }))
+      return yield* Effect.fail(
+        PlatformError.systemError({
+          _tag: 'InvalidData',
+          module: 'FileSystem',
+          method: 'parseJson',
+          pathOrDescriptor: path,
+          cause,
+        }),
+      )
     }
   })
 }
@@ -76,12 +83,16 @@ export function materialize(
 ): Effect.Effect<
   MaterializeResult,
   MaterializeError,
-  FileSystemShape | PackageManagerShape | DshInstallationShape | PreflightShape | SyncLockShape
+  | FileSystem.FileSystem
+  | PackageManagerShape
+  | DshInstallationShape
+  | PreflightShape
+  | SyncLockShape
 > {
   return withSyncLock(
     join(options.profileDir, LOCK_RELATIVE_PATH),
     Effect.gen(function* () {
-      const fs = yield* FileSystem
+      const fs = yield* FileSystem.FileSystem
       const dsh = yield* DshInstallation
 
       const manifestPath = join(options.profileDir, 'package.json')

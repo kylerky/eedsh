@@ -14,6 +14,7 @@ import {
   reconcileManifest,
 } from '../../src/materialize/manifest'
 import { ensureProfileFiles } from '../../src/materialize/profile'
+import { memoryFileSystem } from '../support/fakes'
 
 const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'
@@ -254,48 +255,35 @@ describe('manifest reconciliation', () => {
 })
 
 describe('profile files', () => {
-  function memoryIo(initial: Record<string, string> = {}) {
-    const files = new Map(Object.entries(initial))
-    const dirs: string[] = []
-    const io = {
-      exists: (path: string) => Effect.succeed(files.has(path)),
-      readFile: (path: string) => Effect.succeed(files.get(path) ?? ''),
-      writeFileAtomic: (path: string, content: string) =>
-        Effect.sync(() => files.set(path, content)),
-      ensureDir: (path: string) => Effect.sync(() => dirs.push(path)),
-    }
-    return { io, files, dirs }
-  }
-
   it('never rewrites an existing profile patch', async () => {
     const existing = '- id: timer\n  config:\n    interval: 1\n'
-    const { io, files } = memoryIo({ '/profile/cordis.patch.yml': existing })
-    const result = await Effect.runPromise(ensureProfileFiles('/profile', io))
+    const fs = memoryFileSystem({ '/profile/cordis.patch.yml': existing })
+    const result = await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
     expect(result.createdPatch).toBe(false)
-    expect(files.get('/profile/cordis.patch.yml')).toBe(existing)
+    expect(fs.files.get('/profile/cordis.patch.yml')).toBe(existing)
   })
 
   it('creates an empty profile patch when missing', async () => {
-    const { io, files } = memoryIo()
-    const result = await Effect.runPromise(ensureProfileFiles('/profile', io))
+    const fs = memoryFileSystem()
+    const result = await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
     expect(result.createdPatch).toBe(true)
-    expect(files.get('/profile/cordis.patch.yml')?.trim()).toBe('[]')
+    expect(fs.files.get('/profile/cordis.patch.yml')?.trim()).toBe('[]')
   })
 
   it('creates the empty root config and the profile workspace when missing', async () => {
-    const { io, files } = memoryIo()
-    await Effect.runPromise(ensureProfileFiles('/profile', io))
-    expect(files.get('/profile/cordis.yml')?.trim()).toBe('[]')
-    expect(files.get('/profile/pnpm-workspace.yaml')).toContain('nodeLinker: hoisted')
+    const fs = memoryFileSystem()
+    await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
+    expect(fs.files.get('/profile/cordis.yml')?.trim()).toBe('[]')
+    expect(fs.files.get('/profile/pnpm-workspace.yaml')).toContain('nodeLinker: hoisted')
   })
 
   it('does not rewrite existing root and workspace files', async () => {
-    const { io, files } = memoryIo({
+    const fs = memoryFileSystem({
       '/profile/cordis.yml': '# mine\n[]\n',
       '/profile/pnpm-workspace.yaml': 'packages:\n  - .\n',
     })
-    await Effect.runPromise(ensureProfileFiles('/profile', io))
-    expect(files.get('/profile/cordis.yml')).toBe('# mine\n[]\n')
-    expect(files.get('/profile/pnpm-workspace.yaml')).toBe('packages:\n  - .\n')
+    await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
+    expect(fs.files.get('/profile/cordis.yml')).toBe('# mine\n[]\n')
+    expect(fs.files.get('/profile/pnpm-workspace.yaml')).toBe('packages:\n  - .\n')
   })
 })

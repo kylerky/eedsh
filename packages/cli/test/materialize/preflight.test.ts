@@ -62,7 +62,7 @@ async function runCheck(input: PreflightInput, dsh: DshInstallationShape) {
     const service = yield* Preflight
     return yield* service.check(input)
   }).pipe(Effect.provide(layer))
-  return Effect.runPromise(Effect.either(effect))
+  return Effect.runPromise(Effect.result(effect))
 }
 
 describe('preflight composition', () => {
@@ -180,11 +180,11 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Right')
-    if (result._tag !== 'Right') return
-    expect(result.right.warnings).toHaveLength(1)
-    expect(result.right.warnings[0]).toContain('missing-row')
-    expect(result.right.warnings[0]).not.toContain('generated:overrides:')
+    expect(result._tag).toBe('Success')
+    if (result._tag !== 'Success') return
+    expect(result.success.warnings).toHaveLength(1)
+    expect(result.success.warnings[0]).toContain('missing-row')
+    expect(result.success.warnings[0]).not.toContain('generated:overrides:')
   })
 
   it('attributes warnings when explain is enabled', async () => {
@@ -199,11 +199,11 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Right')
-    if (result._tag !== 'Right') return
-    expect(result.right.warnings).toHaveLength(1)
-    expect(result.right.warnings[0]).toMatch(/^generated:overrides: /)
-    expect(result.right.warnings[0]).toContain('missing-row')
+    expect(result._tag).toBe('Success')
+    if (result._tag !== 'Success') return
+    expect(result.success.warnings).toHaveLength(1)
+    expect(result.success.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.success.warnings[0]).toContain('missing-row')
   })
 
   it('fails with raw warnings in strict mode by default', async () => {
@@ -218,12 +218,12 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
-    expect(result.left.warnings).toHaveLength(1)
-    expect(result.left.warnings[0]).toContain('missing-row')
-    expect(result.left.warnings[0]).not.toContain('generated:overrides:')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
+    expect(result.failure.warnings).toHaveLength(1)
+    expect(result.failure.warnings[0]).toContain('missing-row')
+    expect(result.failure.warnings[0]).not.toContain('generated:overrides:')
   })
 
   it('fails with attributed warnings in strict mode when explain is enabled', async () => {
@@ -238,12 +238,12 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
-    expect(result.left.warnings).toHaveLength(1)
-    expect(result.left.warnings[0]).toMatch(/^generated:overrides: /)
-    expect(result.left.warnings[0]).toContain('missing-row')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
+    expect(result.failure.warnings).toHaveLength(1)
+    expect(result.failure.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.failure.warnings[0]).toContain('missing-row')
   })
 
   it('rejects duplicate inserted ids before publication', async () => {
@@ -261,10 +261,10 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
-    expect(result.left.message).toContain('dup')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
+    expect(result.failure.message).toContain('dup')
   })
 
   it('rejects a malformed generated patch file', async () => {
@@ -286,9 +286,9 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
   })
 
   it('rejects a plan expression leaking into emitted data', async () => {
@@ -312,9 +312,9 @@ describe('preflight checks', () => {
       },
       fakeDsh(() => Effect.succeed(basePatches)),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
   })
 
   it('fails with a tagged preflight failure when a target bundle cannot be resolved', async () => {
@@ -331,9 +331,9 @@ describe('preflight checks', () => {
         Effect.fail(new DshResolveFailure({ packageName: '@deepseek-ai/dsh-base', cause: 'gone' })),
       ),
     )
-    expect(result._tag).toBe('Left')
-    if (result._tag !== 'Left') return
-    expect(result.left._tag).toBe('PreflightFailure')
-    expect(result.left.message).toContain('@deepseek-ai/dsh-base')
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
+    expect(result.failure.message).toContain('@deepseek-ai/dsh-base')
   })
 })

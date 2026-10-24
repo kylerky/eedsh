@@ -6,7 +6,8 @@
  * @module @eedsh/cli/internal/lock
  */
 import { Effect } from 'effect'
-import type { FileSystemFailure, SyncLocked } from './effect/errors'
+import type * as PlatformError from 'effect/PlatformError'
+import { SyncLocked } from './effect/errors'
 import { SyncLock, type SyncLockShape } from './effect/services'
 
 /**
@@ -18,7 +19,7 @@ import { SyncLock, type SyncLockShape } from './effect/services'
 export function withSyncLock<A, E, R>(
   lockPath: string,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | SyncLocked | FileSystemFailure, R | SyncLockShape> {
+): Effect.Effect<A, E | SyncLocked | PlatformError.PlatformError, R | SyncLockShape> {
   return Effect.acquireUseRelease(
     Effect.gen(function* () {
       const lock = yield* SyncLock

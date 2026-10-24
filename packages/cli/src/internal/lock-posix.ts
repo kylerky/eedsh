@@ -10,8 +10,9 @@ import { mkdir, open, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { tryLockExclusive } from '@deepseek-ai/node-addon-system/flock'
 import { Effect } from 'effect'
-import * as Either from 'effect/Either'
-import { FileSystemFailure, SyncLocked } from './effect/errors'
+import * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
+import { SyncLocked } from './effect/errors'
 import type { SyncLockHandle, SyncLockShape } from './effect/services'
 
 /** How many times acquisition re-opens a lock file that was replaced. */
@@ -46,14 +47,28 @@ export const nodePosixLockIo: PosixLockIo = {
   tryLock: (fd) => tryLockExclusive(fd),
 }
 
+function platformError(
+  name: string,
+  path: string,
+  cause: unknown,
+): PlatformError.PlatformError {
+  return PlatformError.systemError({
+    _tag: 'Unknown',
+    module: 'SyncLock',
+    method: name,
+    pathOrDescriptor: path,
+    cause,
+  })
+}
+
 function operation<A>(
   name: string,
   path: string,
   run: () => Promise<A>,
-): Effect.Effect<A, FileSystemFailure> {
+): Effect.Effect<A, PlatformError.PlatformError> {
   return Effect.tryPromise({
     try: run,
-    catch: (cause) => new FileSystemFailure({ operation: name, path, cause }),
+    catch: (cause) => platformError(name, path, cause),
   })
 }
 
@@ -66,34 +81,34 @@ function isLockContention(cause: unknown): boolean {
 function acquireAttempt(
   io: PosixLockIo,
   lockPath: string,
-): Effect.Effect<SyncLockHandle | undefined, SyncLocked | FileSystemFailure> {
+): Effect.Effect<SyncLockHandle | undefined, SyncLocked | PlatformError.PlatformError> {
   return Effect.gen(function* () {
     const handle = yield* operation('openLock', lockPath, () => io.open(lockPath))
     const close: Effect.Effect<void> = Effect.promise(async () => {
       await handle.close().catch(() => undefined)
     })
 
-    const locked = yield* Effect.either(operation('flock', lockPath, () => io.tryLock(handle.fd)))
-    if (Either.isLeft(locked)) {
+    const locked = yield* Effect.result(operation('flock', lockPath, () => io.tryLock(handle.fd)))
+    if (Result.isFailure(locked)) {
       yield* close
-      if (isLockContention(locked.left.cause)) {
+      if (isLockContention(locked.failure.reason.cause)) {
         return yield* Effect.fail(new SyncLocked({ lockPath }))
       }
-      return yield* Effect.fail(locked.left)
+      return yield* Effect.fail(locked.failure)
     }
 
-    const verified = yield* Effect.either(
+    const verified = yield* Effect.result(
       Effect.gen(function* () {
         const held = yield* operation('verifyLock', lockPath, () => handle.stat({ bigint: true }))
         const current = yield* operation('verifyLock', lockPath, () => io.statPath(lockPath))
         return current !== undefined && current.dev === held.dev && current.ino === held.ino
       }),
     )
-    if (Either.isLeft(verified)) {
+    if (Result.isFailure(verified)) {
       yield* close
-      return yield* Effect.fail(verified.left)
+      return yield* Effect.fail(verified.failure)
     }
-    if (!verified.right) {
+    if (!verified.success) {
       yield* close
       return undefined
     }
@@ -121,11 +136,11 @@ export function makePosixSyncLock(
           if (handle !== undefined) return handle
         }
         return yield* Effect.fail(
-          new FileSystemFailure({
-            operation: 'verifyLock',
-            path: lockPath,
-            cause: new Error('the lock file was replaced during acquisition'),
-          }),
+          platformError(
+            'verifyLock',
+            lockPath,
+            new Error('the lock file was replaced during acquisition'),
+          ),
         )
       }),
   }

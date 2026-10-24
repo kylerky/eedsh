@@ -1,48 +1,62 @@
-import { Effect } from 'effect'
-import { FileSystemFailure, SyncLocked } from '../../src/internal/effect/errors'
+import { Effect, Sink, Stream } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as PlatformError from 'effect/PlatformError'
+import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import { SyncLocked } from '../../src/internal/effect/errors'
 import type {
   DshInstallationShape,
-  FileSystemShape,
   PackageManagerShape,
   PreflightShape,
   SyncLockShape,
 } from '../../src/internal/effect/services'
 
-/** In-memory file system matching the materializer's FileSystem service. */
+function notFound(method: string, path: string): PlatformError.PlatformError {
+  return PlatformError.systemError({
+    _tag: 'NotFound',
+    module: 'FileSystem',
+    method,
+    pathOrDescriptor: path,
+  })
+}
+
+/**
+ * In-memory core FileSystem. Only the operations a test exercises need to be
+ * functional; the rest keep the no-op defaults.
+ */
 export function memoryFileSystem(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial))
   const writeOrder: string[] = []
-  const shape: FileSystemShape = {
+  const renameOrder: string[] = []
+  let writes = 0
+  const fs = FileSystem.makeNoop({
     exists: (path) => Effect.succeed(files.has(path)),
-    readFile: (path) => {
+    readFileString: (path) => {
       const value = files.get(path)
       return value === undefined
-        ? Effect.fail(new FileSystemFailure({ operation: 'readFile', path, cause: 'ENOENT' }))
+        ? Effect.fail(notFound('readFileString', path))
         : Effect.succeed(value)
     },
-    writeFileAtomic: (path, content) => {
+    writeFileString: (path, content) => {
+      writes += 1
       writeOrder.push(path)
       files.set(path, content)
       return Effect.void
     },
-    ensureDir: () => Effect.void,
+    makeDirectory: () => Effect.void,
     remove: (path) => {
       files.delete(path)
       return Effect.void
     },
     rename: (from, to) => {
       const value = files.get(from)
-      if (value === undefined) {
-        return Effect.fail(
-          new FileSystemFailure({ operation: 'rename', path: from, cause: 'ENOENT' }),
-        )
-      }
+      if (value === undefined) return Effect.fail(notFound('rename', from))
+      renameOrder.push(to)
       files.delete(from)
       files.set(to, value)
       return Effect.void
     },
-  }
-  return { shape, files, writeOrder }
+  })
+  return { fs, files, writeOrder, renameOrder, writeCount: () => writes }
 }
 
 /** Sync lock that records acquisition and release, with a simulated holder. */
@@ -136,4 +150,36 @@ export function fakePreflight(options: { fail?: boolean; warnings?: string[] } =
     },
   }
   return { shape, calls }
+}
+
+/**
+ * Child-process spawner that records the commands it is asked to run and
+ * exits with a fixed code, without starting a process.
+ */
+export function fakeChildProcessSpawner(options: { exitCode?: number; stderr?: string } = {}) {
+  const calls: { command: string; args: ReadonlyArray<string>; cwd: string | undefined }[] = []
+  const spawner = ChildProcessSpawner.make((command) => {
+    if (ChildProcess.isStandardCommand(command)) {
+      calls.push({ command: command.command, args: command.args, cwd: command.options?.cwd })
+    }
+    const stderr =
+      options.stderr === undefined
+        ? Stream.empty
+        : Stream.make(new TextEncoder().encode(options.stderr))
+    const handle = ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(4242),
+      exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(options.exitCode ?? 0)),
+      isRunning: Effect.succeed(false),
+      kill: () => Effect.void,
+      stdin: Sink.drain,
+      stdout: Stream.empty,
+      stderr,
+      all: Stream.empty,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    })
+    return Effect.succeed(handle)
+  })
+  return { spawner, calls }
 }

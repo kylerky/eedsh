@@ -8,8 +8,9 @@
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { Effect } from 'effect'
-import * as Either from 'effect/Either'
-import { FileSystemFailure, SyncLocked } from './effect/errors'
+import * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
+import { SyncLocked } from './effect/errors'
 import type { SyncLockHandle, SyncLockShape } from './effect/services'
 
 const LOCK_NAMESPACE = 'Local\\'
@@ -102,6 +103,21 @@ function closeQuietly(binding: Win32Binding, handle: number): void {
   })
 }
 
+function platformError(
+  method: string,
+  path: string,
+  options: { description?: string; cause?: unknown } = {},
+): PlatformError.PlatformError {
+  return PlatformError.systemError({
+    _tag: 'Unknown',
+    module: 'SyncLock',
+    method,
+    pathOrDescriptor: path,
+    ...(options.description === undefined ? {} : { description: options.description }),
+    ...(options.cause === undefined ? {} : { cause: options.cause }),
+  })
+}
+
 function releasedHandle(binding: Win32Binding, handle: number): SyncLockHandle {
   let released = false
   return {
@@ -131,45 +147,38 @@ export function makeWin32SyncLock(
       Effect.gen(function* () {
         const binding = yield* Effect.tryPromise({
           try: loadBinding,
-          catch: (cause) =>
-            new FileSystemFailure({ operation: 'loadWin32Lock', path: lockPath, cause }),
+          catch: (cause) => platformError('loadWin32Lock', lockPath, { cause }),
         })
         const name = win32LockName(lockPath)
         const handle = yield* Effect.try({
           try: () => binding.createSemaphoreW(null, 1, 1, name),
-          catch: (cause) => new FileSystemFailure({ operation: 'lock', path: lockPath, cause }),
+          catch: (cause) => platformError('lock', lockPath, { cause }),
         })
         if (handle === 0) {
           return yield* Effect.fail(
-            new FileSystemFailure({
-              operation: 'lock',
-              path: lockPath,
-              cause: new Error(`CreateSemaphoreW failed (Win32 ${String(binding.getLastError())})`),
+            platformError('lock', lockPath, {
+              description: `CreateSemaphoreW failed (Win32 ${String(binding.getLastError())})`,
             }),
           )
         }
 
-        const waited = yield* Effect.either(
+        const waited = yield* Effect.result(
           Effect.try({
             try: () => binding.waitForSingleObject(handle, 0),
-            catch: (cause) => new FileSystemFailure({ operation: 'lock', path: lockPath, cause }),
+            catch: (cause) => platformError('lock', lockPath, { cause }),
           }),
         )
-        if (Either.isRight(waited) && waited.right === WAIT_OBJECT_0) {
+        if (Result.isSuccess(waited) && waited.success === WAIT_OBJECT_0) {
           return releasedHandle(binding, handle)
         }
         closeQuietly(binding, handle)
-        if (Either.isLeft(waited)) return yield* Effect.fail(waited.left)
-        if (waited.right === WAIT_TIMEOUT) {
+        if (Result.isFailure(waited)) return yield* Effect.fail(waited.failure)
+        if (waited.success === WAIT_TIMEOUT) {
           return yield* Effect.fail(new SyncLocked({ lockPath }))
         }
         return yield* Effect.fail(
-          new FileSystemFailure({
-            operation: 'lock',
-            path: lockPath,
-            cause: new Error(
-              `WaitForSingleObject failed (Win32 ${String(binding.getLastError())})`,
-            ),
+          platformError('lock', lockPath, {
+            description: `WaitForSingleObject failed (Win32 ${String(binding.getLastError())})`,
           }),
         )
       }),

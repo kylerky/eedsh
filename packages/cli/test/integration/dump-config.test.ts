@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { bundle, defineProfile, generated, insert, layer, override } from '@eedsh/config'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
@@ -42,7 +43,7 @@ describe('bootable profile integration', () => {
     const services = Layer.mergeAll(
       liveServiceLayer,
       preflightLayer.pipe(Layer.provide(liveServiceLayer)),
-    )
+    ).pipe(Layer.provideMerge(NodeServices.layer))
     const result = await Effect.runPromise(
       materialize({
         plan,

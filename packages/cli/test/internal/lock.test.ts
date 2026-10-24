@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Deferred, Effect, Exit, Fiber } from 'effect'
+import * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
 import { syncLockLayer } from '../../src/internal/effect/layer'
@@ -29,9 +31,9 @@ afterEach(async () => {
 })
 
 async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.either(effect))
-  if (result._tag === 'Right') throw new Error('expected the effect to fail')
-  return result.left
+  const result = await Effect.runPromise(Effect.result(effect))
+  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
+  return result.failure
 }
 
 function acquire(lock: SyncLockShape, lockPath: string): Promise<SyncLockHandle> {
@@ -85,13 +87,13 @@ describe('withSyncLock service boundary', () => {
         }),
     }
     const result = await Effect.runPromise(
-      Effect.either(
+      Effect.result(
         withSyncLock('/profiles/work/.eedsh/sync.lock', Effect.fail(new Error('boom'))).pipe(
           Effect.provideService(SyncLock, lock),
         ),
       ),
     )
-    expect(result._tag).toBe('Left')
+    expect(result._tag).toBe('Failure')
     expect(events).toEqual(['release'])
   })
 
@@ -127,10 +129,10 @@ describe('withSyncLock service boundary', () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>()
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           withSyncLock(
             '/profiles/work/.eedsh/sync.lock',
-            Deferred.succeed(started, undefined).pipe(Effect.zipRight(Effect.never)),
+            Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
           ).pipe(Effect.provideService(SyncLock, lock)),
         )
         yield* Deferred.await(started)
@@ -168,9 +170,9 @@ describe('sync lock platform selection', () => {
         }),
       ).pipe(Effect.provide(syncLockLayer('aix'))),
     )
-    expect(error._tag).toBe('FileSystemFailure')
-    expect(error.operation).toBe('syncLock')
-    expect(error.path).toBe('/profiles/work/.eedsh/sync.lock')
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('syncLock')
+    expect(error.reason.pathOrDescriptor).toBe('/profiles/work/.eedsh/sync.lock')
     expect(ran).toBe(false)
   })
 })
@@ -203,11 +205,11 @@ describe.skipIf(process.platform === 'win32')('POSIX sync lock', () => {
     expect(existsSync(lockPath)).toBe(true)
 
     const failed = await Effect.runPromise(
-      Effect.either(
+      Effect.result(
         withSyncLock(lockPath, Effect.fail(new Error('boom'))).pipe(Effect.provide(layer)),
       ),
     )
-    expect(failed._tag).toBe('Left')
+    expect(failed._tag).toBe('Failure')
     expect(existsSync(lockPath)).toBe(true)
 
     const handle = await acquire(makePosixSyncLock(), lockPath)
@@ -294,9 +296,9 @@ describe.skipIf(process.platform === 'win32')('POSIX sync lock', () => {
       tryLock: async () => undefined,
     }
     const error = await failureOf(makePosixSyncLock(io).acquire('/p/.eedsh/sync.lock'))
-    expect(error._tag).toBe('FileSystemFailure')
-    expect(error.operation).toBe('verifyLock')
-    expect(error.path).toBe('/p/.eedsh/sync.lock')
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('verifyLock')
+    expect(error.reason.pathOrDescriptor).toBe('/p/.eedsh/sync.lock')
     expect(opens).toBe(3)
     expect(closes).toBe(3)
   })

@@ -8,10 +8,11 @@
 import { dirname, join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
-import type { FileSystemFailure, MaterializeError } from '../internal/effect/errors'
+import * as FileSystem from 'effect/FileSystem'
+import type * as PlatformError from 'effect/PlatformError'
+import { writeFileAtomic } from '../internal/atomic-write'
+import type { MaterializeError } from '../internal/effect/errors'
 import {
-  FileSystem,
-  type FileSystemShape,
   PackageManager,
   type PackageManagerShape,
   Preflight,
@@ -50,12 +51,12 @@ interface ProfileSnapshot {
 }
 
 function readOptional(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   path: string,
-): Effect.Effect<string | undefined, FileSystemFailure> {
+): Effect.Effect<string | undefined, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return undefined
-    return yield* fs.readFile(path)
+    return yield* fs.readFileString(path)
   })
 }
 
@@ -63,23 +64,23 @@ function readOptional(
 function writePublicationArtifacts(
   input: PublishProfileInput,
   generatedDir: string,
-  fs: FileSystemShape,
-): Effect.Effect<void, FileSystemFailure> {
+  fs: FileSystem.FileSystem,
+): Effect.Effect<void, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     yield* ensureProfileFiles(input.profileDir, fs)
-    yield* fs.ensureDir(generatedDir)
+    yield* fs.makeDirectory(generatedDir, { recursive: true })
     yield* writeGeneratedBundle(generatedDir, input.generated, fs, { includeManifest: false })
     const planPath = join(input.profileDir, PLAN_RELATIVE_PATH)
-    yield* fs.ensureDir(dirname(planPath))
-    yield* fs.writeFileAtomic(planPath, input.generated.planContent)
+    yield* fs.makeDirectory(dirname(planPath), { recursive: true })
+    yield* writeFileAtomic(fs, planPath, input.generated.planContent)
   })
 }
 
 /** Snapshot the profile manifest and lockfile before publication changes them. */
 function snapshotProfileFiles(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   profileDir: string,
-): Effect.Effect<ProfileSnapshot, FileSystemFailure> {
+): Effect.Effect<ProfileSnapshot, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     const manifestPath = join(profileDir, 'package.json')
     const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
@@ -102,27 +103,29 @@ function profileDependenciesChanged(
 
 /** Write the reconciled profile manifest in its formatted on-disk form. */
 function writeProfileManifest(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   path: string,
   manifest: Record<string, unknown>,
-): Effect.Effect<void, FileSystemFailure> {
-  return fs.writeFileAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`)
+): Effect.Effect<void, PlatformError.PlatformError> {
+  return writeFileAtomic(fs, path, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
 /** Restore one snapshotted profile file, removing it when it did not exist. */
 function restoreFile(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   path: string,
   content: string | undefined,
-): Effect.Effect<void, FileSystemFailure> {
-  return content === undefined ? fs.remove(path) : fs.writeFileAtomic(path, content)
+): Effect.Effect<void, PlatformError.PlatformError> {
+  return content === undefined
+    ? fs.remove(path, { force: true })
+    : writeFileAtomic(fs, path, content)
 }
 
 /** Restore the profile manifest and lockfile to their pre-publication state. */
 function restoreProfileFiles(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   snapshot: ProfileSnapshot,
-): Effect.Effect<void, FileSystemFailure> {
+): Effect.Effect<void, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     yield* restoreFile(fs, snapshot.manifestPath, snapshot.manifestContent)
     yield* restoreFile(fs, snapshot.lockfilePath, snapshot.lockfileContent)
@@ -132,23 +135,25 @@ function restoreProfileFiles(
 /** Run a publication step, restoring the profile snapshots if it fails. */
 function restoreOnFailure<A, E>(
   effect: Effect.Effect<A, E>,
-  restore: Effect.Effect<void, FileSystemFailure>,
-): Effect.Effect<A, E | FileSystemFailure> {
-  return effect.pipe(Effect.catchAll((error) => restore.pipe(Effect.zipRight(Effect.fail(error)))))
+  restore: Effect.Effect<void, PlatformError.PlatformError>,
+): Effect.Effect<A, E | PlatformError.PlatformError> {
+  return effect.pipe(
+    Effect.catch((error) => Effect.andThen(restore, Effect.fail(error))),
+  )
 }
 
 /** Write the generated package manifest last; it is the publication commit point. */
 function commitGeneratedManifest(
-  fs: FileSystemShape,
+  fs: FileSystem.FileSystem,
   generatedDir: string,
   generated: GeneratedBundle,
-): Effect.Effect<void, FileSystemFailure> {
+): Effect.Effect<void, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     const manifestFile = generated.files.at(-1)
     if (manifestFile === undefined || manifestFile.path !== 'package.json') {
       return yield* Effect.die(new Error('generated bundle is missing its package manifest'))
     }
-    yield* fs.writeFileAtomic(join(generatedDir, manifestFile.path), manifestFile.content)
+    yield* writeFileAtomic(fs, join(generatedDir, manifestFile.path), manifestFile.content)
   })
 }
 
@@ -164,10 +169,10 @@ export function publishProfile(
 ): Effect.Effect<
   PublishProfileResult,
   MaterializeError,
-  FileSystemShape | PackageManagerShape | PreflightShape
+  FileSystem.FileSystem | PackageManagerShape | PreflightShape
 > {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem
+    const fs = yield* FileSystem.FileSystem
     const packages = yield* PackageManager
     const preflight = yield* Preflight
 

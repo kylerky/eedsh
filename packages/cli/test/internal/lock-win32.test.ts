@@ -4,6 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Effect } from 'effect'
+import * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
 import { syncLockLayer } from '../../src/internal/effect/layer'
@@ -29,9 +31,9 @@ function release(handle: SyncLockHandle): Promise<void> {
 }
 
 async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.either(effect))
-  if (result._tag === 'Right') throw new Error('expected the effect to fail')
-  return result.left
+  const result = await Effect.runPromise(Effect.result(effect))
+  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
+  return result.failure
 }
 
 function fakeWin32(
@@ -110,21 +112,21 @@ describe('Windows sync lock protocol', () => {
     expect(fake.calls).toEqual([`create(1,1,${win32LockName(lockPath)})`, 'wait(1,0)', 'close(1)'])
   })
 
-  it('fails with FileSystemFailure when CreateSemaphoreW returns no handle', async () => {
+  it('fails with a platform error when CreateSemaphoreW returns no handle', async () => {
     const fake = fakeWin32({ createFailure: true })
     const error = await failureOf(makeWin32SyncLock(async () => fake.binding).acquire(lockPath))
-    expect(error._tag).toBe('FileSystemFailure')
-    expect(error.operation).toBe('lock')
-    expect(error.path).toBe(lockPath)
-    expect(String(error.cause)).toContain('Win32 5')
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('lock')
+    expect(error.reason.pathOrDescriptor).toBe(lockPath)
+    expect(String(error.reason.description)).toContain('Win32 5')
   })
 
-  it('fails with FileSystemFailure on an unexpected wait result and closes the handle', async () => {
+  it('fails with a platform error on an unexpected wait result and closes the handle', async () => {
     const fake = fakeWin32({ waitResult: 0xffff_ffff })
     const error = await failureOf(makeWin32SyncLock(async () => fake.binding).acquire(lockPath))
-    expect(error._tag).toBe('FileSystemFailure')
-    expect(error.operation).toBe('lock')
-    expect(error.path).toBe(lockPath)
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('lock')
+    expect(error.reason.pathOrDescriptor).toBe(lockPath)
     expect(fake.calls.slice(-1)).toEqual(['close(1)'])
   })
 
@@ -134,10 +136,10 @@ describe('Windows sync lock protocol', () => {
         throw new Error('koffi unavailable')
       }).acquire(lockPath),
     )
-    expect(error._tag).toBe('FileSystemFailure')
-    expect(error.operation).toBe('loadWin32Lock')
-    expect(error.path).toBe(lockPath)
-    expect(String(error.cause)).toContain('koffi unavailable')
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('loadWin32Lock')
+    expect(error.reason.pathOrDescriptor).toBe(lockPath)
+    expect(String(error.reason.cause)).toContain('koffi unavailable')
   })
 
   it('closes the handle even when ReleaseSemaphore fails, once', async () => {
