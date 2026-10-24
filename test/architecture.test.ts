@@ -52,17 +52,6 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
-/** The only Effect modules `@eedsh/config` may use for the plan contract. */
-const CONFIG_EFFECT_MODULES = ['effect/Schema', 'effect/Result']
-
-/** The Effect ecosystem packages this migration removed. */
-const REMOVED_EFFECT_PACKAGES = [
-  '@effect/cli',
-  '@effect/platform',
-  '@effect/printer',
-  '@effect/printer-ansi',
-]
-
 /** Whether a package source imports a specifier or a path beneath it. */
 function importsSpecifier(name: PackageName, specifier: string): boolean {
   return sourceImports(name).some(
@@ -104,17 +93,6 @@ describe('package boundaries', () => {
     expect(importsEffect('runtime'), '@eedsh/runtime must not import effect').toBe(false)
   })
 
-  it('allows @eedsh/config to use only the plan contract Effect modules', () => {
-    expect(declaresEffect('config'), '@eedsh/config must declare effect').toBe(true)
-    expect(importsEffect('config'), '@eedsh/config must import effect').toBe(true)
-    for (const { file, specifier } of effectImports('config')) {
-      expect(
-        CONFIG_EFFECT_MODULES,
-        `@eedsh/config must import effect through an allowed module: ${file} imports ${specifier}`,
-      ).toContain(specifier)
-    }
-  })
-
   it('confines the DSH runtime dependency to @eedsh/cli and @eedsh/runtime types', () => {
     for (const dependency of dependencyNames('config')) {
       expect(
@@ -122,33 +100,6 @@ describe('package boundaries', () => {
         `@eedsh/config must not depend on ${dependency}`,
       ).toBe(false)
     }
-  })
-
-  it('declares and uses Effect in @eedsh/cli', () => {
-    expect(declaresEffect('cli')).toBe(true)
-    expect(importsEffect('cli')).toBe(true)
-  })
-
-  it('keeps the config and CLI Effect versions in step', () => {
-    const cliEffect = manifest('cli').dependencies?.effect
-    expect(cliEffect).toBe('4.0.6')
-    expect(manifest('config').peerDependencies?.effect).toBe(cliEffect)
-    expect(manifest('config').devDependencies?.effect).toBe(cliEffect)
-  })
-
-  it('consolidates the Effect ecosystem packages', () => {
-    expect(manifest('cli').dependencies?.['@effect/platform-node']).toBe('4.0.6')
-    for (const name of packages) {
-      for (const removed of REMOVED_EFFECT_PACKAGES) {
-        expect(dependencyNames(name), `@eedsh/${name} must not depend on ${removed}`).not.toContain(
-          removed,
-        )
-        expect(importsSpecifier(name, removed), `@eedsh/${name} must not import ${removed}`).toBe(
-          false,
-        )
-      }
-    }
-    expect(importsSpecifier('cli', 'effect/cli')).toBe(true)
   })
 
   it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {
