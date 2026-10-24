@@ -149,7 +149,8 @@ export function raw(entry: PlanPatch): PlanPatch {
  * and invalid identity before anything is written.
  * @param input - profile identity, bundles, layers, and packages.
  * @returns the validated, detached plan.
- * @throws {PlanValidationError} with stable codes and plan locations.
+ * @throws {import('effect/Schema').SchemaError} Effect's native schema error,
+ * carrying the located issue tree and its formatted message.
  */
 export function defineProfile(input: DefineProfileInput): ProfilePlan {
   const candidate = {

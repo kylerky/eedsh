@@ -11,12 +11,19 @@ import {
   override,
   PLAN_FORMAT,
   PLAN_VERSION,
-  PlanValidationError,
   raw,
   validatePlan,
 } from '@eedsh/config'
-import * as Either from 'effect/Either'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
+
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
+
+function issuesOf(error: unknown) {
+  return formatIssues((error as Schema.SchemaError).issue).issues
+}
 
 const base = { name: 'work', dsh: '0.2.1-rc.2' }
 
@@ -48,7 +55,7 @@ describe('defineProfile', () => {
 
   it('rejects a missing profile name', () => {
     expect(() => defineProfile({ name: '', dsh: base.dsh, bundles: [] })).toThrow(
-      PlanValidationError,
+      Schema.SchemaError,
     )
   })
 
@@ -58,8 +65,8 @@ describe('defineProfile', () => {
         defineProfile({ ...base, bundles: [bundle(name)] })
         expect.unreachable('reserved bundle name must be rejected')
       } catch (error) {
-        expect(error).toBeInstanceOf(PlanValidationError)
-        const issues = (error as PlanValidationError).issues
+        expect(Schema.isSchemaError(error)).toBe(true)
+        const issues = issuesOf(error)
         expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 0, 'name'])
         expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(
           true,
@@ -71,12 +78,12 @@ describe('defineProfile', () => {
   it('rejects reserved package names', () => {
     expect(() =>
       defineProfile({ ...base, bundles: [], packages: { '@eedsh/generated': 'link:./x' } }),
-    ).toThrow(PlanValidationError)
+    ).toThrow(Schema.SchemaError)
   })
 
   it('rejects duplicate generated markers', () => {
     expect(() => defineProfile({ ...base, bundles: [generated(), generated()] })).toThrow(
-      PlanValidationError,
+      Schema.SchemaError,
     )
   })
 
@@ -94,7 +101,7 @@ describe('defineProfile', () => {
     expect(parsed.layers[0].patches[0].config.selected).toEqual({
       $eedsh: { expr: "ctx.get('profileContext').name" },
     })
-    expect(Either.isRight(validatePlan(parsed))).toBe(true)
+    expect(Result.isSuccess(validatePlan(parsed))).toBe(true)
   })
 })
 

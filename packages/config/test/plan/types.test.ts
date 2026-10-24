@@ -1,4 +1,7 @@
-import type { PlanIssue, PlanPatch, ProfilePlan } from '@eedsh/config'
+import { type PlanPatch, type ProfilePlan, validatePlan } from '@eedsh/config'
+import * as config from '@eedsh/config'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -22,6 +25,11 @@ function assertDerivedShape(plan: ProfilePlan, patch: PlanPatch): void {
 }
 void assertDerivedShape
 
+/** The public validation signature carries Effect's native Result and SchemaError. */
+const validateSignature: (value: unknown) => Result.Result<ProfilePlan, Schema.SchemaError> =
+  validatePlan
+void validateSignature
+
 describe('derived plan types', () => {
   it('derives the public plan from the schema', () => {
     const value: ProfilePlan = {
@@ -36,9 +44,17 @@ describe('derived plan types', () => {
     expect(value.profile.name).toBe('work')
   })
 
-  it('exposes native ArrayFormatter issues through the public issue type', () => {
-    const issue: PlanIssue = { _tag: 'Type', path: ['dsh'], message: 'bad' }
-    expect(issue.path).toEqual(['dsh'])
-    expect(issue._tag).toBe('Type')
+  it('exposes no plan issue or plan validation error type', () => {
+    expect('PlanIssue' in config).toBe(false)
+    expect('PlanValidationError' in config).toBe(false)
+  })
+
+  it('fails with a native schema error', () => {
+    const result = validatePlan({})
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(Schema.isSchemaError(result.failure)).toBe(true)
+      expect(result.failure._tag).toBe('SchemaError')
+    }
   })
 })

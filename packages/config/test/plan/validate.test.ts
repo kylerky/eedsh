@@ -2,12 +2,12 @@ import {
   defineProfile,
   PLAN_FORMAT,
   PLAN_VERSION,
-  type PlanIssue,
-  PlanValidationError,
+  type ProfilePlan,
   validatePlan,
 } from '@eedsh/config'
-import * as Either from 'effect/Either'
-import type * as ParseResult from 'effect/ParseResult'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
 
 const bundle = (name: string) => ({ kind: 'bundle', name })
@@ -26,42 +26,44 @@ function plan(overrides: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-function leftOf(value: unknown): PlanValidationError {
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
+
+function failureOf(value: unknown): Schema.SchemaError {
   const result = validatePlan(value)
-  if (Either.isRight(result)) throw new Error('expected validation to fail')
-  return result.left
+  if (Result.isSuccess(result)) throw new Error('expected validation to fail')
+  return result.failure
 }
 
-function issuesOf(value: unknown): readonly PlanIssue[] {
-  return leftOf(value).issues
+function successOf(value: unknown): ProfilePlan {
+  const result = validatePlan(value)
+  if (Result.isFailure(result)) throw new Error(result.failure.message)
+  return result.success
 }
 
-function rightOf(value: unknown) {
-  const result = validatePlan(value)
-  if (Either.isLeft(result)) throw new Error(result.left.message)
-  return result.right
+function issuesOf(value: unknown) {
+  return formatIssues(failureOf(value).issue).issues
 }
 
 describe('validatePlan', () => {
-  it('returns a right value for a valid plan', () => {
+  it('returns a success value for a valid plan', () => {
     const result = validatePlan(plan())
-    expect(Either.isRight(result)).toBe(true)
-    const value = Either.getOrThrow(result)
+    expect(Result.isSuccess(result)).toBe(true)
+    const value = successOf(plan())
     expect(value.format).toBe(PLAN_FORMAT)
     expect(value.version).toBe(PLAN_VERSION)
     expect(value.profile.name).toBe('work')
   })
 
-  it('returns a tagged validation error for an invalid plan', () => {
-    const error = leftOf(plan({ dsh: 'latest' }))
-    expect(error).toBeInstanceOf(PlanValidationError)
+  it('fails with the native schema error', () => {
+    const error = failureOf(plan({ dsh: 'latest' }))
+    expect(Schema.isSchemaError(error)).toBe(true)
     expect(error).toBeInstanceOf(Error)
-    expect(error._tag).toBe('PlanValidationError')
-    expect(error.message).toContain('invalid eedsh profile plan')
-    expect(Array.isArray(error.issues)).toBe(true)
+    expect(error._tag).toBe('SchemaError')
+    expect(error.message.length).toBeGreaterThan(0)
+    expect(SchemaIssue.isIssue(error.issue)).toBe(true)
   })
 
-  it('reports ArrayFormatter issues with a tag, a path array, a message, and no code', () => {
+  it('reports located issues with the native message annotations', () => {
     const issues = issuesOf(plan({ layers: [layer('base', [{ insert: [{ id: 'row' }] }])] }))
     expect(issues.length).toBeGreaterThan(0)
     expect(issues.map((issue) => issue.path)).toContainEqual([
@@ -73,29 +75,45 @@ describe('validatePlan', () => {
       0,
     ])
     for (const issue of issues) {
-      const native: ParseResult.ArrayFormatterIssue = issue
-      expect(typeof native._tag).toBe('string')
-      expect(Array.isArray(native.path)).toBe(true)
-      expect(typeof native.message).toBe('string')
-      expect(native.message.length).toBeGreaterThan(0)
-      expect('code' in native).toBe(false)
+      expect(typeof issue.message).toBe('string')
+      expect(issue.message.length).toBeGreaterThan(0)
     }
+    expect(failureOf(plan({ dsh: 'latest' })).message).toContain('at [')
   })
 
-  it('deduplicates identical issues from union branches', () => {
-    const issues = issuesOf(plan({ bundles: [{}] }))
-    const keys = issues.map((issue) => JSON.stringify([issue._tag, issue.path, issue.message]))
-    expect(new Set(keys).size).toBe(keys.length)
-    const kindIssues = issues.filter(
-      (issue) => JSON.stringify(issue.path) === JSON.stringify(['bundles', 0, 'kind']),
+  it('reports several violations together', () => {
+    const error = failureOf(
+      plan({
+        dsh: 'latest',
+        layers: [layer('Base')],
+        packages: { '@eedsh/generated': 'link:./generated' },
+      }),
     )
-    expect(kindIssues).toHaveLength(1)
+    const issues = formatIssues(error.issue).issues
+    expect(issues.length).toBeGreaterThan(1)
+    expect(error.message.split('\n').length).toBeGreaterThan(2)
+  })
+
+  it('rejects an undeclared field and identifies it', () => {
+    const error = failureOf(plan({ unexpected: true }))
+    expect(formatIssues(error.issue).issues.map((issue) => issue.path)).toContainEqual([
+      'unexpected',
+    ])
+    expect(error.message).toContain('unexpected')
+  })
+
+  it('serializes through the native representation', () => {
+    const error = failureOf(plan({ dsh: 'latest' }))
+    expect(JSON.parse(JSON.stringify(error))).toEqual({
+      _tag: 'SchemaError',
+      message: error.message,
+    })
   })
 
   it('returns a detached plan', () => {
     const config = { nested: { enabled: true } }
     const input = plan({ layers: [layer('base', [{ id: 'row', config }])] })
-    const value = rightOf(input)
+    const value = successOf(input)
     expect(value).not.toBe(input)
     expect(value.layers[0]?.patches[0]?.config).not.toBe(config)
     config.nested.enabled = false
@@ -113,16 +131,17 @@ describe('validatePlan', () => {
 })
 
 describe('defineProfile authoring boundary', () => {
-  it('throws the tagged error synchronously', () => {
+  it('throws the native error synchronously', () => {
     expect(() => defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })).toThrow(
-      PlanValidationError,
+      Schema.SchemaError,
     )
     try {
       defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })
     } catch (error) {
-      expect(error).toBeInstanceOf(PlanValidationError)
-      expect((error as PlanValidationError)._tag).toBe('PlanValidationError')
-      expect(Array.isArray((error as PlanValidationError).issues)).toBe(true)
+      expect(Schema.isSchemaError(error)).toBe(true)
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Schema.SchemaError)._tag).toBe('SchemaError')
+      expect(SchemaIssue.isIssue((error as Schema.SchemaError).issue)).toBe(true)
     }
   })
 
