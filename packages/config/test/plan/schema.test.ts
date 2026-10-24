@@ -1,15 +1,14 @@
 import {
   canonicalJson,
-  decodePlan,
   hashPlan,
   PLAN_FORMAT,
   PLAN_VERSION,
   type ProfilePlan,
   ProfilePlanSchema,
 } from '@eedsh/config'
-import * as Either from 'effect/Either'
-import * as ParseResult from 'effect/ParseResult'
+import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
 
 const bundle = (name: string) => ({ kind: 'bundle', name })
@@ -28,13 +27,29 @@ function plan(overrides: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-/** Decode through the documented strict entry point. */
-const decode = decodePlan
+/** The strict plan entry point: every issue, excess properties rejected. */
+const decode = Schema.decodeUnknownResult(ProfilePlanSchema, {
+  errors: 'all',
+  onExcessProperty: 'error',
+})
 
-function issuesOf(value: unknown): ReadonlyArray<ParseResult.ArrayFormatterIssue> {
+/** One located issue, flattened to a plain path and message. */
+interface FlatIssue {
+  readonly path: ReadonlyArray<PropertyKey>
+  readonly message: string
+}
+
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
+
+function issuesOf(value: unknown): ReadonlyArray<FlatIssue> {
   const result = decode(value)
-  if (Either.isRight(result)) throw new Error('expected decoding to fail')
-  return ParseResult.ArrayFormatter.formatErrorSync(result.left)
+  if (Result.isSuccess(result)) throw new Error('expected decoding to fail')
+  return formatIssues(result.failure.issue).issues.map((issue) => ({
+    path: (issue.path ?? []).map((segment) =>
+      typeof segment === 'object' && segment !== null && 'key' in segment ? segment.key : segment,
+    ),
+    message: issue.message,
+  }))
 }
 
 function pathsOf(value: unknown): ReadonlyArray<ReadonlyArray<PropertyKey>> {
@@ -44,9 +59,9 @@ function pathsOf(value: unknown): ReadonlyArray<ReadonlyArray<PropertyKey>> {
 describe('plan schema decoding', () => {
   it('decodes a minimal valid plan', () => {
     const result = decode(plan())
-    expect(Either.isRight(result)).toBe(true)
-    if (Either.isLeft(result)) return
-    const value = result.right
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    const value = result.success
     expect(value.format).toBe(PLAN_FORMAT)
     expect(value.version).toBe(PLAN_VERSION)
     expect(value.profile).toEqual({ name: 'work' })
@@ -69,19 +84,19 @@ describe('plan schema decoding', () => {
         packages: { '@scope/plugin': 'link:../plugin' },
       }),
     )
-    expect(Either.isRight(result)).toBe(true)
-    if (Either.isLeft(result)) return
-    expect(result.right.layers[0]?.id).toBe('base')
-    expect(result.right.layers[0]?.patches).toHaveLength(2)
-    expect(result.right.packages).toEqual({ '@scope/plugin': 'link:../plugin' })
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.layers[0]?.id).toBe('base')
+    expect(result.success.layers[0]?.patches).toHaveLength(2)
+    expect(result.success.packages).toEqual({ '@scope/plugin': 'link:../plugin' })
   })
 
   it('rejects unknown fields through decodePlan and strips them through the raw schema', () => {
     const value = plan({ extra: true })
-    expect(Either.isLeft(decodePlan(value))).toBe(true)
-    const lenient = Schema.decodeUnknownEither(ProfilePlanSchema)(value)
-    expect(Either.isRight(lenient)).toBe(true)
-    if (Either.isRight(lenient)) expect('extra' in lenient.right).toBe(false)
+    expect(Result.isFailure(decode(value))).toBe(true)
+    const lenient = Schema.decodeUnknownResult(ProfilePlanSchema)(value)
+    expect(Result.isSuccess(lenient)).toBe(true)
+    if (Result.isSuccess(lenient)) expect('extra' in lenient.success).toBe(false)
   })
 
   it('rejects wrong field types and identifies the field', () => {
@@ -111,7 +126,7 @@ describe('plan schema decoding', () => {
     for (const [overrides, path] of cases) {
       const issues = issuesOf(plan(overrides))
       expect(pathsOf(plan(overrides))).toContainEqual(path)
-      expect(issues.some((issue) => issue._tag === 'Unexpected')).toBe(true)
+      expect(issues.some((issue) => issue.message === 'Expected no excess property')).toBe(true)
     }
   })
 
@@ -129,7 +144,7 @@ describe('plan schema decoding', () => {
     for (const [value, path] of cases) {
       const issues = issuesOf(value)
       expect(issues.map((issue) => issue.path)).toContainEqual(path)
-      expect(issues.some((issue) => issue._tag === 'Missing' || issue._tag === 'Type')).toBe(true)
+      expect(issues.some((issue) => issue.message === 'Missing key' || issue.message.startsWith('Expected'))).toBe(true)
     }
   })
 })
@@ -146,7 +161,7 @@ function expectRejected(value: unknown, path: ReadonlyArray<PropertyKey>, messag
 describe('plan policy', () => {
   it('accepts safe profile names and rejects unsafe ones', () => {
     for (const name of ['work', 'team-work']) {
-      expect(Either.isRight(decode(plan({ profile: { name } })))).toBe(true)
+      expect(Result.isSuccess(decode(plan({ profile: { name } })))).toBe(true)
     }
     for (const name of [' work', 'work ', '.', '..', 'node_modules', 'a/b', 'a\\b']) {
       expectRejected(plan({ profile: { name } }), ['profile', 'name'])
@@ -155,7 +170,7 @@ describe('plan policy', () => {
 
   it('requires an exact DSH pin', () => {
     for (const dsh of ['0.2.1-rc.2', '1.0.0', '0.2.1-beta.1']) {
-      expect(Either.isRight(decode(plan({ dsh })))).toBe(true)
+      expect(Result.isSuccess(decode(plan({ dsh })))).toBe(true)
     }
     for (const dsh of ['latest', '^0.2.1', '0.2', 'v0.2.1', '0.2.1 ']) {
       expectRejected(plan({ dsh }), ['dsh'], /exact version/)
@@ -164,7 +179,7 @@ describe('plan policy', () => {
 
   it('rejects empty, unsafe, and duplicate layer ids', () => {
     for (const id of ['base', 'plugins-2']) {
-      expect(Either.isRight(decode(plan({ layers: [layer(id)] })))).toBe(true)
+      expect(Result.isSuccess(decode(plan({ layers: [layer(id)] })))).toBe(true)
     }
     for (const id of ['', ' ', '../escape', 'Base', 'base--x', '-base', 'base-']) {
       expectRejected(plan({ layers: [layer(id)] }), ['layers', 0, 'id'])
@@ -182,7 +197,7 @@ describe('plan policy', () => {
 
   it('accepts one generated marker and rejects several', () => {
     const withMarker = [bundle('@deepseek-ai/dsh-base'), { kind: 'generated' }]
-    expect(Either.isRight(decode(plan({ bundles: withMarker })))).toBe(true)
+    expect(Result.isSuccess(decode(plan({ bundles: withMarker })))).toBe(true)
     const issues = issuesOf(plan({ bundles: [{ kind: 'generated' }, { kind: 'generated' }] }))
     expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 1])
     expect(issues.some((issue) => issue.message.includes('at most one generated marker'))).toBe(
@@ -246,7 +261,7 @@ describe('plan policy', () => {
       ],
     })
     const result = decode(value)
-    expect(Either.isRight(result)).toBe(true)
+    expect(Result.isSuccess(result)).toBe(true)
   })
 })
 
@@ -319,7 +334,7 @@ describe('JSON compatibility and expression nodes', () => {
         },
       }),
     )
-    expect(Either.isRight(result)).toBe(true)
+    expect(Result.isSuccess(result)).toBe(true)
   })
   it('rejects class instances at plan positions', () => {
     class BundleValue {
@@ -367,7 +382,7 @@ describe('canonical plan hashing', () => {
 })
 
 function decodeOrThrow(value: unknown): ProfilePlan {
-  return Either.getOrThrow(decode(value))
+  return Result.getOrThrow(decode(value))
 }
 
 describe('profile plan typing', () => {
