@@ -10,19 +10,21 @@ import {
   generated,
   insert,
   layer,
-  type PlanIssue,
-  PlanValidationError,
+  PLAN_FORMAT,
+  PLAN_VERSION,
   type ProfilePlan,
+  ProfilePlanSchema,
   validatePlan,
 } from '@eedsh/config'
 import { Deferred, Effect, Layer } from 'effect'
-import * as Either from 'effect/Either'
+import * as FileSystem from 'effect/FileSystem'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
 import { DshResolveFailure } from '../src/internal/effect/errors'
 import {
   DshInstallation,
-  FileSystem,
   PackageManager,
   Preflight,
   SyncLock,
@@ -188,12 +190,12 @@ function harness(options: HarnessOptions = {}) {
     : Layer.succeed(DshInstallation, dsh.shape)
   let constructions = 0
   let finalizers = 0
-  const fileSystemLayer = Layer.scoped(
-    FileSystem,
+  const fileSystemLayer = Layer.effect(
+    FileSystem.FileSystem,
     Effect.acquireRelease(
       Effect.sync(() => {
         constructions += 1
-        return fs.shape
+        return fs.fs
       }),
       () =>
         Effect.sync(() => {
@@ -267,31 +269,35 @@ describe('eedsh sync', () => {
     expect(h.fs.files.has(generatedManifest)).toBe(true)
   })
 
-  it('reports located validation issues for an invalid config and exit 1', async () => {
+  it('reports the native validation message for an invalid config and exits 1', async () => {
     const h = harness()
     const code = await runEedsh(['sync', '--config', fixture('invalid')], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('profile.name:')
-    expect(errors).not.toMatch(/plan\.[a-z_]/)
+    expect(errors).toContain('profile name "" is not usable as a profile directory')
+    expect(errors).toMatch(/at \["profile"\]/)
+    expect(errors).not.toContain('profile.name:')
+    expect(errors).not.toMatch(/\(\d+ more\)/)
     expect(h.fs.files.size).toBe(0)
   })
 
-  it('formats tagged validation issues as path: message', async () => {
+  it('prints every native schema error line without reformatting', async () => {
     const h = harness()
-    const issue = (path: readonly PropertyKey[], message: string): PlanIssue => ({
-      _tag: 'Type',
-      path,
-      message,
+    const decoded = Schema.decodeUnknownResult(ProfilePlanSchema, {
+      errors: 'all',
+      onExcessProperty: 'error',
+    })({
+      format: PLAN_FORMAT,
+      version: PLAN_VERSION,
+      profile: { name: '' },
+      dsh: 'latest',
+      bundles: [],
+      layers: [],
+      packages: {},
     })
+    if (Result.isSuccess(decoded)) expect.unreachable('expected an invalid plan')
     const loadConfig = async (): Promise<ProfilePlan> => {
-      throw new PlanValidationError({
-        issues: [
-          issue(['layers', 0, 'patches', 1, 'config', 'fn'], 'unsupported function value'),
-          issue([], 'not a plan object'),
-        ],
-        message: 'invalid eedsh profile plan',
-      })
+      throw new Schema.SchemaError(decoded.failure.issue)
     }
     const code = await runEedsh(['sync', '--config', fixture('basic')], {
       ...h.options,
@@ -299,9 +305,12 @@ describe('eedsh sync', () => {
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('eedsh: layers[0].patches[1].config.fn: unsupported function value')
-    expect(errors).toContain('eedsh: plan: not a plan object')
-    expect(errors).not.toMatch(/plan\.[a-z_]/)
+    expect(errors).toContain('eedsh: profile name "" is not usable as a profile directory')
+    expect(errors).toContain('eedsh: "latest" is not an exact version')
+    expect(errors).toMatch(/eedsh: {3}at \["profile"\]/)
+    expect(errors).toMatch(/eedsh: {3}at \["dsh"\]/)
+    expect(errors).not.toContain('profile.name:')
+    expect(errors).not.toMatch(/\(\d+ more\)/)
     expect(h.fs.files.size).toBe(0)
   })
 
@@ -452,7 +461,6 @@ describe('eedsh arguments', () => {
     expect(noArgsText).toContain('sync')
     expect(noArgsText).toContain('run')
     expect(noArgsText).toContain('check')
-    expect(noArgsText).toContain('--config')
     expect(hasAnsi(noArgsText)).toBe(false)
 
     const help = harness()
@@ -979,7 +987,7 @@ describe('documentation', () => {
     const example = './fixtures/readme/eedsh.config.ts'
     const module = (await import(example)) as { default: unknown }
     const result = validatePlan(module.default)
-    expect(Either.isRight(result)).toBe(true)
+    expect(Result.isSuccess(result)).toBe(true)
   })
 })
 

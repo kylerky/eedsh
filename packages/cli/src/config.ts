@@ -8,7 +8,7 @@ import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type ProfilePlan, validatePlan } from '@eedsh/config'
-import * as Either from 'effect/Either'
+import * as Result from 'effect/Result'
 
 /** TypeScript config file names, in discovery order. */
 export const CONFIG_FILENAMES = ['eedsh.config.ts', 'eedsh.config.mts'] as const
@@ -133,7 +133,7 @@ export function assertSupportedConfigPath(configPath: string): void {
  * @param configPath - absolute config path.
  * @returns the validated plan.
  * @throws {ConfigError} when the file cannot be read or imported, or has no default export.
- * @throws {PlanValidationError} when the exported plan is invalid.
+ * @throws {import('effect/Schema').SchemaError} when the exported plan is invalid.
  */
 export async function loadConfig(configPath: string): Promise<ProfilePlan> {
   assertSupportedConfigPath(configPath)
@@ -172,6 +172,6 @@ export async function loadConfig(configPath: string): Promise<ProfilePlan> {
     )
   }
   const result = validatePlan(exported)
-  if (Either.isLeft(result)) throw result.left
-  return result.right
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
 }
