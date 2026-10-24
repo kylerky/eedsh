@@ -137,9 +137,7 @@ function restoreOnFailure<A, E>(
   effect: Effect.Effect<A, E>,
   restore: Effect.Effect<void, PlatformError.PlatformError>,
 ): Effect.Effect<A, E | PlatformError.PlatformError> {
-  return effect.pipe(
-    Effect.catch((error) => Effect.andThen(restore, Effect.fail(error))),
-  )
+  return effect.pipe(Effect.catch((error) => Effect.andThen(restore, Effect.fail(error))))
 }
 
 /** Write the generated package manifest last; it is the publication commit point. */

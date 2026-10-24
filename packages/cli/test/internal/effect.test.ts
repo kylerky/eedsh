@@ -1,7 +1,7 @@
 import { bundle, defineProfile, insert, type ProfilePlan, layer as planLayer } from '@eedsh/config'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'

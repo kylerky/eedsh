@@ -144,7 +144,11 @@ describe('plan schema decoding', () => {
     for (const [value, path] of cases) {
       const issues = issuesOf(value)
       expect(issues.map((issue) => issue.path)).toContainEqual(path)
-      expect(issues.some((issue) => issue.message === 'Missing key' || issue.message.startsWith('Expected'))).toBe(true)
+      expect(
+        issues.some(
+          (issue) => issue.message === 'Missing key' || issue.message.startsWith('Expected'),
+        ),
+      ).toBe(true)
     }
   })
 })

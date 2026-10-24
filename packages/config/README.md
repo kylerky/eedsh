@@ -6,11 +6,11 @@ Effect Schema that is the plan's single validator and type source, Effect-native
 validation, and canonical hashing.
 
 There is no DSH runtime dependency. Effect is part of the public contract: the plan
-schema, validation result, and validation error are Effect-native, and `effect` is a
-peer dependency (also a dev dependency here). `defineProfile` and `assertPlan` stay
-synchronous because a config module must default-export plain data before tsx and
-DSH can consume it; `validatePlan` and `decodePlan` are the Effect-native entry
-points.
+schema, the `Result` validation value, and the native `Schema.SchemaError` failure
+are Effect-native, and `effect` is a peer dependency (also a dev dependency here).
+`defineProfile` and `assertPlan` stay synchronous because a config module must
+default-export plain data before tsx and DSH can consume it; `validatePlan` is the
+Effect-native entry point.
 
 ## Example
 
@@ -49,8 +49,7 @@ export default defineProfile({
 ## API
 
 - `defineProfile(input)` — validates synchronously and returns a `ProfilePlan`. It
-  throws the tagged `PlanValidationError` with located issues; it does not execute
-  anything.
+  throws Effect's native `Schema.SchemaError`; it does not execute anything.
 - `bundle(name, { source? })` — one ordered bundle selection. `@eedsh/runtime` and
   `@eedsh/generated` are reserved.
 - `generated()` — the positional marker for the generated layer; at most one.
@@ -93,21 +92,19 @@ The plan is JSON-compatible by contract. Validation rejects functions, symbols,
 BigInt, `undefined`, non-finite numbers, circular references, class instances, and
 malformed expression nodes, and it rejects missing identity, duplicate or unsafe
 layer ids, duplicate bundles or markers, reserved names, and invalid package specs.
-Each failure is a located, human-readable issue with a native path and message (for
-example `layers[0].patches[0].config.fn: unsupported function value`); issues do not
-carry a semantic error code. When a plan has several independent problems, validation
-may report only the failures from the first failing refinement layer; the plan is
-still rejected.
+Each failure is reported with Effect's native formatted message: a message line
+followed by its path annotation (for example
+`profile name "" is not usable as a profile directory` and
+`  at ["profile"]["name"]`). Issues carry no semantic error code, and the strict
+decode reports every located issue in one pass (there is no deduplication or
+truncation).
 
 Additional exports:
 
-- `validatePlan(value)` — `Either<ProfilePlan, PlanValidationError>`; identical
-  issues are deduplicated and the right side is a detached plan.
-- `decodePlan(value)` — `Either<ProfilePlan, ParseError>` from the strict decode
-  (`errors: "all"`, `onExcessProperty: "error"`). Decoding `ProfilePlanSchema`
-  directly is more lenient and strips undeclared fields.
-- `assertPlan(value)` — the validated plan, or it throws `PlanValidationError`.
+- `validatePlan(value)` — `Result<ProfilePlan, Schema.SchemaError>` from the strict
+  decode (`errors: "all"`, `onExcessProperty: "error"`); the success value is a
+  detached plan. Decoding `ProfilePlanSchema` directly is more lenient and strips
+  undeclared fields.
+- `assertPlan(value)` — the validated plan, or it throws `Schema.SchemaError`.
 - `ProfilePlanSchema` — the public Effect Schema and the single plan definition.
-- `PlanValidationError` — a `Data.TaggedError` carrying `issues` and a summary.
-- `PlanIssue` — a `ParseResult.ArrayFormatterIssue` (`_tag`, `path`, `message`).
 - `canonicalJson(value)` / `hashPlan(plan)` — sorted-key JSON and SHA-256.

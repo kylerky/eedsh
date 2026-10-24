@@ -3,10 +3,7 @@
  * plan shape, the validation rules, and the derived plan types.
  * @module @eedsh/config/plan/schema
  */
-import { Effect } from 'effect'
 import * as Schema from 'effect/Schema'
-import * as SchemaGetter from 'effect/SchemaGetter'
-import * as SchemaIssue from 'effect/SchemaIssue'
 import { PLAN_FORMAT, PLAN_VERSION } from './constants'
 import { planJsonIssues } from './json'
 
@@ -32,18 +29,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Struct decoding rebuilds objects, so without this guard a class instance
  * with the right fields would silently decode; the plan contract rejects it.
  */
-function plain<S extends Schema.Constraint>(
-  schema: S,
-  message: string,
-): Schema.decodeTo<S, typeof Schema.Unknown> {
-  return Schema.decodeTo<S, typeof Schema.Unknown>(schema, {
-    decode: SchemaGetter.transformEffect((input: unknown) =>
-      isPlainObject(input)
-        ? Effect.succeed(input as Schema.Codec.Encoded<S>)
-        : Effect.fail(new SchemaIssue.InvalidValue({ message })),
-    ),
-    encode: SchemaGetter.passthrough(),
-  })(Schema.Unknown)
+function plain<S extends Schema.Constraint>(schema: S, message: string) {
+  const input = refine(Schema.Unknown, (value: unknown) => isPlainObject(value) || message)
+  return Schema.decodeTo(schema)(input)
 }
 
 function isSafeProfileName(name: string): boolean {
@@ -73,7 +61,8 @@ function refine<S extends Schema.Top>(
 /** A profile name that is safe to use as a profile directory. */
 const ProfileNameSchema = refine(
   Schema.NonEmptyString,
-  (name) => isSafeProfileName(name) || `profile name "${name}" is not usable as a profile directory`,
+  (name) =>
+    isSafeProfileName(name) || `profile name "${name}" is not usable as a profile directory`,
 )
 
 /** An exact DSH runtime pin. */

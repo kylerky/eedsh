@@ -1,5 +1,5 @@
-import { type PlanPatch, type ProfilePlan, validatePlan } from '@eedsh/config'
 import * as config from '@eedsh/config'
+import { type PlanPatch, type ProfilePlan, validatePlan } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
@@ -45,8 +45,8 @@ describe('derived plan types', () => {
   })
 
   it('exposes no plan issue or plan validation error type', () => {
-    expect('PlanIssue' in config).toBe(false)
-    expect('PlanValidationError' in config).toBe(false)
+    const unexpected = Object.keys(config).filter((name) => /Issue$|ValidationError$/.test(name))
+    expect(unexpected, 'the native SchemaError replaces the local failure types').toEqual([])
   })
 
   it('fails with a native schema error', () => {

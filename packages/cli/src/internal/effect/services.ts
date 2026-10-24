@@ -23,9 +23,7 @@ export interface SyncLockHandle {
 
 /** Kernel-backed serialization of materialization for one profile. */
 export interface SyncLockShape {
-  acquire(
-    lockPath: string,
-  ): Effect.Effect<SyncLockHandle, SyncLocked | PlatformError.PlatformError>
+  acquire(lockPath: string): Effect.Effect<SyncLockHandle, SyncLocked | PlatformError.PlatformError>
 }
 
 /** Sync lock service tag. */

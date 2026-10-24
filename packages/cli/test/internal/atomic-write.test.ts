@@ -29,7 +29,11 @@ async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> 
   return result.failure
 }
 
-function platformFailure(method: string, path: string, cause: unknown): PlatformError.PlatformError {
+function platformFailure(
+  method: string,
+  path: string,
+  cause: unknown,
+): PlatformError.PlatformError {
   return PlatformError.systemError({
     _tag: 'Unknown',
     module: 'FileSystem',

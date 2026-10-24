@@ -53,12 +53,22 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
 /** The only Effect modules `@eedsh/config` may use for the plan contract. */
-const CONFIG_EFFECT_MODULES = [
-  'effect/Schema',
-  'effect/Either',
-  'effect/ParseResult',
-  'effect/Data',
+const CONFIG_EFFECT_MODULES = ['effect/Schema', 'effect/Result']
+
+/** The Effect ecosystem packages this migration removed. */
+const REMOVED_EFFECT_PACKAGES = [
+  '@effect/cli',
+  '@effect/platform',
+  '@effect/printer',
+  '@effect/printer-ansi',
 ]
+
+/** Whether a package source imports a specifier or a path beneath it. */
+function importsSpecifier(name: PackageName, specifier: string): boolean {
+  return sourceImports(name).some(
+    ({ specifier: imported }) => imported === specifier || imported.startsWith(`${specifier}/`),
+  )
+}
 
 function effectImports(name: PackageName): { file: string; specifier: string }[] {
   return sourceImports(name).filter(
@@ -121,8 +131,24 @@ describe('package boundaries', () => {
 
   it('keeps the config and CLI Effect versions in step', () => {
     const cliEffect = manifest('cli').dependencies?.effect
+    expect(cliEffect).toBe('4.0.6')
     expect(manifest('config').peerDependencies?.effect).toBe(cliEffect)
     expect(manifest('config').devDependencies?.effect).toBe(cliEffect)
+  })
+
+  it('consolidates the Effect ecosystem packages', () => {
+    expect(manifest('cli').dependencies?.['@effect/platform-node']).toBe('4.0.6')
+    for (const name of packages) {
+      for (const removed of REMOVED_EFFECT_PACKAGES) {
+        expect(dependencyNames(name), `@eedsh/${name} must not depend on ${removed}`).not.toContain(
+          removed,
+        )
+        expect(importsSpecifier(name, removed), `@eedsh/${name} must not import ${removed}`).toBe(
+          false,
+        )
+      }
+    }
+    expect(importsSpecifier('cli', 'effect/cli')).toBe(true)
   })
 
   it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {

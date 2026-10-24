@@ -23,16 +23,18 @@ function renameWithRetry(
   to: string,
   attempt = 0,
 ): Effect.Effect<void, PlatformError.PlatformError> {
-  return fs.rename(from, to).pipe(
-    Effect.catch((error) =>
-      attempt >= RETRY_LIMIT || !RETRYABLE.has(error.reason._tag)
-        ? Effect.fail(error)
-        : Effect.andThen(
-            Effect.sleep(RETRY_DELAY_MS),
-            renameWithRetry(fs, from, to, attempt + 1),
-          ),
-    ),
-  )
+  return fs
+    .rename(from, to)
+    .pipe(
+      Effect.catch((error) =>
+        attempt >= RETRY_LIMIT || !RETRYABLE.has(error.reason._tag)
+          ? Effect.fail(error)
+          : Effect.andThen(
+              Effect.sleep(RETRY_DELAY_MS),
+              renameWithRetry(fs, from, to, attempt + 1),
+            ),
+      ),
+    )
 }
 
 /**

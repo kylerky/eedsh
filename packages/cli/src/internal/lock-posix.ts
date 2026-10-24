@@ -47,11 +47,7 @@ export const nodePosixLockIo: PosixLockIo = {
   tryLock: (fd) => tryLockExclusive(fd),
 }
 
-function platformError(
-  name: string,
-  path: string,
-  cause: unknown,
-): PlatformError.PlatformError {
+function platformError(name: string, path: string, cause: unknown): PlatformError.PlatformError {
   return PlatformError.systemError({
     _tag: 'Unknown',
     module: 'SyncLock',

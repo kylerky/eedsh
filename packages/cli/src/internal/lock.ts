@@ -7,7 +7,7 @@
  */
 import { Effect } from 'effect'
 import type * as PlatformError from 'effect/PlatformError'
-import { SyncLocked } from './effect/errors'
+import type { SyncLocked } from './effect/errors'
 import { SyncLock, type SyncLockShape } from './effect/services'
 
 /**

@@ -44,9 +44,7 @@ function installWithPnpm(
         return yield* Effect.fail(
           new PackageInstallFailure({
             profileDir,
-            cause: new Error(
-              `pnpm install exited with code ${String(exitCode)}: ${stderr.trim()}`,
-            ),
+            cause: new Error(`pnpm install exited with code ${String(exitCode)}: ${stderr.trim()}`),
           }),
         )
       }
@@ -65,7 +63,11 @@ export const pnpmPackageManagerLayer: Layer.Layer<
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const shape: PackageManagerShape = {
       install: (profileDir) =>
-        Effect.provideService(installWithPnpm(profileDir), ChildProcessSpawner.ChildProcessSpawner, spawner).pipe(
+        Effect.provideService(
+          installWithPnpm(profileDir),
+          ChildProcessSpawner.ChildProcessSpawner,
+          spawner,
+        ).pipe(
           Effect.catch((cause) =>
             Effect.fail(
               cause instanceof PackageInstallFailure
