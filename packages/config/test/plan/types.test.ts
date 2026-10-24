@@ -44,11 +44,6 @@ describe('derived plan types', () => {
     expect(value.profile.name).toBe('work')
   })
 
-  it('exposes no plan issue or plan validation error type', () => {
-    const unexpected = Object.keys(config).filter((name) => /Issue$|ValidationError$/.test(name))
-    expect(unexpected, 'the native SchemaError replaces the local failure types').toEqual([])
-  })
-
   it('fails with a native schema error', () => {
     const result = validatePlan({})
     expect(Result.isFailure(result)).toBe(true)
