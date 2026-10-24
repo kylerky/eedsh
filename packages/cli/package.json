@@ -18,11 +18,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis-plugin-include": "1.0.10",
-    "@effect/cli": "0.77.2",
-    "@effect/platform": "0.97.2",
-    "@effect/platform-node": "0.108.3",
-    "@effect/printer": "0.51.0",
-    "@effect/printer-ansi": "0.51.0",
+    "@effect/platform-node": "4.0.6",
     "@deepseek-ai/cordis-plugin-loader": "1.0.6",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
@@ -30,7 +26,7 @@
     "@eedsh/config": "workspace:*",
     "@eedsh/runtime": "workspace:*",
     "chokidar": "4.0.3",
-    "effect": "3.22.3",
+    "effect": "4.0.6",
     "js-yaml": "4.3.2",
     "koffi": "3.1.1",
     "tsx": "4.23.15"
