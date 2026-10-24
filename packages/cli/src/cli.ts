@@ -1,7 +1,7 @@
 /**
  * The `eedsh` command: evaluate the typed config, publish it into a DSH
  * profile, optionally boot the pinned launcher, or run the config project's
- * TypeScript compiler. The command surface is parsed by `@effect/cli`; one-shot
+ * TypeScript compiler. The command surface is parsed by `effect/cli`; one-shot
  * syncs use `Effect.runPromise`, while watch mode is one scoped Effect program
  * that builds the materializer's services once for the whole session.
  * @module @eedsh/cli/cli
@@ -11,15 +11,13 @@ import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
-import { CliApp, Command, Options } from '@effect/cli'
-import * as ValidationError from '@effect/cli/ValidationError'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
-import * as FileSystem from 'effect/FileSystem'
+import { CliError, Command, Flag } from 'effect/cli'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
-import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import {
@@ -301,7 +299,7 @@ async function syncOnce(context: CommandContext): Promise<SyncOutcome> {
 
 /** A stop signal from an injected `AbortSignal`, SIGINT, or SIGTERM. */
 function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
-  return Effect.async<void>((resume) => {
+  return Effect.callback<void>((resume) => {
     if (signal !== undefined) {
       if (signal.aborted) {
         resume(Effect.void)
@@ -329,13 +327,13 @@ function runWatch(
   return Effect.gen(function* () {
     const planExit = yield* Effect.exit(planEffect)
     if (Exit.isFailure(planExit)) {
-      if (Cause.isInterruptedOnly(planExit.cause)) return yield* Effect.interrupt
+      if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
       yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
       return
     }
     const runExit = yield* Effect.exit(programFor(context, planExit.value))
     if (Exit.isFailure(runExit)) {
-      if (Cause.isInterruptedOnly(runExit.cause)) return yield* Effect.interrupt
+      if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
       yield* Effect.sync(() =>
         reportSyncError(context.stderr, Cause.squash(runExit.cause), context.invocation.explain),
       )
@@ -554,30 +552,34 @@ export async function runEedsh(
       ),
     )
 
-  const configOption = Options.text('config').pipe(
-    Options.withDescription('config file to load (default: eedsh.config.ts in the cwd)'),
-    Options.optional,
+  const configFlag = Flag.String('config').pipe(
+    Flag.withDescription('config file to load (default: eedsh.config.ts in the cwd)'),
+    Flag.optional,
   )
-  const strictOption = Options.boolean('strict').pipe(
-    Options.withDescription('treat unmatched patch targets as failures'),
+  const strictFlag = Flag.Boolean('strict').pipe(
+    Flag.withDescription('treat unmatched patch targets as failures'),
+    Flag.withDefault(false),
   )
-  const watchOption = Options.boolean('watch').pipe(
-    Options.withDescription('re-run sync when files in the config directory change'),
+  const watchFlag = Flag.Boolean('watch').pipe(
+    Flag.withDescription('re-run sync when files in the config directory change'),
+    Flag.withDefault(false),
   )
-  const explainOption = Options.boolean('explain').pipe(
-    Options.withDescription('attribute preflight warnings to their source layer'),
+  const explainFlag = Flag.Boolean('explain').pipe(
+    Flag.withDescription('attribute preflight warnings to their source layer'),
+    Flag.withDefault(false),
   )
-  const noSyncOption = Options.boolean('no-sync').pipe(
-    Options.withDescription('skip publication and boot the last published generation'),
+  const noSyncFlag = Flag.Boolean('no-sync').pipe(
+    Flag.withDescription('skip publication and boot the last published generation'),
+    Flag.withDefault(false),
   )
 
   const syncCommand = Command.make(
     'sync',
     {
-      config: configOption,
-      strict: strictOption,
-      watch: watchOption,
-      explain: explainOption,
+      config: configFlag,
+      strict: strictFlag,
+      watch: watchFlag,
+      explain: explainFlag,
     },
     (parsed) =>
       dispatchEffect({
@@ -592,23 +594,20 @@ export async function runEedsh(
       }),
   ).pipe(Command.withDescription('evaluate the config, preflight the layers, and publish'))
 
-  const runCommandLine = Command.make(
-    'run',
-    { config: configOption, noSync: noSyncOption },
-    (parsed) =>
-      dispatchEffect({
-        command: 'run',
-        configPath: Option.getOrUndefined(parsed.config),
-        strict: false,
-        watch: false,
-        explain: false,
-        noSync: parsed.noSync,
-        dshArgs: [...split.passthrough],
-        tscArgs: [],
-      }),
+  const runCommandLine = Command.make('run', { config: configFlag, noSync: noSyncFlag }, (parsed) =>
+    dispatchEffect({
+      command: 'run',
+      configPath: Option.getOrUndefined(parsed.config),
+      strict: false,
+      watch: false,
+      explain: false,
+      noSync: parsed.noSync,
+      dshArgs: [...split.passthrough],
+      tscArgs: [],
+    }),
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
 
-  const checkCommandLine = Command.make('check', { config: configOption }, (parsed) =>
+  const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>
     dispatchEffect({
       command: 'check',
       configPath: Option.getOrUndefined(parsed.config),
@@ -626,26 +625,16 @@ export async function runEedsh(
     Command.withSubcommands([syncCommand, runCommandLine, checkCommandLine]),
   )
 
-  const app = CliApp.make({
-    name: 'eedsh',
-    version: cliVersion(),
-    command: rootCommand.descriptor,
-  })
-
   const parsedArgs = split.args.length === 0 ? ['--help'] : split.args
-  const program = CliApp.run(app, ['node', 'eedsh', ...parsedArgs], (parsed) =>
-    rootCommand.handler(parsed),
-  ).pipe(
+  const program = Command.runWith(rootCommand, { version: cliVersion() })(parsedArgs).pipe(
     Effect.provide(NodeServices.layer),
     Effect.provideService(Console.Console, cliConsole(stdout, stderr)),
-    // The published CliApp.run signature swaps the handler's error and
-    // environment slots; the runtime result is a ValidationError failure.
-  ) as unknown as Effect.Effect<void, ValidationError.ValidationError, never>
+  )
 
   try {
     const result = await Effect.runPromise(Effect.result(program))
     if (result._tag === 'Failure') {
-      if (ValidationError.isValidationError(result.failure)) return EXIT_USAGE
+      if (CliError.isCliError(result.failure)) return EXIT_USAGE
       report(stderr, result.failure)
       return EXIT_FAILURE
     }
