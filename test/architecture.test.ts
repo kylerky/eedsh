@@ -52,19 +52,6 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
-/** Whether a package source imports a specifier or a path beneath it. */
-function importsSpecifier(name: PackageName, specifier: string): boolean {
-  return sourceImports(name).some(
-    ({ specifier: imported }) => imported === specifier || imported.startsWith(`${specifier}/`),
-  )
-}
-
-function effectImports(name: PackageName): { file: string; specifier: string }[] {
-  return sourceImports(name).filter(
-    ({ specifier }) => specifier === 'effect' || specifier.startsWith('effect/'),
-  )
-}
-
 function declaresEffect(name: PackageName): boolean {
   return dependencyNames(name).includes('effect')
 }

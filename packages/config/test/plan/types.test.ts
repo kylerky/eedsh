@@ -1,4 +1,3 @@
-import * as config from '@eedsh/config'
 import { type PlanPatch, type ProfilePlan, validatePlan } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
