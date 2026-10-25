@@ -599,6 +599,18 @@ describe('tagged failures', () => {
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('package install')
   })
+
+  it('reports an unexpected command failure and exits 1', async () => {
+    const h = harness()
+    const code = await runEedsh(['sync', '--config', fixture('basic')], {
+      ...h.options,
+      services: () => {
+        throw new Error('service layer unavailable')
+      },
+    })
+    expect(code).toBe(1)
+    expect(h.err.join('\n')).toContain('eedsh: service layer unavailable')
+  })
 })
 
 describe('eedsh sync --watch', () => {

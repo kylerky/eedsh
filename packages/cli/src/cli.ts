@@ -76,17 +76,6 @@ export interface CliRunOptions {
   signal?: AbortSignal
 }
 
-interface Invocation {
-  command: 'sync' | 'run' | 'check'
-  configPath: string | undefined
-  strict: boolean
-  watch: boolean
-  explain: boolean
-  noSync: boolean
-  dshArgs: string[]
-  tscArgs: string[]
-}
-
 interface ParsedArgv {
   args: string[]
   passthrough: string[]
@@ -228,15 +217,18 @@ function printResult(
   )
 }
 
-interface CommandContext {
-  configPath: string
-  invocation: Invocation
-  plan: ProfilePlan
+/** The output sinks, environment, and injected seams a subcommand runs against. */
+interface CommandRuntime {
   stdout: (line: string) => void
   stderr: (line: string) => void
   env: Record<string, string | undefined>
   cwd: string
   options: CliRunOptions
+}
+
+interface CommandContext extends CommandRuntime {
+  configPath: string
+  plan: ProfilePlan
 }
 
 function defaultServices(): CliServiceLayer {
@@ -253,15 +245,20 @@ function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined
     : resolveProfileDir(plan.profile.name, home)
 }
 
-function programFor(context: CommandContext, plan: ProfilePlan) {
+function programFor(
+  env: Record<string, string | undefined>,
+  plan: ProfilePlan,
+  strict: boolean,
+  explain: boolean,
+) {
   return materialize({
     plan,
-    profileDir: profileDirFor(plan, context.env),
+    profileDir: profileDirFor(plan, env),
     eedshVersion: cliVersion(),
     runtimeSpec: runtimeLinkSpec(),
     generatedSpec: 'link:./.eedsh/generated',
-    strict: context.invocation.strict,
-    explain: context.invocation.explain,
+    strict,
+    explain,
   })
 }
 
@@ -270,30 +267,30 @@ interface SyncOutcome {
   result?: MaterializeResult
 }
 
-async function syncOnce(context: CommandContext): Promise<SyncOutcome> {
+async function syncOnce(
+  context: CommandContext,
+  strict: boolean,
+  explain: boolean,
+): Promise<SyncOutcome> {
   const layer = (context.options.services ?? defaultServices)()
   let outcome:
     | { _tag: 'Failure'; failure: MaterializeError }
     | { _tag: 'Success'; success: MaterializeResult }
   try {
     outcome = await Effect.runPromise(
-      Effect.result(programFor(context, context.plan).pipe(Effect.provide(layer))),
+      Effect.result(
+        programFor(context.env, context.plan, strict, explain).pipe(Effect.provide(layer)),
+      ),
     )
   } catch (error) {
-    reportSyncError(context.stderr, error, context.invocation.explain)
+    reportSyncError(context.stderr, error, explain)
     return { ok: false }
   }
   if (outcome._tag === 'Failure') {
-    reportSyncError(context.stderr, outcome.failure, context.invocation.explain)
+    reportSyncError(context.stderr, outcome.failure, explain)
     return { ok: false }
   }
-  printResult(
-    context.stdout,
-    context.stderr,
-    context.plan,
-    outcome.success,
-    context.invocation.explain,
-  )
+  printResult(context.stdout, context.stderr, context.plan, outcome.success, explain)
   return { ok: true, result: outcome.success }
 }
 
@@ -323,6 +320,8 @@ function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
 function runWatch(
   context: CommandContext,
   planEffect: Effect.Effect<ProfilePlan, unknown>,
+  strict: boolean,
+  explain: boolean,
 ): Effect.Effect<void, never, CliService> {
   return Effect.gen(function* () {
     const planExit = yield* Effect.exit(planEffect)
@@ -331,27 +330,25 @@ function runWatch(
       yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
       return
     }
-    const runExit = yield* Effect.exit(programFor(context, planExit.value))
+    const runExit = yield* Effect.exit(programFor(context.env, planExit.value, strict, explain))
     if (Exit.isFailure(runExit)) {
       if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
       yield* Effect.sync(() =>
-        reportSyncError(context.stderr, Cause.squash(runExit.cause), context.invocation.explain),
+        reportSyncError(context.stderr, Cause.squash(runExit.cause), explain),
       )
       return
     }
     yield* Effect.sync(() =>
-      printResult(
-        context.stdout,
-        context.stderr,
-        planExit.value,
-        runExit.value,
-        context.invocation.explain,
-      ),
+      printResult(context.stdout, context.stderr, planExit.value, runExit.value, explain),
     )
   })
 }
 
-async function syncWatch(context: CommandContext): Promise<number> {
+async function syncWatch(
+  context: CommandContext,
+  strict: boolean,
+  explain: boolean,
+): Promise<number> {
   const layer = (context.options.services ?? defaultServices)()
   const dir = dirname(context.configPath)
 
@@ -398,12 +395,14 @@ async function syncWatch(context: CommandContext): Promise<number> {
             try: () => (context.options.loadConfig ?? loadConfig)(context.configPath),
             catch: (cause) => cause,
           }),
+          strict,
+          explain,
         )
       }
     })
 
     yield* Effect.race(
-      runWatch(context, Effect.succeed(context.plan)).pipe(Effect.andThen(loop)),
+      runWatch(context, Effect.succeed(context.plan), strict, explain).pipe(Effect.andThen(loop)),
       stopSignal(context.options.signal),
     )
   })
@@ -414,9 +413,13 @@ async function syncWatch(context: CommandContext): Promise<number> {
   return EXIT_FAILURE
 }
 
-async function runBoot(context: CommandContext): Promise<number> {
-  if (!context.invocation.noSync) {
-    const outcome = await syncOnce(context)
+async function runBoot(
+  context: CommandContext,
+  noSync: boolean,
+  dshArgs: readonly string[],
+): Promise<number> {
+  if (!noSync) {
+    const outcome = await syncOnce(context, false, false)
     if (!outcome.ok) return EXIT_FAILURE
   }
   let binPath: string
@@ -430,7 +433,7 @@ async function runBoot(context: CommandContext): Promise<number> {
   return await new Promise<number>((resolveExit) => {
     const child = spawnFn(
       process.execPath,
-      [binPath, '--profile', context.plan.profile.name, ...context.invocation.dshArgs],
+      [binPath, '--profile', context.plan.profile.name, ...dshArgs],
       {
         cwd: context.cwd,
         env: context.env,
@@ -445,73 +448,96 @@ async function runBoot(context: CommandContext): Promise<number> {
   })
 }
 
-async function dispatch(
-  invocation: Invocation,
-  options: CliRunOptions,
-  stdout: (line: string) => void,
-  stderr: (line: string) => void,
-  env: Record<string, string | undefined>,
-  cwd: string,
-): Promise<number> {
-  let configPath: string
-  if (invocation.configPath === undefined) {
-    const discovered = findConfigPath(cwd)
-    if (discovered === undefined) {
-      const rejected = findUnsupportedConfigPath(cwd)
-      if (rejected !== undefined) {
-        report(stderr, unsupportedConfigExtensionError(rejected))
-        return EXIT_FAILURE
-      }
-      stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${cwd}`)
-      return EXIT_FAILURE
-    }
-    configPath = discovered
-  } else {
-    configPath = resolve(cwd, invocation.configPath)
+function resolveConfigPath(
+  requested: string | undefined,
+  runtime: CommandRuntime,
+): string | undefined {
+  if (requested !== undefined) {
+    const configPath = resolve(runtime.cwd, requested)
     try {
       assertSupportedConfigPath(configPath)
+      return configPath
     } catch (error) {
-      report(stderr, error)
-      return EXIT_FAILURE
+      report(runtime.stderr, error)
+      return undefined
     }
   }
 
-  if (invocation.command === 'check') {
-    return runCheck({
-      configPath,
-      tscArgs: invocation.tscArgs,
-      stdout,
-      stderr,
-      env,
-      cwd,
-      spawn: options.spawn ?? defaultSpawn,
-    })
+  const discovered = findConfigPath(runtime.cwd)
+  if (discovered !== undefined) return discovered
+
+  const rejected = findUnsupportedConfigPath(runtime.cwd)
+  if (rejected !== undefined) {
+    report(runtime.stderr, unsupportedConfigExtensionError(rejected))
+    return undefined
   }
 
-  let plan: ProfilePlan
+  runtime.stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${runtime.cwd}`)
+  return undefined
+}
+
+async function loadPlan(
+  configPath: string,
+  runtime: CommandRuntime,
+): Promise<ProfilePlan | undefined> {
   try {
-    plan = await (options.loadConfig ?? loadConfig)(configPath)
+    return await (runtime.options.loadConfig ?? loadConfig)(configPath)
   } catch (error) {
-    report(stderr, error)
-    return EXIT_FAILURE
+    report(runtime.stderr, error)
+    return undefined
   }
+}
 
-  const context: CommandContext = {
+interface SyncCommandInput {
+  configPath: string | undefined
+  strict: boolean
+  watch: boolean
+  explain: boolean
+}
+
+async function runSyncCommand(input: SyncCommandInput, runtime: CommandRuntime): Promise<number> {
+  const configPath = resolveConfigPath(input.configPath, runtime)
+  if (configPath === undefined) return EXIT_FAILURE
+  const plan = await loadPlan(configPath, runtime)
+  if (plan === undefined) return EXIT_FAILURE
+  const context: CommandContext = { ...runtime, configPath, plan }
+  if (input.watch) return syncWatch(context, input.strict, input.explain)
+  const outcome = await syncOnce(context, input.strict, input.explain)
+  return outcome.ok ? EXIT_OK : EXIT_FAILURE
+}
+
+interface RunCommandInput {
+  configPath: string | undefined
+  noSync: boolean
+  dshArgs: readonly string[]
+}
+
+async function runRunCommand(input: RunCommandInput, runtime: CommandRuntime): Promise<number> {
+  const configPath = resolveConfigPath(input.configPath, runtime)
+  if (configPath === undefined) return EXIT_FAILURE
+  const plan = await loadPlan(configPath, runtime)
+  if (plan === undefined) return EXIT_FAILURE
+  const context: CommandContext = { ...runtime, configPath, plan }
+  return runBoot(context, input.noSync, input.dshArgs)
+}
+
+interface CheckCommandInput {
+  configPath: string | undefined
+  tscArgs: readonly string[]
+}
+
+async function runCheckCommand(input: CheckCommandInput, runtime: CommandRuntime): Promise<number> {
+  const configPath = resolveConfigPath(input.configPath, runtime)
+  if (configPath === undefined) return EXIT_FAILURE
+  return runCheck({
     configPath,
-    invocation,
-    plan,
-    stdout,
-    stderr,
-    env,
-    cwd,
-    options,
-  }
-  if (invocation.command === 'sync' && invocation.watch) return syncWatch(context)
-  if (invocation.command === 'sync') {
-    const outcome = await syncOnce(context)
-    return outcome.ok ? EXIT_OK : EXIT_FAILURE
-  }
-  return runBoot(context)
+    tscArgs: input.tscArgs,
+    stdout: runtime.stdout,
+    stderr: runtime.stderr,
+    env: runtime.env,
+    cwd: runtime.cwd,
+    spawn: runtime.options.spawn ?? defaultSpawn,
+  })
 }
 
 /**
@@ -535,22 +561,11 @@ export async function runEedsh(
     return EXIT_USAGE
   }
 
-  let exitCode: number = EXIT_OK
+  const runtime: CommandRuntime = { stdout, stderr, env, cwd, options }
 
-  const dispatchEffect = (invocation: Invocation) =>
-    Effect.tryPromise({
-      try: async () => {
-        exitCode = await dispatch(invocation, options, stdout, stderr, env, cwd)
-      },
-      catch: (error) => error,
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.sync(() => {
-          report(stderr, error)
-          exitCode = EXIT_FAILURE
-        }),
-      ),
-    )
+  // effect/cli handlers return Effect<void>, so each handler records its command's exit code
+  // here; unexpected failures surface through the outer catch below.
+  let exitCode: number = EXIT_OK
 
   const configFlag = Flag.String('config').pipe(
     Flag.withDescription('config file to load (default: eedsh.config.ts in the cwd)'),
@@ -582,41 +597,41 @@ export async function runEedsh(
       explain: explainFlag,
     },
     (parsed) =>
-      dispatchEffect({
-        command: 'sync',
-        configPath: Option.getOrUndefined(parsed.config),
-        strict: parsed.strict,
-        watch: parsed.watch,
-        explain: parsed.explain,
-        noSync: false,
-        dshArgs: [],
-        tscArgs: [],
+      Effect.promise(async () => {
+        exitCode = await runSyncCommand(
+          {
+            configPath: Option.getOrUndefined(parsed.config),
+            strict: parsed.strict,
+            watch: parsed.watch,
+            explain: parsed.explain,
+          },
+          runtime,
+        )
       }),
   ).pipe(Command.withDescription('evaluate the config, preflight the layers, and publish'))
 
   const runCommandLine = Command.make('run', { config: configFlag, noSync: noSyncFlag }, (parsed) =>
-    dispatchEffect({
-      command: 'run',
-      configPath: Option.getOrUndefined(parsed.config),
-      strict: false,
-      watch: false,
-      explain: false,
-      noSync: parsed.noSync,
-      dshArgs: [...split.passthrough],
-      tscArgs: [],
+    Effect.promise(async () => {
+      exitCode = await runRunCommand(
+        {
+          configPath: Option.getOrUndefined(parsed.config),
+          noSync: parsed.noSync,
+          dshArgs: split.passthrough,
+        },
+        runtime,
+      )
     }),
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
 
   const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>
-    dispatchEffect({
-      command: 'check',
-      configPath: Option.getOrUndefined(parsed.config),
-      strict: false,
-      watch: false,
-      explain: false,
-      noSync: false,
-      dshArgs: [],
-      tscArgs: [...split.passthrough],
+    Effect.promise(async () => {
+      exitCode = await runCheckCommand(
+        {
+          configPath: Option.getOrUndefined(parsed.config),
+          tscArgs: split.passthrough,
+        },
+        runtime,
+      )
     }),
   ).pipe(Command.withDescription("typecheck the config's project with its own tsc"))
 
