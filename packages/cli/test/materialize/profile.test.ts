@@ -224,6 +224,42 @@ describe('manifest reconciliation', () => {
     expect(result.dependencies['@eedsh/runtime']).toBe(runtimeSpec)
   })
 
+  it('treats a bundle re-added after its removal was published as user-owned', () => {
+    // The previous record no longer lists @edsh/adapted-ptc, so re-adding it
+    // to the manifest outside eedsh makes it user-owned and protected.
+    const manifest = {
+      dsh: { profile: { bundles: [BUNDLE, '@edsh/adapted-ptc'] } },
+      dependencies: {},
+    }
+    const previous = { bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'], packages: {} }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest, previous })
+    expect(result.bundles).toEqual([
+      BUNDLE,
+      '@eedsh/runtime',
+      '@eedsh/generated',
+      '@edsh/adapted-ptc',
+    ])
+  })
+
+  it('treats a dependency re-added after its removal was published as user-owned', () => {
+    const manifest = { dependencies: { '@edsh/adapted-ptc': 'link:/repo/adapted' } }
+    const previous = { bundles: [], packages: { '@eedsh/config': 'link:/repo/config' } }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest, previous })
+    expect(result.dependencies['@edsh/adapted-ptc']).toBe('link:/repo/adapted')
+  })
+
+  it('removes a re-added bundle while its removal is still unpublished', () => {
+    // The previous record still marks @old/bundle as managed, so the pending
+    // removal wins even though the manifest lists it again.
+    const manifest = { dsh: { profile: { bundles: [BUNDLE, '@old/bundle'] } } }
+    const previous = {
+      bundles: [BUNDLE, '@old/bundle', '@eedsh/runtime', '@eedsh/generated'],
+      packages: {},
+    }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest, previous })
+    expect(result.bundles).not.toContain('@old/bundle')
+  })
+
   it('lets the managed specification win on collision', () => {
     const manifest = { dependencies: { '@scope/plugin': '^1.0.0' } }
     const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '2.0.0' }), { manifest })

@@ -189,9 +189,19 @@ Publication is atomic and idempotent:
 The generated bundle is a normal bundle layer **beneath** the profile patch. Web GUI
 edits, Settings writes, and machine-local overrides keep winning, and `eedsh sync`
 never rewrites `cordis.patch.yml`, the harness-home patch, or `--patch` overlays.
-It only creates an empty `cordis.patch.yml` when none exists. Bundles and
-dependencies added outside eedsh are preserved; things eedsh managed before and no
-longer manages are removed.
+It only creates an empty `cordis.patch.yml` when none exists.
+
+Ownership is **last-applied**. The generation record of the last successful
+publication is the whole ownership baseline: bundles and dependencies eedsh managed
+before and no longer manages are removed when the removal is published, and entries
+the plan does not manage are preserved. So a bundle or dependency that a published
+generation removed and you then add back by hand is user-owned and survives every
+later sync. Re-adding one while its removal is still unpublished does not save it,
+because the previous record still marks it managed.
+
+`--adopt-ownership` is only for a profile whose generation record cannot be read
+(missing, malformed, or foreign). It re-baselines ownership from the current
+manifest; it is not a way to re-adopt a removal you already published.
 
 ## CLI
 
