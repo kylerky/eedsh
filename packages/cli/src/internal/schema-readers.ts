@@ -16,7 +16,7 @@ export interface LockfileEntry {
  * Wrap a schema with its named fallback. The fallback applies only when the
  * whole value fails to decode; inner schemas may recover individual entries.
  */
-function tolerant<A>(schema: Schema.Schema<A>, fallback: A): Schema.Schema<A> {
+function tolerant<A>(schema: Schema.Codec<A>, fallback: A): Schema.Codec<A> {
   return schema.pipe(Schema.catchDecoding(() => Effect.succeed(Option.some(fallback))))
 }
 
@@ -30,7 +30,7 @@ const stringRecordSchema = tolerant(Schema.Record(Schema.String, lenientString),
 const recordSchema = tolerant(Schema.Record(Schema.String, Schema.Unknown), {})
 const optionalStringSchema = tolerant(Schema.optional(Schema.String), undefined)
 
-function decodeOption<A>(schema: Schema.Schema<A>, value: unknown): Option.Option<A> {
+function decodeOption<A>(schema: Schema.Codec<A>, value: unknown): Option.Option<A> {
   return Schema.decodeUnknownOption(schema)(value)
 }
 
