@@ -224,6 +224,122 @@ describe('manifest reconciliation', () => {
     expect(result.dependencies['@eedsh/runtime']).toBe(runtimeSpec)
   })
 
+  it('cleans a managed duplicate out of devDependencies', () => {
+    const manifest = {
+      dependencies: {},
+      devDependencies: { '@scope/plugin': '^1.0.0', '@scope/tool': '^2.0.0' },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.manifest.devDependencies).toEqual({ '@scope/tool': '^2.0.0' })
+    expect(result.dependencies['@scope/plugin']).toBe('1.0.0')
+  })
+
+  it('cleans a managed duplicate out of optionalDependencies', () => {
+    const manifest = {
+      optionalDependencies: { '@scope/plugin': '^1.0.0', '@scope/optional': '3.0.0' },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.manifest.optionalDependencies).toEqual({ '@scope/optional': '3.0.0' })
+    expect(result.dependencies['@scope/plugin']).toBe('1.0.0')
+  })
+
+  it('cleans a previously managed name out of devDependencies', () => {
+    const manifest = { devDependencies: { '@scope/old': '1.0.0', '@scope/tool': '2.0.0' } }
+    const previous = { bundles: [], packages: { '@scope/old': '1.0.0' } }
+    const result = reconcile(plan([bundle(BUNDLE)]), { manifest, previous })
+    expect(result.manifest.devDependencies).toEqual({ '@scope/tool': '2.0.0' })
+  })
+
+  it('leaves a malformed dependency section untouched', () => {
+    const manifest = {
+      devDependencies: { '@scope/plugin': 1 },
+      optionalDependencies: ['@scope/plugin'],
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.manifest.devDependencies).toEqual({ '@scope/plugin': 1 })
+    expect(result.manifest.optionalDependencies).toEqual(['@scope/plugin'])
+  })
+
+  it('does not create dependency sections that were absent', () => {
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }))
+    expect(result.manifest.devDependencies).toBeUndefined()
+    expect(result.manifest.optionalDependencies).toBeUndefined()
+  })
+
+  it('keeps unrelated dev dependencies in their original order', () => {
+    const manifest = {
+      devDependencies: { zebra: '1.0.0', '@scope/plugin': '1.0.0', alpha: '2.0.0' },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(Object.keys(result.manifest.devDependencies as Record<string, string>)).toEqual([
+      'zebra',
+      'alpha',
+    ])
+  })
+
+  it('reports a notice for every managed entry removed from an owned section', () => {
+    const manifest = {
+      devDependencies: { '@scope/plugin': '1.0.0', '@scope/tool': '2.0.0' },
+      optionalDependencies: { '@scope/plugin': '1.0.0' },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.notices).toEqual([
+      { severity: 'notice', message: 'removed @scope/plugin from devDependencies' },
+      { severity: 'notice', message: 'removed @scope/plugin from optionalDependencies' },
+    ])
+  })
+
+  it('reports a malformed dependency section as a warning', () => {
+    const manifest = { devDependencies: { '@scope/plugin': 1 } }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.notices).toHaveLength(1)
+    expect(result.notices[0]?.severity).toBe('warning')
+    expect(result.notices[0]?.message).toContain('devDependencies')
+    expect(result.notices[0]?.message).toContain('left unchanged')
+  })
+
+  it('warns about peer and override conflicts without editing those fields', () => {
+    const manifest = {
+      peerDependencies: { '@scope/plugin': '*' },
+      pnpm: { overrides: { '@scope/plugin': '1.0.0' } },
+      overrides: { '@scope/plugin': '^1.0.0' },
+      resolutions: { '@scope/plugin': '1.0.0' },
+    }
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), { manifest })
+    expect(result.notices.map((item) => item.severity)).toEqual([
+      'warning',
+      'warning',
+      'warning',
+      'warning',
+    ])
+    for (const field of ['overrides', 'peerDependencies', 'pnpm.overrides', 'resolutions']) {
+      expect(
+        result.notices.some(
+          (item) => item.message.includes('@scope/plugin') && item.message.includes(field),
+        ),
+      ).toBe(true)
+    }
+    expect(result.manifest.peerDependencies).toEqual({ '@scope/plugin': '*' })
+    expect(result.manifest.pnpm).toEqual({ overrides: { '@scope/plugin': '1.0.0' } })
+    expect(result.manifest.overrides).toEqual({ '@scope/plugin': '^1.0.0' })
+    expect(result.manifest.resolutions).toEqual({ '@scope/plugin': '1.0.0' })
+  })
+
+  it('orders diagnostics by section and package name', () => {
+    const manifest = {
+      devDependencies: { zebra: '1.0.0', '@scope/plugin': '1.0.0', '@scope/another': '1.0.0' },
+      peerDependencies: { '@scope/plugin': '*', '@scope/another': '*' },
+    }
+    const packages = { '@scope/plugin': '1.0.0', '@scope/another': '1.0.0' }
+    const result = reconcile(plan([bundle(BUNDLE)], packages), { manifest })
+    expect(result.notices.map((item) => item.message)).toEqual([
+      'removed @scope/another from devDependencies',
+      'removed @scope/plugin from devDependencies',
+      'managed package @scope/another is also declared in peerDependencies; the resolved version may differ',
+      'managed package @scope/plugin is also declared in peerDependencies; the resolved version may differ',
+    ])
+  })
+
   it('treats a bundle re-added after its removal was published as user-owned', () => {
     // The previous record no longer lists @edsh/adapted-ptc, so re-adding it
     // to the manifest outside eedsh makes it user-owned and protected.

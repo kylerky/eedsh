@@ -31,11 +31,11 @@ import {
   missingGenerationRecord,
 } from './generation-record'
 import {
+  declaredDependencyNames,
   hasManagedBundles,
   managedBundleOrder,
   type PreviousGeneration,
   readProfileBundles,
-  readProfileDependencies,
   reconcileManifest,
 } from './manifest'
 import {
@@ -132,9 +132,7 @@ function adoptedNames(plan: ProfilePlan, manifest: Record<string, unknown> | und
     GENERATED_PACKAGE_NAME,
   ])
   const bundles = readProfileBundles(manifest).filter((name) => !managedBundles.has(name))
-  const packages = Object.keys(readProfileDependencies(manifest)).filter(
-    (name) => !managedPackages.has(name),
-  )
+  const packages = declaredDependencyNames(manifest).filter((name) => !managedPackages.has(name))
   return [...bundles, ...packages]
 }
 

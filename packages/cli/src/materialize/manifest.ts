@@ -7,7 +7,7 @@
  */
 import type { ProfilePlan } from '@eedsh/config'
 import * as Predicate from 'effect/Predicate'
-import type { Diagnostic } from './diagnostics'
+import { type Diagnostic, notice, warning } from './diagnostics'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 import type { PreviousGeneration } from './generation-record'
 
@@ -109,11 +109,42 @@ export function readProfileBundles(manifest: Record<string, unknown> | undefined
   return stringArray(childRecord(dsh, 'profile').bundles)
 }
 
-/** Read the dependency map of an existing profile manifest. */
+/** The install-relevant dependency sections of a profile manifest. */
+export interface ProfileDependencies {
+  dependencies: Record<string, string>
+  devDependencies: Record<string, string>
+  optionalDependencies: Record<string, string>
+}
+
+/**
+ * Read the dependency sections eedsh reconciles.
+ * @param manifest - the profile manifest, when one exists.
+ * @returns the three install-relevant sections, omitting malformed entries.
+ */
 export function readProfileDependencies(
   manifest: Record<string, unknown> | undefined,
-): Record<string, string> {
-  return stringRecord(manifest?.dependencies)
+): ProfileDependencies {
+  return {
+    dependencies: stringRecord(manifest?.dependencies),
+    devDependencies: stringRecord(manifest?.devDependencies),
+    optionalDependencies: stringRecord(manifest?.optionalDependencies),
+  }
+}
+
+/**
+ * Every package name the manifest declares in an install-relevant section.
+ * @param manifest - the profile manifest, when one exists.
+ * @returns the unique package names, in section order.
+ */
+export function declaredDependencyNames(manifest: Record<string, unknown> | undefined): string[] {
+  const sections = readProfileDependencies(manifest)
+  return [
+    ...new Set([
+      ...Object.keys(sections.dependencies),
+      ...Object.keys(sections.devDependencies),
+      ...Object.keys(sections.optionalDependencies),
+    ]),
+  ]
 }
 
 /**
@@ -129,15 +160,26 @@ export function hasManagedBundles(manifest: Record<string, unknown> | undefined)
   )
 }
 
+/** Sections reconciliation may rewrite in place. */
+export interface CleanedDependencySections {
+  devDependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
+}
+
 function buildManifest(
   existing: Record<string, unknown> | undefined,
   profileName: string,
   bundles: string[],
   dependencies: Record<string, string>,
+  sections: CleanedDependencySections,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = existing
     ? structuredClone(existing)
     : { name: `dsh-profile-${profileName}`, private: true }
+  if (sections.devDependencies !== undefined) base.devDependencies = sections.devDependencies
+  if (sections.optionalDependencies !== undefined) {
+    base.optionalDependencies = sections.optionalDependencies
+  }
   const dsh = childRecord(base, 'dsh')
   return {
     ...base,
@@ -189,11 +231,105 @@ function reconcileDependencies(
   const managedNames = new Set(Object.keys(managedPackages))
   const previousNames = new Set(Object.keys(input.previous?.packages ?? {}))
   const userDependencies: Record<string, string> = {}
-  for (const [name, spec] of Object.entries(readProfileDependencies(input.manifest))) {
+  for (const [name, spec] of Object.entries(readProfileDependencies(input.manifest).dependencies)) {
     if (managedNames.has(name) || previousNames.has(name)) continue
     userDependencies[name] = spec
   }
   return sortedRecord({ ...userDependencies, ...managedPackages })
+}
+
+/** Sections whose managed entries reconciliation removes. */
+const OWNED_SECTIONS = ['devDependencies', 'optionalDependencies'] as const
+
+/** Fields that may pin a managed package outside reconciliation; reported only. */
+const CONFLICT_FIELDS = ['peerDependencies', 'pnpm.overrides', 'overrides', 'resolutions'] as const
+
+type ConflictField = (typeof CONFLICT_FIELDS)[number]
+
+type SectionRead =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'valid'; readonly value: Record<string, string> }
+  | { readonly kind: 'malformed' }
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Read a section strictly: a malformed section is reported, never rewritten. */
+function readStrictSection(value: unknown): SectionRead {
+  if (value === undefined) return { kind: 'absent' }
+  if (!isPlainRecord(value)) return { kind: 'malformed' }
+  const out: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'string') return { kind: 'malformed' }
+    out[key] = item
+  }
+  return { kind: 'valid', value: out }
+}
+
+/** Read the value a conflict field resolves to, including `pnpm.overrides`. */
+function conflictValue(
+  manifest: Record<string, unknown> | undefined,
+  field: ConflictField,
+): unknown {
+  if (field !== 'pnpm.overrides') return manifest?.[field]
+  const pnpm = asRecord(manifest?.pnpm)
+  return pnpm?.overrides
+}
+
+/** Remove managed names from the owned sections and report every diagnostic. */
+function reconcileDependencySections(
+  input: ReconcileManifestInput,
+  managedPackages: Record<string, string>,
+): CleanedDependencySections & { notices: Diagnostic[] } {
+  const owned = new Set([
+    ...Object.keys(managedPackages),
+    ...Object.keys(input.previous?.packages ?? {}),
+  ])
+  const entries: { key: string; diagnostic: Diagnostic }[] = []
+  const cleaned: CleanedDependencySections = {}
+
+  for (const section of OWNED_SECTIONS) {
+    const read = readStrictSection(input.manifest?.[section])
+    if (read.kind === 'absent') continue
+    if (read.kind === 'malformed') {
+      entries.push({
+        key: `${section}\u0000`,
+        diagnostic: warning(
+          `cannot reconcile ${section}: it is not a record of package specifications; left unchanged`,
+        ),
+      })
+      continue
+    }
+    const value = { ...read.value }
+    for (const name of Object.keys(read.value).sort()) {
+      if (!owned.has(name)) continue
+      delete value[name]
+      entries.push({
+        key: `${section}\u0000${name}`,
+        diagnostic: notice(`removed ${name} from ${section}`),
+      })
+    }
+    if (section === 'devDependencies') cleaned.devDependencies = value
+    else cleaned.optionalDependencies = value
+  }
+
+  for (const field of CONFLICT_FIELDS) {
+    const value = asRecord(conflictValue(input.manifest, field))
+    if (value === undefined) continue
+    for (const name of Object.keys(value).sort()) {
+      if (!owned.has(name)) continue
+      entries.push({
+        key: `${field}\u0000${name}`,
+        diagnostic: warning(
+          `managed package ${name} is also declared in ${field}; the resolved version may differ`,
+        ),
+      })
+    }
+  }
+
+  entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  return { ...cleaned, notices: entries.map((entry) => entry.diagnostic) }
 }
 
 /**
@@ -206,13 +342,14 @@ export function reconcileManifest(input: ReconcileManifestInput): ReconcileManif
   const { bundles, managedBundles } = reconcileBundles(input)
   const managedPackages = managedPackageSpecs(input)
   const dependencies = reconcileDependencies(input, managedPackages)
+  const sections = reconcileDependencySections(input, managedPackages)
 
   return {
-    manifest: buildManifest(input.manifest, input.profileName, bundles, dependencies),
+    manifest: buildManifest(input.manifest, input.profileName, bundles, dependencies, sections),
     bundles,
     managedBundles,
     dependencies,
     managedPackages,
-    notices: [],
+    notices: sections.notices,
   }
 }

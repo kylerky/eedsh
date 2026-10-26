@@ -783,6 +783,31 @@ describe('generation record diagnostics', () => {
   })
 })
 
+describe('dependency section notices', () => {
+  const manifestPath = '/home/profiles/cli-fixture/package.json'
+
+  it('prints a cleanup notice and still reinstalls the profile', async () => {
+    const h = harness()
+    expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+    const installs = h.packages.installs.length
+    const manifest = JSON.parse(h.fs.files.get(manifestPath) ?? '{}') as {
+      devDependencies?: Record<string, string>
+    }
+    manifest.devDependencies = { '@eedsh/generated': '^1.0.0' }
+    h.fs.files.set(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+    expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+    expect(h.err.join('\n')).toContain(
+      'eedsh: notice: removed @eedsh/generated from devDependencies',
+    )
+    expect(h.packages.installs.length).toBe(installs + 1)
+    const written = JSON.parse(h.fs.files.get(manifestPath) ?? '{}') as {
+      devDependencies?: Record<string, string>
+    }
+    expect(written.devDependencies).toEqual({})
+  })
+})
+
 describe('tagged failures', () => {
   it('maps a preflight failure to a diagnostic and exit 1', async () => {
     const h = harness({ preflight: { fail: true } })

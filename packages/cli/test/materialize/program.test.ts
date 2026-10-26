@@ -34,6 +34,45 @@ describe('generation-record trust', () => {
   })
 })
 
+describe('dependency-section notices', () => {
+  it('reports a cleanup notice in the materialization result', async () => {
+    const h = harness()
+    await h.run()
+    const manifest = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
+      devDependencies?: Record<string, string>
+    }
+    manifest.devDependencies = { '@scope/plugin': '^1.0.0' }
+    h.fs.files.set(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`)
+
+    const result = await h.run()
+    expect(result.notices).toContainEqual({
+      severity: 'notice',
+      message: 'removed @scope/plugin from devDependencies',
+    })
+  })
+})
+
+describe('dependency-section install decisions', () => {
+  it('installs when the only change is a cleaned dependency section', async () => {
+    const h = harness()
+    await h.run()
+    expect(h.packages.installs).toEqual([PROFILE_DIR])
+    const manifest = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
+      devDependencies?: Record<string, string>
+    }
+    manifest.devDependencies = { '@scope/plugin': '^1.0.0', '@scope/tool': '^2.0.0' }
+    h.fs.files.set(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`)
+
+    const result = await h.run()
+    expect(result.changed).toBe(true)
+    expect(h.packages.installs).toEqual([PROFILE_DIR, PROFILE_DIR])
+    const written = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
+      devDependencies?: Record<string, string>
+    }
+    expect(written.devDependencies).toEqual({ '@scope/tool': '^2.0.0' })
+  })
+})
+
 describe('invalid generation records', () => {
   it('fails without writing when an eedsh-managed profile has an unparseable record', async () => {
     const manifest = managedManifest()
