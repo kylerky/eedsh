@@ -22,6 +22,7 @@ import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import {
+  ConfigError,
   CONFIG_FILENAMES,
   findConfigPath,
   findUnsupportedConfigPath,
@@ -31,7 +32,12 @@ import {
 } from './config'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
-import type { DshResolveFailure, MaterializeError } from './internal/effect/errors'
+import {
+  type CheckFailure,
+  type DshResolveFailure,
+  type MaterializeError,
+  SpawnFailure,
+} from './internal/effect/errors'
 import { liveServiceLayer } from './internal/effect/layer'
 import type {
   DshInstallationShape,
@@ -65,7 +71,7 @@ export interface CliRunOptions {
   stdout?: (line: string) => void
   stderr?: (line: string) => void
   /** Replace config evaluation. */
-  loadConfig?: (configPath: string) => Promise<ProfilePlan>
+  loadConfig?: (configPath: string) => Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace the launcher spawn. */
@@ -222,6 +228,12 @@ function printResult(
   )
 }
 
+/** The reporting context for the one diagnostic the runner emits. */
+interface FailureContext {
+  sync: boolean
+  explain: boolean
+}
+
 /** The output sinks, environment, and injected seams a subcommand runs against. */
 interface CommandRuntime {
   stdout: (line: string) => void
@@ -229,6 +241,7 @@ interface CommandRuntime {
   env: Record<string, string | undefined>
   cwd: string
   options: CliRunOptions
+  setFailureContext: (context: FailureContext | undefined) => void
 }
 
 interface CommandContext extends CommandRuntime {
@@ -267,36 +280,32 @@ function programFor(
   })
 }
 
-interface SyncOutcome {
-  ok: boolean
-  result?: MaterializeResult
+/** Build the materializer's service layer for one command invocation. */
+function serviceLayerFor(options: CliRunOptions): CliServiceLayer {
+  return (options.services ?? defaultServices)()
 }
 
-async function syncOnce(
+/** The materialization program before its service layer is provided. */
+function syncProgram(
+  context: CommandContext,
+  plan: ProfilePlan,
+  strict: boolean,
+  explain: boolean,
+): Effect.Effect<MaterializeResult, MaterializeError, CliService> {
+  return programFor(context.env, plan, strict, explain)
+}
+
+/** Run one one-shot materialization with its own service layer. */
+function syncOnce(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
-): Promise<SyncOutcome> {
-  const layer = (context.options.services ?? defaultServices)()
-  let outcome:
-    | { _tag: 'Failure'; failure: MaterializeError }
-    | { _tag: 'Success'; success: MaterializeResult }
-  try {
-    outcome = await Effect.runPromise(
-      Effect.result(
-        programFor(context.env, context.plan, strict, explain).pipe(Effect.provide(layer)),
-      ),
-    )
-  } catch (error) {
-    reportSyncError(context.stderr, error, explain)
-    return { ok: false }
-  }
-  if (outcome._tag === 'Failure') {
-    reportSyncError(context.stderr, outcome.failure, explain)
-    return { ok: false }
-  }
-  printResult(context.stdout, context.stderr, context.plan, outcome.success, explain)
-  return { ok: true, result: outcome.success }
+): Effect.Effect<MaterializeResult, MaterializeError | DshResolveFailure> {
+  return Effect.suspend(() =>
+    syncProgram(context, context.plan, strict, explain).pipe(
+      Effect.provide(serviceLayerFor(context.options)),
+    ),
+  )
 }
 
 /** A stop signal from an injected `AbortSignal`, SIGINT, or SIGTERM. */
@@ -324,18 +333,12 @@ function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
 /** Run one watch-mode sync, reporting failures and stopping on interruption. */
 function runWatch(
   context: CommandContext,
-  planEffect: Effect.Effect<ProfilePlan, unknown>,
+  plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
 ): Effect.Effect<void, never, CliService> {
   return Effect.gen(function* () {
-    const planExit = yield* Effect.exit(planEffect)
-    if (Exit.isFailure(planExit)) {
-      if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
-      yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
-      return
-    }
-    const runExit = yield* Effect.exit(programFor(context.env, planExit.value, strict, explain))
+    const runExit = yield* Effect.exit(syncProgram(context, plan, strict, explain))
     if (Exit.isFailure(runExit)) {
       if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
       yield* Effect.sync(() =>
@@ -344,111 +347,115 @@ function runWatch(
       return
     }
     yield* Effect.sync(() =>
-      printResult(context.stdout, context.stderr, planExit.value, runExit.value, explain),
+      printResult(context.stdout, context.stderr, plan, runExit.value, explain),
     )
   })
 }
 
-async function syncWatch(
+function watchFailure(context: CommandContext, cause: unknown): ConfigError {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return new ConfigError(
+    'config.watch_failed',
+    `cannot watch ${dirname(context.configPath)}: ${message}`,
+  )
+}
+
+/** One scoped watch session; the service layer is built once for the session. */
+function syncWatch(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
-): Promise<number> {
-  const layer = (context.options.services ?? defaultServices)()
-  const dir = dirname(context.configPath)
-
-  const program = Effect.gen(function* () {
-    const changes = yield* Effect.acquireRelease(Queue.sliding<void>(1), (queue) =>
-      Queue.shutdown(queue),
-    )
-    yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () =>
-          context.options.watch === undefined
-            ? watchConfigDirectory({
-                dir,
-                onChange: () => {
-                  Queue.offerUnsafe(changes, undefined)
-                },
-              })
-            : context.options.watch(dir, () => {
-                Queue.offerUnsafe(changes, undefined)
-              }),
-        catch: (cause) => cause,
-      }),
-      (session) =>
+): Effect.Effect<void, ConfigError | DshResolveFailure> {
+  return Effect.gen(function* () {
+    const dir = dirname(context.configPath)
+    const program = Effect.gen(function* () {
+      const changes = yield* Effect.acquireRelease(Queue.sliding<void>(1), (queue) =>
+        Queue.shutdown(queue),
+      )
+      yield* Effect.acquireRelease(
         Effect.tryPromise({
-          try: () => session.close(),
-          catch: (cause) => cause,
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.sync(() => {
-              for (const line of describeError(error)) {
-                context.stderr(`eedsh: warning: ${line}`)
-              }
-            }),
-          ),
-        ),
-    )
-
-    const loop = Effect.gen(function* () {
-      while (true) {
-        yield* Queue.take(changes)
-        yield* runWatch(
-          context,
+          try: () =>
+            context.options.watch === undefined
+              ? watchConfigDirectory({
+                  dir,
+                  onChange: () => {
+                    Queue.offerUnsafe(changes, undefined)
+                  },
+                })
+              : context.options.watch(dir, () => {
+                  Queue.offerUnsafe(changes, undefined)
+                }),
+          catch: (cause) => watchFailure(context, cause),
+        }),
+        (session) =>
           Effect.tryPromise({
-            try: () => (context.options.loadConfig ?? loadConfig)(context.configPath),
+            try: () => session.close(),
             catch: (cause) => cause,
-          }),
-          strict,
-          explain,
-        )
-      }
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.sync(() => {
+                for (const line of describeError(error)) {
+                  context.stderr(`eedsh: warning: ${line}`)
+                }
+              }),
+            ),
+          ),
+      )
+
+      const loop = Effect.gen(function* () {
+        while (true) {
+          yield* Queue.take(changes)
+          const planExit = yield* Effect.exit(loadPlan(context.configPath, context))
+          if (Exit.isFailure(planExit)) {
+            if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
+            yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
+            continue
+          }
+          yield* runWatch(context, planExit.value, strict, explain)
+        }
+      })
+
+      yield* Effect.race(
+        runWatch(context, context.plan, strict, explain).pipe(Effect.andThen(loop)),
+        stopSignal(context.options.signal),
+      )
     })
-
-    yield* Effect.race(
-      runWatch(context, Effect.succeed(context.plan), strict, explain).pipe(Effect.andThen(loop)),
-      stopSignal(context.options.signal),
-    )
+    yield* Effect.scoped(program).pipe(Effect.provide(serviceLayerFor(context.options)))
   })
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(program).pipe(Effect.provide(layer)))
-  if (Exit.isSuccess(exit)) return EXIT_OK
-  report(context.stderr, Cause.squash(exit.cause))
-  return EXIT_FAILURE
 }
 
-async function runBoot(
+function spawnDsh(
   context: CommandContext,
-  noSync: boolean,
+  binPath: string,
   dshArgs: readonly string[],
-): Promise<number> {
-  if (!noSync) {
-    const outcome = await syncOnce(context, false, false)
-    if (!outcome.ok) return EXIT_FAILURE
-  }
-  const installation = resolveDshInstallation()
-  if (Result.isFailure(installation)) {
-    report(context.stderr, installation.failure)
-    return EXIT_FAILURE
-  }
-  const binPath = installation.success.binPath
+): Effect.Effect<number, SpawnFailure> {
   const spawnFn: SpawnLike = context.options.spawn ?? defaultSpawn
-  return await new Promise<number>((resolveExit) => {
-    const child = spawnFn(
-      process.execPath,
-      [binPath, '--profile', context.plan.profile.name, ...dshArgs],
-      {
-        cwd: context.cwd,
-        env: context.env,
-        stdio: 'inherit',
-      },
-    )
-    child.on('exit', (code) => resolveExit(code ?? EXIT_FAILURE))
-    child.on('error', (error) => {
-      report(context.stderr, error)
-      resolveExit(EXIT_FAILURE)
-    })
+  return Effect.tryPromise({
+    try: () =>
+      new Promise<number>((resolveExit, rejectExit) => {
+        const child = spawnFn(
+          process.execPath,
+          [binPath, '--profile', context.plan.profile.name, ...dshArgs],
+          {
+            cwd: context.cwd,
+            env: context.env,
+            stdio: 'inherit',
+          },
+        )
+        child.on('exit', (code) => resolveExit(code ?? EXIT_FAILURE))
+        child.on('error', rejectExit)
+      }),
+    catch: (cause) => new SpawnFailure({ cause }),
+  })
+}
+
+function runBoot(
+  context: CommandContext,
+  dshArgs: readonly string[],
+): Effect.Effect<number, DshResolveFailure | SpawnFailure> {
+  return Effect.gen(function* () {
+    const installation = yield* Effect.fromResult(resolveDshInstallation())
+    return yield* spawnDsh(context, installation.binPath, dshArgs)
   })
 }
 
@@ -479,16 +486,11 @@ function resolveConfigPath(
   return undefined
 }
 
-async function loadPlan(
+function loadPlan(
   configPath: string,
   runtime: CommandRuntime,
-): Promise<ProfilePlan | undefined> {
-  try {
-    return await (runtime.options.loadConfig ?? loadConfig)(configPath)
-  } catch (error) {
-    report(runtime.stderr, error)
-    return undefined
-  }
+): Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError> {
+  return (runtime.options.loadConfig ?? loadConfig)(configPath)
 }
 
 interface SyncCommandInput {
@@ -498,15 +500,29 @@ interface SyncCommandInput {
   explain: boolean
 }
 
-async function runSyncCommand(input: SyncCommandInput, runtime: CommandRuntime): Promise<number> {
-  const configPath = resolveConfigPath(input.configPath, runtime)
-  if (configPath === undefined) return EXIT_FAILURE
-  const plan = await loadPlan(configPath, runtime)
-  if (plan === undefined) return EXIT_FAILURE
-  const context: CommandContext = { ...runtime, configPath, plan }
-  if (input.watch) return syncWatch(context, input.strict, input.explain)
-  const outcome = await syncOnce(context, input.strict, input.explain)
-  return outcome.ok ? EXIT_OK : EXIT_FAILURE
+function runSyncCommand(
+  input: SyncCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<
+  number,
+  ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure
+> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext({ sync: true, explain: input.explain })
+    const configPath = resolveConfigPath(input.configPath, runtime)
+    if (configPath === undefined) return EXIT_FAILURE
+    const plan = yield* loadPlan(configPath, runtime)
+    const context: CommandContext = { ...runtime, configPath, plan }
+    if (input.watch) {
+      yield* syncWatch(context, input.strict, input.explain)
+      return EXIT_OK
+    }
+    const result = yield* syncOnce(context, input.strict, input.explain)
+    yield* Effect.sync(() =>
+      printResult(runtime.stdout, runtime.stderr, plan, result, input.explain),
+    )
+    return EXIT_OK
+  })
 }
 
 interface RunCommandInput {
@@ -515,13 +531,25 @@ interface RunCommandInput {
   dshArgs: readonly string[]
 }
 
-async function runRunCommand(input: RunCommandInput, runtime: CommandRuntime): Promise<number> {
-  const configPath = resolveConfigPath(input.configPath, runtime)
-  if (configPath === undefined) return EXIT_FAILURE
-  const plan = await loadPlan(configPath, runtime)
-  if (plan === undefined) return EXIT_FAILURE
-  const context: CommandContext = { ...runtime, configPath, plan }
-  return runBoot(context, input.noSync, input.dshArgs)
+function runRunCommand(
+  input: RunCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<
+  number,
+  ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure | SpawnFailure
+> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
+    const configPath = resolveConfigPath(input.configPath, runtime)
+    if (configPath === undefined) return EXIT_FAILURE
+    const plan = yield* loadPlan(configPath, runtime)
+    const context: CommandContext = { ...runtime, configPath, plan }
+    if (!input.noSync) {
+      const result = yield* syncOnce(context, false, false)
+      yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
+    }
+    return yield* runBoot(context, input.dshArgs)
+  })
 }
 
 interface CheckCommandInput {
@@ -529,17 +557,23 @@ interface CheckCommandInput {
   tscArgs: readonly string[]
 }
 
-async function runCheckCommand(input: CheckCommandInput, runtime: CommandRuntime): Promise<number> {
-  const configPath = resolveConfigPath(input.configPath, runtime)
-  if (configPath === undefined) return EXIT_FAILURE
-  return runCheck({
-    configPath,
-    tscArgs: input.tscArgs,
-    stdout: runtime.stdout,
-    stderr: runtime.stderr,
-    env: runtime.env,
-    cwd: runtime.cwd,
-    spawn: runtime.options.spawn ?? defaultSpawn,
+function runCheckCommand(
+  input: CheckCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<number, ConfigError | Schema.SchemaError | CheckFailure> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext(undefined)
+    const configPath = resolveConfigPath(input.configPath, runtime)
+    if (configPath === undefined) return EXIT_FAILURE
+    return yield* runCheck({
+      configPath,
+      tscArgs: input.tscArgs,
+      stdout: runtime.stdout,
+      stderr: runtime.stderr,
+      env: runtime.env,
+      cwd: runtime.cwd,
+      spawn: runtime.options.spawn ?? defaultSpawn,
+    })
   })
 }
 
@@ -564,10 +598,20 @@ export async function runEedsh(
     return EXIT_USAGE
   }
 
-  const runtime: CommandRuntime = { stdout, stderr, env, cwd, options }
+  let failureContext: FailureContext | undefined
+  const runtime: CommandRuntime = {
+    stdout,
+    stderr,
+    env,
+    cwd,
+    options,
+    setFailureContext: (context) => {
+      failureContext = context
+    },
+  }
 
   // effect/cli handlers return Effect<void>, so each handler records its command's exit code
-  // here; unexpected failures surface through the outer catch below.
+  // here; failures flow through the single Exit boundary below.
   let exitCode: number = EXIT_OK
 
   const configFlag = Flag.String('config').pipe(
@@ -600,8 +644,8 @@ export async function runEedsh(
       explain: explainFlag,
     },
     (parsed) =>
-      Effect.promise(async () => {
-        exitCode = await runSyncCommand(
+      Effect.gen(function* () {
+        exitCode = yield* runSyncCommand(
           {
             configPath: Option.getOrUndefined(parsed.config),
             strict: parsed.strict,
@@ -614,8 +658,8 @@ export async function runEedsh(
   ).pipe(Command.withDescription('evaluate the config, preflight the layers, and publish'))
 
   const runCommandLine = Command.make('run', { config: configFlag, noSync: noSyncFlag }, (parsed) =>
-    Effect.promise(async () => {
-      exitCode = await runRunCommand(
+    Effect.gen(function* () {
+      exitCode = yield* runRunCommand(
         {
           configPath: Option.getOrUndefined(parsed.config),
           noSync: parsed.noSync,
@@ -627,8 +671,8 @@ export async function runEedsh(
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
 
   const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>
-    Effect.promise(async () => {
-      exitCode = await runCheckCommand(
+    Effect.gen(function* () {
+      exitCode = yield* runCheckCommand(
         {
           configPath: Option.getOrUndefined(parsed.config),
           tscArgs: split.passthrough,
@@ -644,21 +688,18 @@ export async function runEedsh(
   )
 
   const parsedArgs = split.args.length === 0 ? ['--help'] : split.args
-  const program = Command.runWith(rootCommand, { version: cliVersion() })(parsedArgs).pipe(
-    Effect.provide(NodeServices.layer),
-    Effect.provideService(Console.Console, cliConsole(stdout, stderr)),
-  )
+  const buildProgram = () =>
+    Command.runWith(rootCommand, { version: cliVersion() })(parsedArgs).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.provideService(Console.Console, cliConsole(stdout, stderr)),
+    )
 
-  try {
-    const result = await Effect.runPromise(Effect.result(program))
-    if (result._tag === 'Failure') {
-      if (CliError.isCliError(result.failure)) return EXIT_USAGE
-      report(stderr, result.failure)
-      return EXIT_FAILURE
-    }
-    return exitCode
-  } catch (error) {
-    report(stderr, error)
-    return EXIT_FAILURE
-  }
+  const exit = await Effect.runPromiseExit(Effect.suspend(buildProgram))
+  if (Exit.isSuccess(exit)) return exitCode
+  if (Cause.hasInterruptsOnly(exit.cause)) return EXIT_FAILURE
+  const error = Cause.squash(exit.cause)
+  if (CliError.isCliError(error)) return EXIT_USAGE
+  if (failureContext?.sync === true) reportSyncError(stderr, error, failureContext.explain)
+  else report(stderr, error)
+  return EXIT_FAILURE
 }

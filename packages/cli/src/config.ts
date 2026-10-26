@@ -8,7 +8,7 @@ import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type ProfilePlan, validatePlan } from '@eedsh/config'
-import { Data } from 'effect'
+import { Data, Effect } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
@@ -71,7 +71,7 @@ const nativeImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<{ default?: unknown }>
 
-let loaderRegistration: Promise<void> | undefined
+let loaderRegistration: Promise<Result.Result<void, unknown>> | undefined
 
 async function registerTsxLoader(): Promise<void> {
   const [esmApi, cjsApi] = await Promise.all([import('tsx/esm/api'), import('tsx/cjs/api')])
@@ -85,13 +85,11 @@ async function registerTsxLoader(): Promise<void> {
  * its dynamic import reaches the CJS loader rather than the ESM hooks.
  * Registration is lazy (never for `--help`/`--version`) and idempotent.
  */
-function ensureTsxLoader(): Promise<void> {
-  if (loaderRegistration === undefined) {
-    loaderRegistration = registerTsxLoader().catch((error: unknown) => {
-      loaderRegistration = undefined
-      throw error
-    })
-  }
+function ensureTsxLoader(): Promise<Result.Result<void, unknown>> {
+  loaderRegistration ??= registerTsxLoader().then(
+    () => Result.succeed(undefined),
+    (cause: unknown) => Result.fail(cause),
+  )
   return loaderRegistration
 }
 
@@ -151,49 +149,57 @@ export function validateConfigPath(configPath: string): Result.Result<void, Conf
  * The module URL carries the file's modification time so a watch rerun
  * re-evaluates an edited config instead of reusing the module cache.
  * @param configPath - absolute config path.
- * @returns the validated plan.
- * @throws {ConfigError} when the file cannot be read or imported, or has no default export.
- * @throws {import('effect/Schema').SchemaError} when the exported plan is invalid.
+ * @returns an Effect carrying the validated plan, a config failure, or the
+ * native schema error for an invalid export.
  */
-export async function loadConfig(configPath: string): Promise<ProfilePlan> {
-  const pathResult = validateConfigPath(configPath)
-  if (Result.isFailure(pathResult)) throw pathResult.failure
-  try {
-    await ensureTsxLoader()
-  } catch (cause) {
-    throw new ConfigError(
-      'config.import_failed',
-      `cannot initialize the TypeScript loader: ${errorMessage(cause)}`,
-    )
-  }
-  let stamp: number
-  try {
-    stamp = statSync(configPath).mtimeMs
-  } catch (cause) {
-    throw new ConfigError('config.not_found', `cannot read ${configPath}: ${errorMessage(cause)}`)
-  }
+export function loadConfig(
+  configPath: string,
+): Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError> {
+  return Effect.gen(function* () {
+    const pathResult = validateConfigPath(configPath)
+    if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
 
-  const url = pathToFileURL(configPath)
-  url.search = `?eedsh=${stamp}`
-  let imported: { default?: unknown }
-  try {
-    imported = await nativeImport(url.href)
-  } catch (cause) {
-    if (Schema.isSchemaError(cause)) throw cause
-    throw new ConfigError(
-      'config.import_failed',
-      `cannot import ${configPath}: ${errorMessage(cause)}`,
-    )
-  }
+    const loaded = yield* Effect.promise(() => ensureTsxLoader())
+    if (Result.isFailure(loaded)) {
+      loaderRegistration = undefined
+      return yield* Effect.fail(
+        new ConfigError(
+          'config.import_failed',
+          `cannot initialize the TypeScript loader: ${errorMessage(loaded.failure)}`,
+        ),
+      )
+    }
 
-  const exported = imported.default
-  if (exported === undefined) {
-    throw new ConfigError(
-      'config.missing_default_export',
-      `${configPath} must default-export a profile plan`,
-    )
-  }
-  const result = exportedPlan(exported)
-  if (Result.isFailure(result)) throw result.failure
-  return result.success
+    const stamp = yield* Effect.try({
+      try: () => statSync(configPath).mtimeMs,
+      catch: (cause) =>
+        new ConfigError('config.not_found', `cannot read ${configPath}: ${errorMessage(cause)}`),
+    })
+
+    const url = pathToFileURL(configPath)
+    url.search = `?eedsh=${stamp}`
+    const imported = yield* Effect.tryPromise({
+      try: () => nativeImport(url.href),
+      catch: (cause) =>
+        Schema.isSchemaError(cause)
+          ? cause
+          : new ConfigError(
+              'config.import_failed',
+              `cannot import ${configPath}: ${errorMessage(cause)}`,
+            ),
+    })
+
+    const exported = imported.default
+    if (exported === undefined) {
+      return yield* Effect.fail(
+        new ConfigError(
+          'config.missing_default_export',
+          `${configPath} must default-export a profile plan`,
+        ),
+      )
+    }
+    const result = exportedPlan(exported)
+    if (Result.isFailure(result)) return yield* Effect.fail(result.failure)
+    return result.success
+  })
 }

@@ -7,10 +7,11 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { Effect } from 'effect'
 import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
-import { ConfigError } from './config'
 import { EXIT_FAILURE } from './exit'
+import { CheckFailure } from './internal/effect/errors'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
 
 const TSCONFIG_FILENAME = 'tsconfig.json'
@@ -104,10 +105,16 @@ function writeLines(stderr: (line: string) => void, text: string): void {
   }
 }
 
-function checkFailure(stderr: (line: string) => void, code: string, message: string): number {
-  const error = new ConfigError(code, message)
-  stderr(`eedsh: ${error.code}: ${error.message}`)
-  return EXIT_FAILURE
+function checkFailure(code: string, message: string): CheckFailure {
+  return new CheckFailure({ code, message })
+}
+
+function spawnFailure(command: string, cause: unknown): CheckFailure {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return new CheckFailure({
+    code: 'check.spawn_failed',
+    message: `cannot run ${command}: ${message}`,
+  })
 }
 
 function capture(
@@ -133,77 +140,88 @@ function capture(
 
 function runInherited(input: CheckInput, command: string, args: string[]): Promise<number> {
   const options: SpawnOptionsLike = { cwd: input.cwd, env: input.env, stdio: 'inherit' }
-  return new Promise((resolveExit) => {
+  return new Promise((resolveExit, rejectExit) => {
     const child = input.spawn(command, args, options)
     child.on('exit', (code) => resolveExit(code ?? EXIT_FAILURE))
-    child.on('error', (error) => {
-      input.stderr(`eedsh: cannot run ${command}: ${error.message}`)
-      resolveExit(EXIT_FAILURE)
-    })
+    child.on('error', rejectExit)
   })
 }
 
 /**
  * Run the project's compiler against the config's project.
  * @param input - config path, passthrough arguments, output sinks, and spawn seam.
- * @returns the compiler's exit code, or a failure code when the check cannot run.
+ * @returns an Effect carrying the compiler's exit code, or a check failure when
+ * the check cannot run. A nonzero compiler exit is a successful outcome.
  */
-export async function runCheck(input: CheckInput): Promise<number> {
-  if (!existsSync(input.configPath)) {
-    return checkFailure(
-      input.stderr,
-      'config.not_found',
-      `cannot read ${input.configPath}; create eedsh.config.ts or pass --config <path>`,
+export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure> {
+  return Effect.gen(function* () {
+    if (!existsSync(input.configPath)) {
+      return yield* Effect.fail(
+        checkFailure(
+          'config.not_found',
+          `cannot read ${input.configPath}; create eedsh.config.ts or pass --config <path>`,
+        ),
+      )
+    }
+
+    const tsconfigPath = findTsconfigPath(input.configPath)
+    if (tsconfigPath === undefined) {
+      return yield* Effect.fail(
+        checkFailure(
+          'check.tsconfig_missing',
+          `cannot find a tsconfig.json at or above ${input.configPath}; create one that includes the config`,
+        ),
+      )
+    }
+
+    const configDir = dirname(input.configPath)
+    const typescript = resolveTypeScript(configDir)
+    if (typescript === undefined) {
+      return yield* Effect.fail(
+        checkFailure(
+          'check.typescript_missing',
+          `cannot resolve TypeScript from ${configDir}; install it in the config's project (for example: pnpm add -D typescript)`,
+        ),
+      )
+    }
+
+    const args = ['--noEmit', '-p', tsconfigPath, ...input.tscArgs]
+    input.stdout(`eedsh: TypeScript ${typescript.version}`)
+    input.stdout(`eedsh: tsconfig ${tsconfigPath}`)
+    input.stdout(
+      `eedsh: running ${formatCommandLine([process.execPath, typescript.binPath, ...args])}`,
     )
-  }
 
-  const tsconfigPath = findTsconfigPath(input.configPath)
-  if (tsconfigPath === undefined) {
-    return checkFailure(
-      input.stderr,
-      'check.tsconfig_missing',
-      `cannot find a tsconfig.json at or above ${input.configPath}; create one that includes the config`,
-    )
-  }
+    const listing = yield* Effect.tryPromise({
+      try: () =>
+        capture(input, process.execPath, [
+          typescript.binPath,
+          '-p',
+          tsconfigPath,
+          '--listFilesOnly',
+        ]),
+      catch: (cause) => spawnFailure(process.execPath, cause),
+    })
+    if (listing.code !== 0) {
+      writeLines(input.stderr, listing.stderr)
+      input.stderr(`eedsh: cannot list the project files with ${tsconfigPath}`)
+      return listing.code
+    }
+    if (!listedFiles(listing.stdout, input.configPath)) {
+      return yield* Effect.fail(
+        checkFailure(
+          'check.config_not_in_project',
+          `${input.configPath} is not included by ${tsconfigPath}; add it to the tsconfig's "include" or "files"`,
+        ),
+      )
+    }
 
-  const configDir = dirname(input.configPath)
-  const typescript = resolveTypeScript(configDir)
-  if (typescript === undefined) {
-    return checkFailure(
-      input.stderr,
-      'check.typescript_missing',
-      `cannot resolve TypeScript from ${configDir}; install it in the config's project (for example: pnpm add -D typescript)`,
-    )
-  }
-
-  const args = ['--noEmit', '-p', tsconfigPath, ...input.tscArgs]
-  input.stdout(`eedsh: TypeScript ${typescript.version}`)
-  input.stdout(`eedsh: tsconfig ${tsconfigPath}`)
-  input.stdout(
-    `eedsh: running ${formatCommandLine([process.execPath, typescript.binPath, ...args])}`,
-  )
-
-  const listing = await capture(input, process.execPath, [
-    typescript.binPath,
-    '-p',
-    tsconfigPath,
-    '--listFilesOnly',
-  ])
-  if (listing.code !== 0) {
-    writeLines(input.stderr, listing.stderr)
-    input.stderr(`eedsh: cannot list the project files with ${tsconfigPath}`)
-    return listing.code
-  }
-  if (!listedFiles(listing.stdout, input.configPath)) {
-    return checkFailure(
-      input.stderr,
-      'check.config_not_in_project',
-      `${input.configPath} is not included by ${tsconfigPath}; add it to the tsconfig's "include" or "files"`,
-    )
-  }
-
-  const exitCode = await runInherited(input, process.execPath, [typescript.binPath, ...args])
-  if (exitCode === 0) input.stdout('eedsh: check passed')
-  else input.stderr(`eedsh: check failed (exit ${exitCode})`)
-  return exitCode
+    const exitCode = yield* Effect.tryPromise({
+      try: () => runInherited(input, process.execPath, [typescript.binPath, ...args]),
+      catch: (cause) => spawnFailure(process.execPath, cause),
+    })
+    if (exitCode === 0) input.stdout('eedsh: check passed')
+    else input.stderr(`eedsh: check failed (exit ${exitCode})`)
+    return exitCode
+  })
 }

@@ -21,6 +21,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
+import { ConfigError } from '../src/config'
 import { DshResolveFailure } from '../src/internal/effect/errors'
 import {
   DshInstallation,
@@ -296,9 +297,8 @@ describe('eedsh sync', () => {
       packages: {},
     })
     if (Result.isSuccess(decoded)) expect.unreachable('expected an invalid plan')
-    const loadConfig = async (): Promise<ProfilePlan> => {
-      throw new Schema.SchemaError(decoded.failure.issue)
-    }
+    const loadConfig = (): Effect.Effect<never, Schema.SchemaError> =>
+      Effect.fail(new Schema.SchemaError(decoded.failure.issue))
     const code = await runEedsh(['sync', '--config', fixture('basic')], {
       ...h.options,
       loadConfig,
@@ -707,6 +707,13 @@ describe('tagged failures', () => {
     expect(h.err.join('\n')).toContain('unmatched target')
   })
 
+  it('reports a typed failure exactly once', async () => {
+    const h = harness({ preflight: { fail: true } })
+    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    expect(code).toBe(1)
+    expect(h.err.join('\n').match(/unmatched target/g)).toHaveLength(1)
+  })
+
   it('maps a held sync lock to a diagnostic naming the path and no PID', async () => {
     const h = harness({ lockHeld: true })
     const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
@@ -733,7 +740,9 @@ describe('tagged failures', () => {
       },
     })
     expect(code).toBe(1)
-    expect(h.err.join('\n')).toContain('eedsh: service layer unavailable')
+    const errors = h.err.join('\n')
+    expect(errors).toContain('eedsh: service layer unavailable')
+    expect(errors.match(/service layer unavailable/g)).toHaveLength(1)
   })
 })
 
@@ -764,10 +773,12 @@ describe('eedsh sync --watch', () => {
       }
     }
     let call = 0
-    const loadConfig = async (): Promise<ProfilePlan> => {
+    const loadConfig = (): Effect.Effect<ProfilePlan, ConfigError> => {
       call += 1
-      if (call === 2) throw new Error('config compile failed')
-      return call === 1 ? planA : planB
+      if (call === 2) {
+        return Effect.fail(new ConfigError('config.import_failed', 'config compile failed'))
+      }
+      return Effect.succeed(call === 1 ? planA : planB)
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
@@ -959,9 +970,9 @@ describe('eedsh sync --watch', () => {
       }
     }
     let calls = 0
-    const loadConfig = async (): Promise<ProfilePlan> => {
+    const loadConfig = (): Effect.Effect<ProfilePlan> => {
       calls += 1
-      return calls === 1 ? planA : planB
+      return Effect.succeed(calls === 1 ? planA : planB)
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
@@ -1026,9 +1037,7 @@ describe('eedsh check', () => {
     const code = await runEedsh(['check', '--config', configPath, '--', '--pretty', 'false'], {
       ...h.options,
       spawn,
-      loadConfig: async () => {
-        throw new Error('eedsh check must not evaluate the config')
-      },
+      loadConfig: () => Effect.die(new Error('eedsh check must not evaluate the config')),
     })
     expect(code).toBe(0)
     const text = h.out.join('\n')
