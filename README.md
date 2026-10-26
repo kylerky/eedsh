@@ -229,6 +229,11 @@ TypeScript config alone reloads nothing; only a published generation does.
 Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` is the type checker;
 Vitest runs the tests.
 
+Development requires the TypeScript 7.1 native compiler: the root `package.json` pins
+`typescript@7.1.0-beta` and `tsdown@0.23.2`, and package builds emit declarations with
+the native TypeScript Go generator instead of the classic compiler API that TypeScript 7
+removed. A compiler without that API fails the build rather than falling back.
+
 The root `tsconfig.json` is the repository's typecheck project. It extends
 `tsconfig.base.json`, which holds the editor/build compiler options with no `paths`
 and no `noEmit`, and adds `noEmit`, the `@eedsh/*` path mappings, and the full
