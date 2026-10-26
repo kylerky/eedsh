@@ -4,13 +4,13 @@
  * the publication commit point, so it is emitted last.
  * @module @eedsh/cli/materialize/generated-bundle
  */
-import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import { writeFileAtomic } from '../internal/atomic-write'
+import { sha256 } from '../internal/sha256'
 import { emitPatchesYaml } from './yaml'
 
 /** The generated bundle's package name. */
@@ -105,10 +105,6 @@ export interface BuildGeneratedBundleInput {
   packages: Readonly<Record<string, string>>
   eedshVersion: string
   dshVersion: string
-}
-
-function sha256(content: string): string {
-  return createHash('sha256').update(content).digest('hex')
 }
 
 /**

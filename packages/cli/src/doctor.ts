@@ -5,18 +5,20 @@
  * `eedsh sync --adopt-ownership`.
  * @module @eedsh/cli/doctor
  */
-import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan, ProfilePlanSchema } from '@eedsh/config'
 import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
-import type * as PlatformError from 'effect/PlatformError'
 import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as yaml from 'js-yaml'
 import { EXIT_FAILURE, EXIT_OK } from './exit'
+import { messageOf } from './internal/error-message'
+import { readOptional } from './internal/read-optional'
+import { asRecord } from './internal/record'
 import { isSemverRange, versionSatisfies } from './internal/semver'
+import { sha256 } from './internal/sha256'
 import {
   authoritativePlanPath,
   GENERATED_PACKAGE_NAME,
@@ -76,10 +78,6 @@ const SCAFFOLDING: readonly { file: string; label: string }[] = [
   { file: PROFILE_PATCH_FILENAME, label: 'profile patch' },
   { file: PROFILE_WORKSPACE_FILENAME, label: 'pnpm workspace file' },
 ]
-
-function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}
 
 function compareStrings(a: string, b: string): number {
   if (a < b) return -1
@@ -144,20 +142,6 @@ export function doctorExitCode(result: DoctorResult, strict: boolean): number {
 
 function existsOrFalse(fs: FileSystem.FileSystem, path: string): Effect.Effect<boolean> {
   return fs.exists(path).pipe(Effect.orElseSucceed(() => false))
-}
-
-function readOptional(
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<string | undefined, PlatformError.PlatformError> {
-  return Effect.gen(function* () {
-    if (!(yield* fs.exists(path))) return undefined
-    return yield* fs.readFileString(path)
-  })
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex')
 }
 
 function parseJson(text: string): Result.Result<unknown, string> {
@@ -560,7 +544,7 @@ function checkLockfile(
       : {}
     const entries = new Map<string, LockfileEntry>()
     for (const [name, value] of Object.entries(dependencies)) {
-      const entry = Predicate.isObject(value) ? (value as Record<string, unknown>) : {}
+      const entry = asRecord(value) ?? {}
       entries.set(name, {
         ...(typeof entry.specifier === 'string' ? { specifier: entry.specifier } : {}),
         ...(typeof entry.version === 'string' ? { version: entry.version } : {}),

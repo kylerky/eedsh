@@ -6,7 +6,7 @@
  * @module @eedsh/cli/materialize/manifest
  */
 import type { ProfilePlan } from '@eedsh/config'
-import * as Predicate from 'effect/Predicate'
+import { asRecord } from '../internal/record'
 import { type Diagnostic, notice, warning } from './diagnostics'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 import type { PreviousGeneration } from './generation-record'
@@ -46,11 +46,6 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : []
-}
-
-/** Read a value as a plain record, when it is one. */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
 }
 
 function stringRecord(value: unknown): Record<string, string> {
@@ -268,16 +263,13 @@ type SectionRead =
   | { readonly kind: 'valid'; readonly value: Record<string, string> }
   | { readonly kind: 'malformed' }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 /** Read a section strictly: a malformed section is reported, never rewritten. */
 function readStrictSection(value: unknown): SectionRead {
   if (value === undefined) return { kind: 'absent' }
-  if (!isPlainRecord(value)) return { kind: 'malformed' }
+  const record = asRecord(value)
+  if (record === undefined) return { kind: 'malformed' }
   const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(value)) {
+  for (const [key, item] of Object.entries(record)) {
     if (typeof item !== 'string') return { kind: 'malformed' }
     out[key] = item
   }

@@ -4,6 +4,7 @@
  * the public plan schema.
  * @module @eedsh/config/plan/json
  */
+import { isPlainObject } from './plain-object'
 
 /** One located JSON or expression problem, relative to the walked root. */
 export interface JsonIssue {
@@ -13,12 +14,6 @@ export interface JsonIssue {
 
 /** The reserved expression-node shape, as a human-readable expectation. */
 const EXPRESSION_EXPECTATION = 'expected exactly { "$eedsh": { "expr": "<source>" } }'
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
 
 function isExpressionNode(value: Record<string, unknown>): boolean {
   const node = value.$eedsh

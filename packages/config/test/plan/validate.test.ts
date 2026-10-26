@@ -9,22 +9,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
-
-const bundle = (name: string) => ({ kind: 'bundle', name })
-const layer = (id: string, patches: unknown[] = []) => ({ id, patches })
-
-function plan(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    format: PLAN_FORMAT,
-    version: PLAN_VERSION,
-    profile: { name: 'work' },
-    dsh: '0.2.1-rc.2',
-    bundles: [bundle('@deepseek-ai/dsh-base')],
-    layers: [],
-    packages: {},
-    ...overrides,
-  }
-}
+import { layer, plan } from '../support/plan'
 
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
 

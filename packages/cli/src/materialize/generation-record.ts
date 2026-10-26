@@ -8,8 +8,9 @@
 import { Effect } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
+import { messageOf } from '../internal/error-message'
+import { asRecord } from '../internal/record'
 import {
   GENERATED_PACKAGE_NAME,
   GENERATION_FORMAT,
@@ -67,10 +68,6 @@ export type GenerationLookup =
   | ValidGenerationRecord
 
 const PLAN_HASH = /^[0-9a-f]{64}$/
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
-}
 
 function invalidRecord(
   path: string,
@@ -257,8 +254,7 @@ function classifyText(text: string, path: string): Effect.Effect<GenerationLooku
       catch: (cause) => cause,
     }).pipe(Effect.result)
     if (Result.isFailure(parsed)) {
-      const detail =
-        parsed.failure instanceof Error ? parsed.failure.message : String(parsed.failure)
+      const detail = messageOf(parsed.failure)
       return invalidRecord(path, 'unparseable', `the file is not valid JSON (${detail})`)
     }
     return classifyGenerationRecord(parsed.success, path)

@@ -3,18 +3,15 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Deferred, Effect, Exit, Fiber } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
-import * as Result from 'effect/Result'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
 import { syncLockLayer } from '../../src/internal/effect/layer'
-import {
-  SyncLock,
-  type SyncLockHandle,
-  type SyncLockShape,
-} from '../../src/internal/effect/services'
+import { SyncLock, type SyncLockShape } from '../../src/internal/effect/services'
 import { withSyncLock } from '../../src/internal/lock'
 import { makePosixSyncLock, type PosixLockIo } from '../../src/internal/lock-posix'
+import { failureOf } from '../support/effect'
 import { fakeSyncLock } from '../support/fakes'
+import { acquire, release } from '../support/lock'
 
 const tempRoot = join(process.cwd(), '.tmp')
 const dirs: string[] = []
@@ -29,20 +26,6 @@ async function tempLockPath(): Promise<string> {
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
-
-async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.result(effect))
-  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
-  return result.failure
-}
-
-function acquire(lock: SyncLockShape, lockPath: string): Promise<SyncLockHandle> {
-  return Effect.runPromise(lock.acquire(lockPath))
-}
-
-function release(handle: SyncLockHandle): Promise<void> {
-  return Effect.runPromise(handle.release)
-}
 
 function statOf(ino: bigint) {
   return { dev: 1n, ino }

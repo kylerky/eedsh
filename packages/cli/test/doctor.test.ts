@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { bundle, generated, insert, layer } from '@eedsh/config'
 import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -10,6 +9,7 @@ import {
   doctorExitCode,
   formatDoctorReport,
 } from '../src/doctor'
+import { sha256 } from '../src/internal/sha256'
 import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
 import { planOf } from './support/plan'
 
@@ -116,10 +116,6 @@ function editRecord(
 
 function planPath(h: Awaited<ReturnType<typeof published>>): string {
   return `${PROFILE_DIR}/.eedsh/generated/plans/${recordOf(h).eedsh.generationId}.json`
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex')
 }
 
 describe('doctor record checks', () => {

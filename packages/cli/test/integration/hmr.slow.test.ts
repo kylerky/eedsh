@@ -4,25 +4,17 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { bundle, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Layer } from 'effect'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { defaultServices } from '../../src/cli'
 import { resolveDshInstallation } from '../../src/dsh'
-import { liveServiceLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
-import { preflightLayer } from '../../src/preflight'
+import { delay, waitFor } from '../support/async'
 import { planOf } from '../support/plan'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
-
-function services() {
-  return Layer.mergeAll(
-    liveServiceLayer,
-    preflightLayer.pipe(Layer.provide(liveServiceLayer)),
-  ).pipe(Layer.provideMerge(NodeServices.layer))
-}
 
 async function freePort(): Promise<number> {
   const server = createServer()
@@ -34,19 +26,6 @@ async function freePort(): Promise<number> {
   const port = typeof address === 'object' && address !== null ? address.port : 0
   await new Promise<void>((resolve) => server.close(() => resolve()))
   return port
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (predicate()) return true
-    await delay(150)
-  }
-  return predicate()
 }
 
 async function waitForServerUrl(
@@ -94,7 +73,7 @@ describe('slow Web HMR integration', () => {
           generatedSpec: 'link:./.eedsh/generated',
           strict: false,
           explain: false,
-        }).pipe(Effect.provide(services())),
+        }).pipe(Effect.provide(defaultServices())),
       )
 
     const first = await publish(webPlan(profileName, []))
@@ -134,6 +113,7 @@ describe('slow Web HMR integration', () => {
           (output.includes(`generation ${second.generationId}`) &&
             /requires a restart/.test(output)),
         120_000,
+        150,
       )
       expect(reported, `watcher did not report the new generation:\n${output}`).toBe(true)
     } finally {

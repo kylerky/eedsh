@@ -9,7 +9,6 @@ import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { SyncLocked } from '../../src/internal/effect/errors'
 import { syncLockLayer } from '../../src/internal/effect/layer'
-import type { SyncLockHandle, SyncLockShape } from '../../src/internal/effect/services'
 import { withSyncLock } from '../../src/internal/lock'
 import {
   makeWin32SyncLock,
@@ -18,23 +17,11 @@ import {
   type Win32Binding,
   win32LockName,
 } from '../../src/internal/lock-win32'
+import { failureOf } from '../support/effect'
 import { fakeSyncLock } from '../support/fakes'
+import { acquire, release } from '../support/lock'
 
 const lockPath = '/profiles/work/.eedsh/sync.lock'
-
-function acquire(lock: SyncLockShape, path: string): Promise<SyncLockHandle> {
-  return Effect.runPromise(lock.acquire(path))
-}
-
-function release(handle: SyncLockHandle): Promise<void> {
-  return Effect.runPromise(handle.release)
-}
-
-async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.result(effect))
-  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
-  return result.failure
-}
 
 function fakeWin32(
   options: { contended?: boolean; createFailure?: boolean; waitResult?: number } = {},

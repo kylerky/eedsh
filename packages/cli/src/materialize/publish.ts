@@ -18,6 +18,7 @@ import {
   Preflight,
   type PreflightShape,
 } from '../internal/effect/services'
+import { readOptional } from '../internal/read-optional'
 import type { Diagnostic } from './diagnostics'
 import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle'
 import { readProfileDependencies } from './manifest'
@@ -55,16 +56,6 @@ interface ProfileSnapshot {
   manifestContent: string | undefined
   lockfileContent: string | undefined
   mirrorContent: string | undefined
-}
-
-function readOptional(
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<string | undefined, PlatformError.PlatformError> {
-  return Effect.gen(function* () {
-    if (!(yield* fs.exists(path))) return undefined
-    return yield* fs.readFileString(path)
-  })
 }
 
 /** Write profile scaffolding, generated layers, and the authoritative plan. */

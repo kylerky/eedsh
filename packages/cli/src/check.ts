@@ -8,10 +8,11 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { Effect } from 'effect'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import { EXIT_FAILURE } from './exit'
 import { CheckFailure } from './internal/effect/errors'
+import { messageOf } from './internal/error-message'
+import { asRecord } from './internal/record'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
 
 const TSCONFIG_FILENAME = 'tsconfig.json'
@@ -74,7 +75,7 @@ export function resolveTypeScript(configDir: string): TypeScriptInstallation | u
   if (Result.isFailure(parsed)) return undefined
   const manifest = parsed.success
   const bin = manifest.bin
-  const binRecord = Predicate.isObject(bin) ? (bin as Record<string, unknown>) : undefined
+  const binRecord = asRecord(bin)
   const relative = typeof bin === 'string' ? bin : binRecord?.tsc
   if (typeof relative !== 'string') return undefined
   return {
@@ -110,7 +111,7 @@ function checkFailure(code: string, message: string): CheckFailure {
 }
 
 function spawnFailure(command: string, cause: unknown): CheckFailure {
-  const message = cause instanceof Error ? cause.message : String(cause)
+  const message = messageOf(cause)
   return new CheckFailure({
     code: 'check.spawn_failed',
     message: `cannot run ${command}: ${message}`,

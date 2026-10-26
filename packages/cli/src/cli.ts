@@ -11,14 +11,13 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import type { ProfilePlan } from '@eedsh/config'
+import { isSafeProfileName, type ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
 import { CliError, Command, Flag } from 'effect/cli'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
@@ -47,6 +46,8 @@ import type {
   PreflightShape,
   SyncLockShape,
 } from './internal/effect/services'
+import { messageOf } from './internal/error-message'
+import { asRecord } from './internal/record'
 import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
@@ -161,10 +162,7 @@ function runtimeLinkSpec(): Result.Result<string, ConfigError> {
       return `link:${dirname(manifest)}`
     },
     catch: (cause) =>
-      new ConfigError(
-        'runtime.not_found',
-        `cannot resolve @eedsh/runtime: ${cause instanceof Error ? cause.message : String(cause)}`,
-      ),
+      new ConfigError('runtime.not_found', `cannot resolve @eedsh/runtime: ${messageOf(cause)}`),
   })
 }
 
@@ -179,11 +177,6 @@ function cliVersion(): string {
   return Result.isSuccess(parsed) && typeof parsed.success.version === 'string'
     ? parsed.success.version
     : '0.0.0'
-}
-
-/** Read a value as a plain record, when it is one. */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
 }
 
 function describeError(error: unknown): string[] {
@@ -221,7 +214,7 @@ function describeError(error: unknown): string[] {
         break
     }
   }
-  return [error instanceof Error ? error.message : String(error)]
+  return [messageOf(error)]
 }
 
 function report(stderr: (line: string) => void, error: unknown): void {
@@ -275,7 +268,7 @@ interface CommandContext extends CommandRuntime {
   plan: ProfilePlan
 }
 
-function defaultServices(): CliServiceLayer {
+export function defaultServices(): CliServiceLayer {
   return Layer.mergeAll(
     liveServiceLayer,
     preflightLayer.pipe(Layer.provide(liveServiceLayer)),
@@ -289,19 +282,6 @@ function profileDirForName(name: string, env: Record<string, string | undefined>
 
 function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {
   return profileDirForName(plan.profile.name, env)
-}
-
-/** The profile-name rules: one path segment that is not a reserved name. */
-function isUsableProfileName(name: string): boolean {
-  return (
-    name.trim() === name &&
-    name !== '' &&
-    name !== '.' &&
-    name !== '..' &&
-    name !== 'node_modules' &&
-    !name.includes('/') &&
-    !name.includes('\\')
-  )
 }
 
 function programFor(
@@ -402,7 +382,7 @@ function runWatch(
 }
 
 function watchFailure(context: CommandContext, cause: unknown): ConfigError {
-  const message = cause instanceof Error ? cause.message : String(cause)
+  const message = messageOf(cause)
   return new ConfigError(
     'config.watch_failed',
     `cannot watch ${dirname(context.configPath)}: ${message}`,
@@ -644,7 +624,7 @@ function runDoctorCommand(
     }
     let profileName: string
     if (input.profile !== undefined) {
-      if (!isUsableProfileName(input.profile)) {
+      if (!isSafeProfileName(input.profile)) {
         runtime.stderr(
           `eedsh: profile name "${input.profile}" is not usable as a profile directory`,
         )

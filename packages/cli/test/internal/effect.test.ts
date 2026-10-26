@@ -3,7 +3,6 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
-import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'
 import {
@@ -15,6 +14,7 @@ import {
   SyncLock,
 } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
+import { failureOf } from '../support/effect'
 import {
   fakeDsh,
   fakePackageManager,
@@ -75,12 +75,6 @@ function harness(options: HarnessOptions = {}) {
     explain: false,
   }).pipe(Effect.provide(layer))
   return { fs, lock, program }
-}
-
-async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.result(effect))
-  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
-  return result.failure
 }
 
 describe('Effect materialization', () => {

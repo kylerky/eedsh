@@ -18,7 +18,7 @@ import {
   SyncLock,
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
-import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
+import { waitFor } from './support/async'
 import {
   fakeDsh,
   fakePackageManager,
@@ -26,6 +26,7 @@ import {
   fakeSyncLock,
   memoryFileSystem,
 } from './support/fakes'
+import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
@@ -35,79 +36,6 @@ const unmatchedManifest = '/home/profiles/cli-unmatched/.eedsh/generated/package
 
 /** A base layer row the unmatched fixture patches across. */
 const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
-
-async function delay(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (predicate()) return true
-    await delay(25)
-  }
-  return predicate()
-}
-
-class FakeStream implements ReadableLike {
-  private readonly listeners: ((chunk: unknown) => void)[] = []
-
-  on(_event: 'data', listener: (chunk: unknown) => void): this {
-    this.listeners.push(listener)
-    return this
-  }
-
-  push(value: string): void {
-    for (const listener of this.listeners) listener(value)
-  }
-}
-
-class FakeChild implements SpawnedProcessLike {
-  readonly stdout = new FakeStream()
-  readonly stderr = new FakeStream()
-  private exitHandler?: (code: number | null, signal: string | null) => void
-  private closeHandler?: (code: number | null, signal: string | null) => void
-  private errorHandler?: (error: Error) => void
-
-  on(event: 'exit' | 'close' | 'error', callback: (...args: never[]) => void): this {
-    if (event === 'exit') {
-      this.exitHandler = callback as (code: number | null, signal: string | null) => void
-    } else if (event === 'close') {
-      this.closeHandler = callback as (code: number | null, signal: string | null) => void
-    } else {
-      this.errorHandler = callback as (error: Error) => void
-    }
-    return this
-  }
-
-  finish(code: number | null, stdout = '', stderr = ''): void {
-    this.stdout.push(stdout)
-    this.stderr.push(stderr)
-    this.closeHandler?.(code, null)
-    this.exitHandler?.(code, null)
-  }
-
-  fail(error: Error): void {
-    this.errorHandler?.(error)
-  }
-
-  kill(): boolean {
-    return true
-  }
-}
-
-function fakeSpawner(options: { exitCode?: number; listing?: string } = {}) {
-  const calls: { command: string; args: string[]; options: SpawnOptionsLike }[] = []
-  const spawn: SpawnLike = (command, args, spawnOptions) => {
-    calls.push({ command, args, options: spawnOptions })
-    const child = new FakeChild()
-    const listing = args.includes('--listFilesOnly')
-    const exitCode = listing ? 0 : (options.exitCode ?? 0)
-    queueMicrotask(() => child.finish(exitCode, listing ? (options.listing ?? '') : ''))
-    return child
-  }
-  return { calls, spawn }
-}
 
 interface HarnessOptions {
   basePatches?: Record<string, unknown>[]

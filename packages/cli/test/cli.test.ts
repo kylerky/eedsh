@@ -30,7 +30,7 @@ import {
   SyncLock,
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
-import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
+import { delay, waitFor } from './support/async'
 import {
   fakeDsh,
   fakePackageManager,
@@ -39,24 +39,12 @@ import {
   memoryFileSystem,
 } from './support/fakes'
 import { planOf } from './support/plan'
+import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'eedsh.config.ts')
 const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
-
-async function delay(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (predicate()) return true
-    await delay(50)
-  }
-  return predicate()
-}
 
 function hasAnsi(text: string): boolean {
   return new RegExp(`${String.fromCharCode(27)}[[][0-9;]*m`).test(text)
@@ -67,87 +55,6 @@ const tempRoot = join(root, 'packages/cli/.tmp')
 async function tempDir(prefix: string): Promise<string> {
   await mkdir(tempRoot, { recursive: true })
   return mkdtemp(join(tempRoot, prefix))
-}
-
-class FakeStream implements ReadableLike {
-  private readonly listeners: ((chunk: unknown) => void)[] = []
-
-  on(_event: 'data', listener: (chunk: unknown) => void): this {
-    this.listeners.push(listener)
-    return this
-  }
-
-  push(value: string): void {
-    for (const listener of this.listeners) listener(value)
-  }
-}
-
-class FakeChild implements SpawnedProcessLike {
-  readonly stdout = new FakeStream()
-  readonly stderr = new FakeStream()
-  private exitHandler?: (code: number | null, signal: string | null) => void
-  private closeHandler?: (code: number | null, signal: string | null) => void
-  private errorHandler?: (error: Error) => void
-
-  on(event: 'exit', callback: (code: number | null, signal: string | null) => void): unknown
-  on(event: 'close', callback: (code: number | null, signal: string | null) => void): unknown
-  on(event: 'error', callback: (error: Error) => void): unknown
-  on(
-    event: 'exit' | 'close' | 'error',
-    callback: ((code: number | null, signal: string | null) => void) | ((error: Error) => void),
-  ): unknown {
-    if (event === 'exit') {
-      this.exitHandler = callback as (code: number | null, signal: string | null) => void
-    } else if (event === 'close') {
-      this.closeHandler = callback as (code: number | null, signal: string | null) => void
-    } else {
-      this.errorHandler = callback as (error: Error) => void
-    }
-    return this
-  }
-
-  finish(code: number | null, stdout = '', stderr = ''): void {
-    this.stdout.push(stdout)
-    this.stderr.push(stderr)
-    this.closeHandler?.(code, null)
-    this.exitHandler?.(code, null)
-  }
-
-  fail(error: Error): void {
-    this.errorHandler?.(error)
-  }
-
-  kill(): boolean {
-    return true
-  }
-}
-
-interface FakeSpawnOptions {
-  exitCode?: number
-  stdout?: string
-  stderr?: string
-  listing?: string
-  listingExit?: number
-}
-
-function fakeSpawner(options: FakeSpawnOptions = {}) {
-  const calls: { command: string; args: string[]; options: SpawnOptionsLike }[] = []
-  const spawn: SpawnLike = (command, args, spawnOptions) => {
-    calls.push({ command, args, options: spawnOptions })
-    const child = new FakeChild()
-    if (args.includes('--listFilesOnly')) {
-      const listing = options.listing ?? ''
-      const exitCode = options.listingExit ?? 0
-      queueMicrotask(() => child.finish(exitCode, listing))
-    } else {
-      const exitCode = options.exitCode ?? 0
-      const stdout = options.stdout ?? ''
-      const stderr = options.stderr ?? ''
-      queueMicrotask(() => child.finish(exitCode, stdout, stderr))
-    }
-    return child
-  }
-  return { calls, spawn }
 }
 
 function watchConfigSource(row: string): string {

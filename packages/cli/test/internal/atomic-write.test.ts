@@ -5,9 +5,9 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
-import * as Result from 'effect/Result'
 import { afterEach, describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'
+import { failureOf } from '../support/effect'
 
 const tempRoot = join(process.cwd(), '.tmp')
 const dirs: string[] = []
@@ -22,12 +22,6 @@ async function tempTarget(): Promise<{ dir: string; target: string }> {
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
-
-async function failureOf(effect: Effect.Effect<unknown, unknown>): Promise<any> {
-  const result = await Effect.runPromise(Effect.result(effect))
-  if (Result.isSuccess(result)) throw new Error('expected the effect to fail')
-  return result.failure
-}
 
 function platformFailure(
   method: string,

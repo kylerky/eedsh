@@ -8,7 +8,6 @@ import { canonicalJson, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import { type MaterializeError, OwnershipRecordInvalid } from '../internal/effect/errors'
 import {
@@ -19,6 +18,7 @@ import {
   type SyncLockShape,
 } from '../internal/effect/services'
 import { withSyncLock } from '../internal/lock'
+import { asRecord } from '../internal/record'
 import type { Diagnostic } from './diagnostics'
 import { notice } from './diagnostics'
 import {
@@ -88,7 +88,7 @@ function readJsonFile(
     return yield* Effect.try({
       try: () => {
         const parsed: unknown = JSON.parse(text)
-        return Predicate.isObject(parsed) ? (parsed as Record<string, unknown>) : undefined
+        return asRecord(parsed)
       },
       catch: (cause) =>
         PlatformError.systemError({

@@ -8,7 +8,6 @@ import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-i
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
@@ -18,6 +17,7 @@ import {
   Preflight,
   type PreflightShape,
 } from './internal/effect/services'
+import { asRecord } from './internal/record'
 import type { GeneratedBundle } from './materialize/generated-bundle'
 
 /** One preflight composition layer. */
@@ -40,11 +40,6 @@ export interface PreflightComposition {
   warnings: string[]
   /** Row ids inserted twice by generated layers. */
   duplicateInsertIds: string[]
-}
-
-/** Read a value as a plain record, when it is one. */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return Predicate.isObject(value) ? (value as Record<string, unknown>) : undefined
 }
 
 /** Collect ids inserted by a layer, including nested group children. */

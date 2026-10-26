@@ -6,6 +6,7 @@
 import * as Schema from 'effect/Schema'
 import { PLAN_FORMAT, PLAN_VERSION } from './constants'
 import { planJsonIssues } from './json'
+import { isPlainObject } from './plain-object'
 
 /** Package names the materializer owns; authors may not select them. */
 export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/generated']
@@ -18,12 +19,6 @@ const SAFE_LAYER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 /** An exact DSH runtime pin such as `0.2.1-rc.2`. */
 const DSH_PIN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 /**
  * Require a plain object at a schema boundary before decoding its fields.
  * Struct decoding rebuilds objects, so without this guard a class instance
@@ -34,7 +29,12 @@ function plain<S extends Schema.Constraint>(schema: S, message: string) {
   return Schema.decodeTo(schema)(input)
 }
 
-function isSafeProfileName(name: string): boolean {
+/**
+ * Whether a profile name is one safe path segment and not a reserved name.
+ * @param name - candidate profile name.
+ * @returns whether it can name a profile directory.
+ */
+export function isSafeProfileName(name: string): boolean {
   return (
     name.trim() === name &&
     name !== '' &&
