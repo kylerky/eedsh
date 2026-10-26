@@ -23,6 +23,7 @@ import { notice } from './diagnostics'
 import {
   buildGeneratedBundle,
   GENERATED_PACKAGE_NAME,
+  type GeneratedBundle,
   RUNTIME_PACKAGE_NAME,
 } from './generated-bundle'
 import {
@@ -182,6 +183,19 @@ function resolveGenerationBaseline(
   })
 }
 
+/** Whether the committed generation's authoritative plan is present and byte-exact. */
+function authoritativePlanIntact(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  generated: GeneratedBundle,
+): Effect.Effect<boolean, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const path = join(profileDir, GENERATED_DIRNAME, generated.authoritativePlanPath)
+    if (!(yield* fs.exists(path))) return false
+    return (yield* fs.readFileString(path)) === generated.authoritativePlanContent
+  })
+}
+
 /**
  * Materialize a validated plan into a profile.
  * @param options - plan, profile location, dependency specs, and mode.
@@ -232,7 +246,8 @@ export function materialize(
         existingManifest !== undefined &&
         lookup._tag === 'valid' &&
         lookup.record.generationId === generated.generationId &&
-        canonicalJson(existingManifest) === canonicalJson(reconciled.manifest)
+        canonicalJson(existingManifest) === canonicalJson(reconciled.manifest) &&
+        (yield* authoritativePlanIntact(fs, options.profileDir, generated))
 
       if (unchanged) {
         return {

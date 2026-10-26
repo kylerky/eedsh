@@ -74,11 +74,26 @@ export interface GeneratedBundle {
   planHash: string
   generation: GenerationRecord
   manifest: GeneratedManifest
-  /** Files in publication order; the package manifest is last. */
+  /** Files in publication order; the authoritative plan precedes the manifest. */
   files: GeneratedBundleFile[]
-  /** Profile-relative path of the inspectable plan copy. */
+  /** Generated-package-relative path of the authoritative plan. */
+  authoritativePlanPath: string
+  /** Canonical plan bytes without a trailing newline; hashes to `planHash`. */
+  authoritativePlanContent: string
+  /** Profile-relative path of the inspectable plan mirror. */
   planPath: string
+  /** Mirror content: the canonical plan plus a trailing newline. */
   planContent: string
+}
+
+/**
+ * Derive the authoritative plan path from the generation id, so the record
+ * locates its plan without storing a second path.
+ * @param generationId - the published generation identifier.
+ * @returns the generated-package-relative plan path.
+ */
+export function authoritativePlanPath(generationId: string): string {
+  return `plans/${generationId}.json`
 }
 
 /** Inputs for {@link buildGeneratedBundle}. */
@@ -155,10 +170,12 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
     eedsh: generation,
   }
 
+  const authoritativeContent = canonicalJson(input.plan)
   const files: GeneratedBundleFile[] = emitted.map((item, index) => ({
     path: layers[index]!.file,
     content: item.content,
   }))
+  files.push({ path: authoritativePlanPath(generationId), content: authoritativeContent })
   files.push({ path: 'package.json', content: `${JSON.stringify(manifest, null, 2)}\n` })
 
   return {
@@ -167,8 +184,10 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
     generation,
     manifest,
     files,
+    authoritativePlanPath: authoritativePlanPath(generationId),
+    authoritativePlanContent: authoritativeContent,
     planPath: '.eedsh/plan.json',
-    planContent: `${canonicalJson(input.plan)}\n`,
+    planContent: `${authoritativeContent}\n`,
   }
 }
 

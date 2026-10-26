@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import type { ProfilePlan } from '@eedsh/config'
-import { bundle, generated, insert, js, layer, override } from '@eedsh/config'
+import { bundle, canonicalJson, generated, insert, js, layer, override } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
 import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
 import { emitPatchesYaml } from '../../src/materialize/yaml'
@@ -94,6 +95,24 @@ describe('generated bundle', () => {
     const result = build()
     expect(result.files.at(-1)?.path).toBe('package.json')
     expect(JSON.parse(result.files.at(-1)?.content ?? '{}')).toEqual(result.manifest)
+  })
+
+  it('writes the authoritative plan immediately before the package manifest', () => {
+    const result = build()
+    const planPath = `plans/${result.generationId}.json`
+    expect(result.files.at(-2)?.path).toBe(planPath)
+    expect(result.files.at(-1)?.path).toBe('package.json')
+    const content = result.files.at(-2)?.content ?? ''
+    expect(content).toBe(canonicalJson(fixturePlan()))
+    expect(createHash('sha256').update(content).digest('hex')).toBe(result.planHash)
+    expect(result.authoritativePlanPath).toBe(planPath)
+    expect(result.authoritativePlanContent).toBe(content)
+  })
+
+  it('keeps the stable plan mirror distinct from the authoritative plan', () => {
+    const result = build()
+    expect(result.planPath).toBe('.eedsh/plan.json')
+    expect(result.planContent).toBe(`${result.authoritativePlanContent}\n`)
   })
 
   it('emits the validated plan as canonical JSON', () => {

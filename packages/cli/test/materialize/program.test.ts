@@ -1,6 +1,8 @@
+import { canonicalJson } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
 import {
   BUNDLE,
+  basePlan,
   failureOf,
   harness,
   MANIFEST_PATH,
@@ -31,6 +33,49 @@ describe('generation-record trust', () => {
     const h = harness({ installFail: true })
     const error = failureOf(await h.runExit())
     expect(error).toMatchObject({ _tag: 'PackageInstallFailure' })
+  })
+})
+
+describe('authoritative plan verification', () => {
+  function planFileFor(generationId: string): string {
+    return `${PROFILE_DIR}/.eedsh/generated/plans/${generationId}.json`
+  }
+
+  it('republishes the same generation when the authoritative plan is missing', async () => {
+    const h = harness()
+    const first = await h.run()
+    const installs = h.packages.installs.length
+    const preflights = h.preflight.calls.length
+    const planPath = planFileFor(first.generationId)
+    expect(h.fs.files.has(planPath)).toBe(true)
+    h.fs.files.delete(planPath)
+
+    const second = await h.run()
+    expect(second.changed).toBe(true)
+    expect(second.generationId).toBe(first.generationId)
+    expect(h.fs.files.get(planPath)).toBe(canonicalJson(basePlan()))
+    expect(h.packages.installs.length).toBe(installs)
+    expect(h.preflight.calls.length).toBe(preflights + 1)
+  })
+
+  it('republishes the same generation when the authoritative plan differs', async () => {
+    const h = harness()
+    const first = await h.run()
+    const planPath = planFileFor(first.generationId)
+    h.fs.files.set(planPath, '{"tampered":true}')
+
+    const second = await h.run()
+    expect(second.changed).toBe(true)
+    expect(second.generationId).toBe(first.generationId)
+    expect(h.fs.files.get(planPath)).toBe(canonicalJson(basePlan()))
+  })
+
+  it('treats an intact authoritative plan as unchanged', async () => {
+    const h = harness()
+    const first = await h.run()
+    const second = await h.run()
+    expect(second.changed).toBe(false)
+    expect(h.fs.files.get(planFileFor(first.generationId))).toBe(canonicalJson(basePlan()))
   })
 })
 
