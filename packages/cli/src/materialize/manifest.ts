@@ -7,6 +7,7 @@
  */
 import type { ProfilePlan } from '@eedsh/config'
 import { asRecord } from '../internal/record'
+import { readRecord, readStringArray, readStringRecord } from '../internal/schema-readers'
 import { type Diagnostic, notice, warning } from './diagnostics'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 import type { PreviousGeneration } from './generation-record'
@@ -42,22 +43,6 @@ export interface ReconcileManifestResult {
   notices: Diagnostic[]
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
-}
-
-function stringRecord(value: unknown): Record<string, string> {
-  const record = asRecord(value)
-  if (record === undefined) return {}
-  const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(record)) {
-    if (typeof item === 'string') out[key] = item
-  }
-  return out
-}
-
 /**
  * Compute the managed bundle order for a plan: the runtime bundle sits
  * immediately before the generated bundle, which occupies the authored marker
@@ -81,27 +66,13 @@ export function managedBundleOrder(plan: ProfilePlan): string[] {
 }
 
 /**
- * Read a child node as a record, or an empty record when it is absent or not a
- * record, so callers can treat the manifest shape as total.
- * @param parent - the containing record, when it exists.
- * @param key - the child key.
- * @returns the child record, or an empty record.
- */
-function childRecord(
-  parent: Record<string, unknown> | undefined,
-  key: string,
-): Record<string, unknown> {
-  return asRecord(parent?.[key]) ?? {}
-}
-
-/**
  * Read the bundle list of an existing profile manifest.
  * @param manifest - the profile manifest, when one exists.
  * @returns the listed bundle names, ignoring malformed entries.
  */
 export function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
-  const dsh = childRecord(manifest, 'dsh')
-  return stringArray(childRecord(dsh, 'profile').bundles)
+  const dsh = readRecord(manifest?.dsh)
+  return readStringArray(readRecord(dsh.profile).bundles)
 }
 
 /** The install-relevant dependency sections of a profile manifest. */
@@ -120,9 +91,9 @@ export function readProfileDependencies(
   manifest: Record<string, unknown> | undefined,
 ): ProfileDependencies {
   return {
-    dependencies: stringRecord(manifest?.dependencies),
-    devDependencies: stringRecord(manifest?.devDependencies),
-    optionalDependencies: stringRecord(manifest?.optionalDependencies),
+    dependencies: readStringRecord(manifest?.dependencies),
+    devDependencies: readStringRecord(manifest?.devDependencies),
+    optionalDependencies: readStringRecord(manifest?.optionalDependencies),
   }
 }
 
@@ -175,12 +146,12 @@ function buildManifest(
   if (sections.optionalDependencies !== undefined) {
     base.optionalDependencies = sections.optionalDependencies
   }
-  const dsh = childRecord(base, 'dsh')
+  const dsh = readRecord(base.dsh)
   return {
     ...base,
     dsh: {
       ...dsh,
-      profile: { ...childRecord(dsh, 'profile'), bundles: [...bundles] },
+      profile: { ...readRecord(dsh.profile), bundles: [...bundles] },
     },
     dependencies,
   }
@@ -282,8 +253,8 @@ function conflictValue(
   field: (typeof CONFLICT_FIELDS)[number],
 ): unknown {
   if (field !== 'pnpm.overrides') return manifest?.[field]
-  const pnpm = asRecord(manifest?.pnpm)
-  return pnpm?.overrides
+  const pnpm = readRecord(manifest?.pnpm)
+  return pnpm.overrides
 }
 
 /**
@@ -312,8 +283,7 @@ export function scanDependencyConflicts(
     }
   }
   for (const field of CONFLICT_FIELDS) {
-    const value = asRecord(conflictValue(manifest, field))
-    if (value === undefined) continue
+    const value = readRecord(conflictValue(manifest, field))
     for (const name of Object.keys(value).sort()) {
       if (names.has(name)) conflicts.push({ field, name })
     }

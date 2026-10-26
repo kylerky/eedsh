@@ -389,6 +389,81 @@ importers:
     expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
     expect(finding(result, 'lockfile')?.message).toContain('cannot be verified')
   })
+
+  it('reports a missing root importer when importers is not a record', async () => {
+    const h = await published()
+    h.fs.files.set(LOCKFILE_PATH, ["lockfileVersion: '9.0'", 'importers: []', ''].join('\n'))
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toBe(
+      'the lockfile has no root importer, so the installed state cannot be verified; run "eedsh sync"',
+    )
+  })
+
+  it('reports managed packages missing when importer dependencies is not a record', async () => {
+    const h = await published()
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      ["lockfileVersion: '9.0'", 'importers:', '  .:', "    dependencies: 'not-a-record'", ''].join(
+        '\n',
+      ),
+    )
+    const result = await diagnose(h.fs.fs)
+    const name = Object.keys(recordOf(h).eedsh.packages)[0]
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toBe(
+      `managed package ${name} is missing from the lockfile root importer; run "eedsh sync"`,
+    )
+  })
+
+  it('treats a non-object dependency entry as an empty entry', async () => {
+    const h = await published()
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      [
+        "lockfileVersion: '9.0'",
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        "      '@scope/plugin': not-an-entry",
+        "      '@eedsh/runtime':",
+        '        specifier: link:/repo/packages/runtime',
+        "      '@eedsh/generated':",
+        '        specifier: link:./.eedsh/generated',
+        '',
+      ].join('\n'),
+    )
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toBe(
+      'the lockfile has no resolved version for @scope/plugin; run "eedsh sync"',
+    )
+  })
+
+  it('keeps a valid version when the specifier is malformed', async () => {
+    const h = await published()
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      [
+        "lockfileVersion: '9.0'",
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        "      '@scope/plugin':",
+        '        specifier: 42',
+        '        version: 1.0.0',
+        "      '@eedsh/runtime':",
+        '        specifier: link:/repo/packages/runtime',
+        "      '@eedsh/generated':",
+        '        specifier: link:./.eedsh/generated',
+        '',
+      ].join('\n'),
+    )
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toBeUndefined()
+    expect(result.errors).toBe(0)
+    expect(result.warnings).toBe(0)
+  })
 })
 
 describe('doctor installed checks', () => {

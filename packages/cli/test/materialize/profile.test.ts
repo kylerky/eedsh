@@ -1,7 +1,12 @@
 import { bundle, canonicalJson, generated, type PlanBundle, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { managedBundleOrder, reconcileManifest } from '../../src/materialize/manifest'
+import {
+  managedBundleOrder,
+  readProfileBundles,
+  readProfileDependencies,
+  reconcileManifest,
+} from '../../src/materialize/manifest'
 import { ensureProfileFiles } from '../../src/materialize/profile'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
@@ -57,6 +62,84 @@ describe('managed bundle order', () => {
       '@eedsh/runtime',
       '@eedsh/generated',
     ])
+  })
+})
+
+describe('tolerant profile readers', () => {
+  it('reads no bundles when the dsh or profile section is missing or malformed', () => {
+    expect(readProfileBundles(undefined)).toEqual([])
+    expect(readProfileBundles({})).toEqual([])
+    expect(readProfileBundles({ dsh: null })).toEqual([])
+    expect(readProfileBundles({ dsh: { profile: 'not-a-record' } })).toEqual([])
+    expect(readProfileBundles({ dsh: { profile: { bundles: 'not-an-array' } } })).toEqual([])
+  })
+
+  it('keeps string bundles and drops invalid siblings', () => {
+    expect(
+      readProfileBundles({
+        dsh: { profile: { bundles: [BUNDLE, 1, null, '@edsh/adapted-ptc', ''] } },
+      }),
+    ).toEqual([BUNDLE, '@edsh/adapted-ptc', ''])
+  })
+
+  it('reads empty dependency sections from a missing or malformed manifest', () => {
+    const empty = { dependencies: {}, devDependencies: {}, optionalDependencies: {} }
+    expect(readProfileDependencies(undefined)).toEqual(empty)
+    expect(
+      readProfileDependencies({
+        dependencies: null,
+        devDependencies: ['not-a-record'],
+        optionalDependencies: 'not-a-record',
+      }),
+    ).toEqual(empty)
+  })
+
+  it('keeps string dependencies and drops invalid siblings', () => {
+    expect(
+      readProfileDependencies({
+        dependencies: { good: '1.0.0', bad: 1, nil: null, empty: '', nested: {} },
+        devDependencies: { tool: '^2.0.0', flag: false },
+        optionalDependencies: { optional: '3.0.0', list: [] },
+      }),
+    ).toEqual({
+      dependencies: { good: '1.0.0', empty: '' },
+      devDependencies: { tool: '^2.0.0' },
+      optionalDependencies: { optional: '3.0.0' },
+    })
+  })
+
+  it('treats empty records as empty sections', () => {
+    expect(readProfileBundles({ dsh: { profile: { bundles: [] } } })).toEqual([])
+    expect(readProfileDependencies({ dependencies: {} })).toEqual({
+      dependencies: {},
+      devDependencies: {},
+      optionalDependencies: {},
+    })
+  })
+
+  it('ignores malformed and empty conflict sections', () => {
+    const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), {
+      manifest: {
+        peerDependencies: { '@scope/plugin': '*' },
+        pnpm: 'not-a-record',
+        overrides: null,
+        resolutions: [],
+      },
+    })
+    expect(result.notices.map((item) => item.message)).toEqual([
+      'managed package @scope/plugin is also declared in peerDependencies; the resolved version may differ',
+    ])
+  })
+
+  it('ignores a malformed or empty pnpm.overrides section', () => {
+    const malformed = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), {
+      manifest: { pnpm: { overrides: 'not-a-record' } },
+    })
+    const empty = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.0.0' }), {
+      manifest: { pnpm: { overrides: {} } },
+    })
+    expect(malformed.notices).toEqual([])
+    expect(empty.notices).toEqual([])
   })
 })
 

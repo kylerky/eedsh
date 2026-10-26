@@ -16,7 +16,11 @@ import * as yaml from 'js-yaml'
 import { EXIT_FAILURE, EXIT_OK } from './exit'
 import { messageOf } from './internal/error-message'
 import { readOptional } from './internal/read-optional'
-import { asRecord } from './internal/record'
+import {
+  type LockfileEntry,
+  readRecord as readJsonRecord,
+  readLockfileEntry,
+} from './internal/schema-readers'
 import { isSemverRange, versionSatisfies } from './internal/semver'
 import { sha256 } from './internal/sha256'
 import {
@@ -453,12 +457,6 @@ function checkScaffolding(
   })
 }
 
-/** One dependency entry in the lockfile root importer. */
-interface LockfileEntry {
-  readonly specifier?: string
-  readonly version?: string
-}
-
 /** Resolved dependency entries from the lockfile root importer. */
 type LockfileDependencies = ReadonlyMap<string, LockfileEntry>
 
@@ -522,9 +520,7 @@ function checkLockfile(
       )
       return undefined
     }
-    const importers = Predicate.isObject(lockfile.importers)
-      ? (lockfile.importers as Record<string, unknown>)
-      : {}
+    const importers = readJsonRecord(lockfile.importers)
     const names = Object.keys(importers)
     const importerValue =
       importers['.'] ?? (names.length === 1 ? importers[names[0] as string] : undefined)
@@ -539,16 +535,10 @@ function checkLockfile(
       return undefined
     }
     const importer = importerValue as Record<string, unknown>
-    const dependencies = Predicate.isObject(importer.dependencies)
-      ? (importer.dependencies as Record<string, unknown>)
-      : {}
+    const dependencies = readJsonRecord(importer.dependencies)
     const entries = new Map<string, LockfileEntry>()
     for (const [name, value] of Object.entries(dependencies)) {
-      const entry = asRecord(value) ?? {}
-      entries.set(name, {
-        ...(typeof entry.specifier === 'string' ? { specifier: entry.specifier } : {}),
-        ...(typeof entry.version === 'string' ? { version: entry.version } : {}),
-      })
+      entries.set(name, readLockfileEntry(value))
     }
 
     for (const [name, spec] of Object.entries(record.packages)) {
