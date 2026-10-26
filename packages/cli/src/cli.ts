@@ -148,20 +148,32 @@ function cliConsole(
   }
 }
 
-function runtimeLinkSpec(): string {
-  const require = createRequire(import.meta.url)
-  const manifest = require.resolve('@eedsh/runtime/package.json')
-  return `link:${dirname(manifest)}`
+function runtimeLinkSpec(): Result.Result<string, ConfigError> {
+  return Result.try({
+    try: () => {
+      const require = createRequire(import.meta.url)
+      const manifest = require.resolve('@eedsh/runtime/package.json')
+      return `link:${dirname(manifest)}`
+    },
+    catch: (cause) =>
+      new ConfigError(
+        'runtime.not_found',
+        `cannot resolve @eedsh/runtime: ${cause instanceof Error ? cause.message : String(cause)}`,
+      ),
+  })
 }
 
 function cliVersion(): string {
-  try {
-    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
-    const parsed = JSON.parse(raw) as { version?: unknown }
-    return typeof parsed.version === 'string' ? parsed.version : '0.0.0'
-  } catch {
-    return '0.0.0'
-  }
+  const parsed = Result.try({
+    try: () =>
+      JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+        version?: unknown
+      },
+    catch: () => undefined,
+  })
+  return Result.isSuccess(parsed) && typeof parsed.success.version === 'string'
+    ? parsed.success.version
+    : '0.0.0'
 }
 
 /** Read a value as a plain record, when it is one. */
@@ -268,15 +280,18 @@ function programFor(
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
-) {
-  return materialize({
-    plan,
-    profileDir: profileDirFor(plan, env),
-    eedshVersion: cliVersion(),
-    runtimeSpec: runtimeLinkSpec(),
-    generatedSpec: 'link:./.eedsh/generated',
-    strict,
-    explain,
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
+  return Effect.gen(function* () {
+    const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
+    return yield* materialize({
+      plan,
+      profileDir: profileDirFor(plan, env),
+      eedshVersion: cliVersion(),
+      runtimeSpec,
+      generatedSpec: 'link:./.eedsh/generated',
+      strict,
+      explain,
+    })
   })
 }
 
@@ -291,7 +306,7 @@ function syncProgram(
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
-): Effect.Effect<MaterializeResult, MaterializeError, CliService> {
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
   return programFor(context.env, plan, strict, explain)
 }
 
@@ -300,7 +315,7 @@ function syncOnce(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
-): Effect.Effect<MaterializeResult, MaterializeError | DshResolveFailure> {
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshResolveFailure> {
   return Effect.suspend(() =>
     syncProgram(context, context.plan, strict, explain).pipe(
       Effect.provide(serviceLayerFor(context.options)),

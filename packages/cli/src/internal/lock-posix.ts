@@ -39,11 +39,7 @@ export const nodePosixLockIo: PosixLockIo = {
     await mkdir(path, { recursive: true })
   },
   open: (path) => open(path, 'a'),
-  statPath: (path) =>
-    stat(path, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return undefined
-      throw error
-    }),
+  statPath: (path) => stat(path, { bigint: true }),
   tryLock: (fd) => tryLockExclusive(fd),
 }
 
@@ -74,15 +70,21 @@ function isLockContention(cause: unknown): boolean {
   return code === 'EAGAIN' || code === 'EWOULDBLOCK'
 }
 
+function isMissingLockFile(error: PlatformError.PlatformError): boolean {
+  const cause = error.reason.cause as NodeJS.ErrnoException | undefined
+  return cause?.code === 'ENOENT'
+}
+
 function acquireAttempt(
   io: PosixLockIo,
   lockPath: string,
 ): Effect.Effect<SyncLockHandle | undefined, SyncLocked | PlatformError.PlatformError> {
   return Effect.gen(function* () {
     const handle = yield* operation('openLock', lockPath, () => io.open(lockPath))
-    const close: Effect.Effect<void> = Effect.promise(async () => {
-      await handle.close().catch(() => undefined)
-    })
+    const close: Effect.Effect<void> = Effect.tryPromise({
+      try: () => handle.close(),
+      catch: (cause) => platformError('closeLock', lockPath, cause),
+    }).pipe(Effect.ignore)
 
     const locked = yield* Effect.result(operation('flock', lockPath, () => io.tryLock(handle.fd)))
     if (Result.isFailure(locked)) {
@@ -96,7 +98,11 @@ function acquireAttempt(
     const verified = yield* Effect.result(
       Effect.gen(function* () {
         const held = yield* operation('verifyLock', lockPath, () => handle.stat({ bigint: true }))
-        const current = yield* operation('verifyLock', lockPath, () => io.statPath(lockPath))
+        const current = yield* operation('verifyLock', lockPath, () => io.statPath(lockPath)).pipe(
+          Effect.catch((error) =>
+            isMissingLockFile(error) ? Effect.succeed(undefined) : Effect.fail(error),
+          ),
+        )
         return current !== undefined && current.dev === held.dev && current.ino === held.ino
       }),
     )

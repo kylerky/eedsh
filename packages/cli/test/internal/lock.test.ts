@@ -248,6 +248,47 @@ describe.skipIf(process.platform === 'win32')('POSIX sync lock', () => {
     expect(closes).toBe(1)
   })
 
+  it('treats an ENOENT stat as an unverified attempt and closes the descriptor', async () => {
+    let closes = 0
+    const io: PosixLockIo = {
+      ensureDir: async () => undefined,
+      open: async () => ({
+        fd: 1,
+        close: async () => {
+          closes += 1
+        },
+        stat: async () => statOf(1n),
+      }),
+      statPath: async () => {
+        throw Object.assign(new Error('ENOENT: missing lock path'), { code: 'ENOENT' })
+      },
+      tryLock: async () => undefined,
+    }
+    const error = await failureOf(makePosixSyncLock(io, 1).acquire('/p/.eedsh/sync.lock'))
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('verifyLock')
+    expect(closes).toBe(1)
+  })
+
+  it('ignores a close failure while reporting contention', async () => {
+    const io: PosixLockIo = {
+      ensureDir: async () => undefined,
+      open: async () => ({
+        fd: 1,
+        close: async () => {
+          throw new Error('close failed')
+        },
+        stat: async () => statOf(1n),
+      }),
+      statPath: async () => statOf(1n),
+      tryLock: async () => {
+        throw Object.assign(new Error('EAGAIN: flock failed'), { code: 'EAGAIN' })
+      },
+    }
+    const error = await failureOf(makePosixSyncLock(io).acquire('/p/.eedsh/sync.lock'))
+    expect(error).toBeInstanceOf(SyncLocked)
+  })
+
   it('retries when the locked inode no longer matches the path', async () => {
     const held = statOf(1n)
     const observations = [statOf(2n), held]

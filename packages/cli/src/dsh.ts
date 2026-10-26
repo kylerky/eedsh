@@ -61,14 +61,26 @@ export function resolveBundleLayers(
   profileDir: string,
   installAnchor: string,
 ): Result.Result<Record<string, unknown>[], DshResolveFailure> {
-  return Result.try({
+  const resolved = Result.try({
     try: () => {
       const packageDir = resolveBundleDir('eedsh', packageName, installAnchor, profileDir)
       const manifest = readProfileManifest('eedsh', packageDir)
-      const bundle = manifest.dsh?.bundle
-      if (bundle === undefined) {
-        throw new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`)
-      }
+      return { packageDir, bundle: manifest.dsh?.bundle }
+    },
+    catch: (cause) => new DshResolveFailure({ packageName, cause }),
+  })
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure)
+  const { packageDir, bundle } = resolved.success
+  if (bundle === undefined) {
+    return Result.fail(
+      new DshResolveFailure({
+        packageName,
+        cause: new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`),
+      }),
+    )
+  }
+  return Result.try({
+    try: () => {
       const files = bundlePatchFiles(bundle as Parameters<typeof bundlePatchFiles>[0])
       return files.flatMap((file) => loadOverlayPatches('eedsh', join(packageDir, file))) as Record<
         string,

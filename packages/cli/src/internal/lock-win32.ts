@@ -46,14 +46,17 @@ export function win32LockName(lockPath: string): string {
   return `${LOCK_NAMESPACE}eedsh-profile-lock-${digest}`
 }
 
-let bindings: Promise<Win32Binding> | undefined
+let bindings: Promise<Result.Result<Win32Binding, unknown>> | undefined
 
 /** Load koffi and bind kernel32's semaphore calls once, on first use. */
-export function loadWin32Binding(): Promise<Win32Binding> {
-  bindings ??= loadKernel32().catch((error: unknown) => {
-    bindings = undefined
-    throw error
-  })
+export function loadWin32Binding(): Promise<Result.Result<Win32Binding, unknown>> {
+  bindings ??= loadKernel32().then(
+    (binding) => Result.succeed(binding),
+    (cause: unknown) => {
+      bindings = undefined
+      return Result.fail(cause)
+    },
+  )
   return bindings
 }
 
@@ -88,19 +91,11 @@ async function loadKernel32(): Promise<Win32Binding> {
   }
 }
 
-function ignore(run: () => void): void {
-  try {
-    run()
-  } catch {
-    // The kernel releases the object with its last handle, so a failed release
-    // or close must not replace the primary error.
-  }
-}
-
-function closeQuietly(binding: Win32Binding, handle: number): void {
-  ignore(() => {
-    binding.closeHandle(handle)
-  })
+function closeQuietly(binding: Win32Binding, handle: number): Effect.Effect<void> {
+  return Effect.try({
+    try: () => binding.closeHandle(handle),
+    catch: (cause) => cause,
+  }).pipe(Effect.ignore)
 }
 
 function platformError(
@@ -121,15 +116,19 @@ function platformError(
 function releasedHandle(binding: Win32Binding, handle: number): SyncLockHandle {
   let released = false
   return {
-    release: Effect.sync(() => {
-      if (released) return
+    release: Effect.suspend(() => {
+      if (released) return Effect.void
       released = true
-      ignore(() => {
-        binding.releaseSemaphore(handle, 1, null)
-      })
-      ignore(() => {
-        binding.closeHandle(handle)
-      })
+      return Effect.andThen(
+        Effect.try({
+          try: () => binding.releaseSemaphore(handle, 1, null),
+          catch: (cause) => cause,
+        }).pipe(Effect.ignore),
+        Effect.try({
+          try: () => binding.closeHandle(handle),
+          catch: (cause) => cause,
+        }).pipe(Effect.ignore),
+      )
     }),
   }
 }
@@ -140,15 +139,18 @@ function releasedHandle(binding: Win32Binding, handle: number): SyncLockHandle {
  * @returns the lock service.
  */
 export function makeWin32SyncLock(
-  loadBinding: () => Promise<Win32Binding> = loadWin32Binding,
+  loadBinding: () => Promise<Result.Result<Win32Binding, unknown>> = loadWin32Binding,
 ): SyncLockShape {
   return {
     acquire: (lockPath) =>
       Effect.gen(function* () {
-        const binding = yield* Effect.tryPromise({
-          try: loadBinding,
-          catch: (cause) => platformError('loadWin32Lock', lockPath, { cause }),
-        })
+        const loaded = yield* Effect.promise(() => loadBinding())
+        if (Result.isFailure(loaded)) {
+          return yield* Effect.fail(
+            platformError('loadWin32Lock', lockPath, { cause: loaded.failure }),
+          )
+        }
+        const binding = loaded.success
         const name = win32LockName(lockPath)
         const handle = yield* Effect.try({
           try: () => binding.createSemaphoreW(null, 1, 1, name),
@@ -171,7 +173,7 @@ export function makeWin32SyncLock(
         if (Result.isSuccess(waited) && waited.success === WAIT_OBJECT_0) {
           return releasedHandle(binding, handle)
         }
-        closeQuietly(binding, handle)
+        yield* closeQuietly(binding, handle)
         if (Result.isFailure(waited)) return yield* Effect.fail(waited.failure)
         if (waited.success === WAIT_TIMEOUT) {
           return yield* Effect.fail(new SyncLocked({ lockPath }))

@@ -56,11 +56,12 @@ function readJsonFile(
   return Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return undefined
     const text = yield* fs.readFileString(path)
-    try {
-      const parsed: unknown = JSON.parse(text)
-      return Predicate.isObject(parsed) ? (parsed as Record<string, unknown>) : undefined
-    } catch (cause) {
-      return yield* Effect.fail(
+    return yield* Effect.try({
+      try: () => {
+        const parsed: unknown = JSON.parse(text)
+        return Predicate.isObject(parsed) ? (parsed as Record<string, unknown>) : undefined
+      },
+      catch: (cause) =>
         PlatformError.systemError({
           _tag: 'InvalidData',
           module: 'FileSystem',
@@ -68,8 +69,7 @@ function readJsonFile(
           pathOrDescriptor: path,
           cause,
         }),
-      )
-    }
+    })
   })
 }
 

@@ -35,11 +35,10 @@ function errorMessage(error: unknown): string {
   if (error !== null && typeof error === 'object') {
     const message = (error as { message?: unknown }).message
     if (typeof message === 'string') return message
-    try {
-      return JSON.stringify(error)
-    } catch {
-      return String(error)
-    }
+    const stringified = Result.try(() => JSON.stringify(error))
+    return Result.isSuccess(stringified) && typeof stringified.success === 'string'
+      ? stringified.success
+      : String(error)
   }
   return String(error)
 }

@@ -2,6 +2,7 @@ import { bundle, insert, type ProfilePlan, layer as planLayer } from '@eedsh/con
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'
@@ -202,6 +203,14 @@ describe('Effect materialization', () => {
     expect(test.lock.acquires).toEqual([lockPath])
     expect(test.lock.releases).toEqual([lockPath])
     expect(test.lock.isHeld()).toBe(false)
+  })
+
+  it('maps a malformed profile manifest to a platform parse error', async () => {
+    const test = harness({ files: { [manifestPath]: '{' } })
+    const error = await failureOf(test.program)
+    expect(PlatformError.isPlatformError(error)).toBe(true)
+    expect(error.reason.method).toBe('parseJson')
+    expect(error.reason.pathOrDescriptor).toBe(manifestPath)
   })
 
   it('removes a lockfile it had to create when restoring', async () => {
