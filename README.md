@@ -36,6 +36,10 @@ plain Cordis plugin because DSH's HMR service owns its lifecycle, and
 data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
 that Result or a plain plan.
 
+Within `@eedsh/cli`, external data contracts and tolerant readers are decoded with
+`effect/Schema`, and each tolerant fallback is explicit at the reader. The config
+package's JSON/cycle walker and the Effect-free `@eedsh/runtime` remain exceptions.
+
 Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
 The resulting `Exit` is rendered once into a diagnostic and an exit code. Expected
 failures are `Result` values or Effect failures; only the external API adapters and
