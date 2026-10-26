@@ -32,8 +32,9 @@ for Node services, and uses the same Effect runtime for materialization: tagged
 domain failures plus the core `FileSystem` and `ChildProcessSpawner` services, with
 `NodeServices.layer` supplying the live implementations. `@eedsh/runtime` remains a
 plain Cordis plugin because DSH's HMR service owns its lifecycle, and
-`defineProfile`/`assertPlan` remain synchronous because a config module must
-default-export plain data.
+`defineProfile` remains synchronous because a config module must default-export
+data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
+that Result or a plain plan.
 
 `test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
 `effect/Schema` and `effect/Result`, may not depend on DSH, and must use the same
@@ -118,9 +119,10 @@ Invalid plans fail before sync with Effect's native formatted schema error: the 
 prints every message line with its location annotation, for example
 `profile name "" is not usable as a profile directory` followed by
 `  at ["profile"]["name"]`. There are no `plan.*` error codes, no per-issue
-`path: message` rewrite, and no truncation; `defineProfile` throws the same
-`Schema.SchemaError` a frontend can catch, with the structured issue tree on
-`error.issue`.
+`path: message` rewrite, and no truncation. `defineProfile` returns the same
+`Schema.SchemaError` in a failure `Result`, with the structured issue tree on
+`error.issue`. A config may export a plain plan or a `Result`: the loader validates
+plain data and a successful Result, and reports a failed Result natively.
 
 ```sh
 eedsh check [--config <path>] [-- <tsc args>]

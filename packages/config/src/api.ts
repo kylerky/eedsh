@@ -15,7 +15,9 @@ import type {
   ProfilePlan,
 } from './plan/schema'
 import type { JsonObject, JsonValue } from './plan/types'
-import { assertPlan } from './plan/validate'
+import { validatePlan } from './plan/validate'
+import type * as Result from 'effect/Result'
+import type * as Schema from 'effect/Schema'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject
@@ -148,11 +150,12 @@ export function raw(entry: PlanPatch): PlanPatch {
  * malformed expression nodes, duplicate markers or layer ids, reserved names,
  * and invalid identity before anything is written.
  * @param input - profile identity, bundles, layers, and packages.
- * @returns the validated, detached plan.
- * @throws {import('effect/Schema').SchemaError} Effect's native schema error,
- * carrying the located issue tree and its formatted message.
+ * @returns the validated, detached plan in a success Result, or Effect's
+ * native schema error in a failure Result.
  */
-export function defineProfile(input: DefineProfileInput): ProfilePlan {
+export function defineProfile(
+  input: DefineProfileInput,
+): Result.Result<ProfilePlan, Schema.SchemaError> {
   const candidate = {
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
@@ -162,5 +165,5 @@ export function defineProfile(input: DefineProfileInput): ProfilePlan {
     layers: (input.layers ?? []).map((item) => ({ id: item.id, patches: [...item.patches] })),
     packages: { ...(input.packages ?? {}) },
   }
-  return assertPlan(candidate)
+  return validatePlan(candidate)
 }

@@ -1,11 +1,12 @@
 import type { ProfilePlan } from '@eedsh/config'
-import { bundle, defineProfile, generated, insert, js, layer, override } from '@eedsh/config'
+import { bundle, generated, insert, js, layer, override } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
 import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
 import { emitPatchesYaml } from '../../src/materialize/yaml'
+import { planOf } from '../support/plan'
 
 function fixturePlan(): ProfilePlan {
-  return defineProfile({
+  return planOf({
     name: 'work',
     dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
@@ -176,7 +177,7 @@ describe('DSH round-trip', () => {
     const { composeEntries, loadOverlayPatches } = await import('@deepseek-ai/dsh-app-boot')
 
     const source = "ctx.get('profileContext') ? \"x: y\" : (1 + 2) * ctx.get('nested')(3)"
-    const plan = defineProfile({
+    const plan = planOf({
       name: 'work',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],

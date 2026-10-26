@@ -9,6 +9,7 @@ describe('workspace', () => {
   it('exposes the @eedsh/config public entry', () => {
     expect(typeof config.defineProfile).toBe('function')
     expect(config.PLAN_VERSION).toBe(1)
+    expect('assertPlan' in config).toBe(false)
   })
 
   it('exposes the @eedsh/runtime public entry', () => {

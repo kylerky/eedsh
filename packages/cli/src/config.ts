@@ -9,6 +9,7 @@ import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type ProfilePlan, validatePlan } from '@eedsh/config'
 import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 
 /** TypeScript config file names, in discovery order. */
 export const CONFIG_FILENAMES = ['eedsh.config.ts', 'eedsh.config.mts'] as const
@@ -42,6 +43,24 @@ function errorMessage(error: unknown): string {
     }
   }
   return String(error)
+}
+
+/** Read a config's default export as a validated plan. */
+function exportedPlan(
+  exported: unknown,
+): Result.Result<ProfilePlan, ConfigError | Schema.SchemaError> {
+  if (!Result.isResult(exported)) return validatePlan(exported)
+  if (Result.isFailure(exported)) {
+    return Schema.isSchemaError(exported.failure)
+      ? Result.fail(exported.failure)
+      : Result.fail(
+          new ConfigError(
+            'config.invalid_export',
+            `config exported an invalid failure: ${errorMessage(exported.failure)}`,
+          ),
+        )
+  }
+  return validatePlan(exported.success)
 }
 
 /**
@@ -158,6 +177,7 @@ export async function loadConfig(configPath: string): Promise<ProfilePlan> {
   try {
     imported = await nativeImport(url.href)
   } catch (cause) {
+    if (Schema.isSchemaError(cause)) throw cause
     throw new ConfigError(
       'config.import_failed',
       `cannot import ${configPath}: ${errorMessage(cause)}`,
@@ -171,7 +191,7 @@ export async function loadConfig(configPath: string): Promise<ProfilePlan> {
       `${configPath} must default-export a profile plan`,
     )
   }
-  const result = validatePlan(exported)
+  const result = exportedPlan(exported)
   if (Result.isFailure(result)) throw result.failure
   return result.success
 }

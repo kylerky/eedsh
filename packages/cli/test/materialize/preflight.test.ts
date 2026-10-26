@@ -1,6 +1,5 @@
 import {
   bundle,
-  defineProfile,
   generated as generatedMarker,
   insert,
   override,
@@ -10,6 +9,7 @@ import {
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { DshResolveFailure } from '../../src/internal/effect/errors'
+import { planOf } from '../support/plan'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -37,7 +37,7 @@ function buildGenerated(plan: ProfilePlan): GeneratedBundle {
 }
 
 function fixturePlan(layers: ProfilePlan['layers']): ProfilePlan {
-  return defineProfile({
+  return planOf({
     name: 'work',
     dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), generatedMarker()],

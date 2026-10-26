@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, defineProfile, generated, insert, layer, override } from '@eedsh/config'
+import { bundle, generated, insert, layer, override } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
@@ -10,6 +10,7 @@ import { resolveDshInstallation } from '../../src/dsh'
 import { liveServiceLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
 import { preflightLayer } from '../../src/preflight'
+import { planOf } from '../support/plan'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
@@ -27,7 +28,7 @@ describe('bootable profile integration', () => {
       'utf8',
     )
 
-    const plan = defineProfile({
+    const plan = planOf({
       name: profileName,
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],

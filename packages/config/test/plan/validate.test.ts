@@ -131,24 +131,25 @@ describe('validatePlan', () => {
 })
 
 describe('defineProfile authoring boundary', () => {
-  it('throws the native error synchronously', () => {
-    expect(() => defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })).toThrow(
-      Schema.SchemaError,
-    )
-    try {
-      defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })
-    } catch (error) {
-      expect(Schema.isSchemaError(error)).toBe(true)
-      expect(error).toBeInstanceOf(Error)
-      expect((error as Schema.SchemaError)._tag).toBe('SchemaError')
-      expect(SchemaIssue.isIssue((error as Schema.SchemaError).issue)).toBe(true)
+  it('returns the native failure Result synchronously', () => {
+    const result = defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(Schema.isSchemaError(result.failure)).toBe(true)
+      expect(result.failure).toBeInstanceOf(Error)
+      expect(result.failure._tag).toBe('SchemaError')
+      expect(SchemaIssue.isIssue(result.failure.issue)).toBe(true)
     }
+    expect(result).not.toBeInstanceOf(Promise)
   })
 
   it('returns plain data synchronously for a valid plan', () => {
-    const value = defineProfile({ name: 'work', dsh: '0.2.1-rc.2', bundles: [] })
-    expect(value.format).toBe(PLAN_FORMAT)
-    expect(value.profile.name).toBe('work')
-    expect(value).not.toBeInstanceOf(Promise)
+    const result = defineProfile({ name: 'work', dsh: '0.2.1-rc.2', bundles: [] })
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) {
+      expect(result.success.format).toBe(PLAN_FORMAT)
+      expect(result.success.profile.name).toBe('work')
+    }
+    expect(result).not.toBeInstanceOf(Promise)
   })
 })

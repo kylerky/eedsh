@@ -12,6 +12,8 @@ import {
   PLAN_FORMAT,
   PLAN_VERSION,
   raw,
+  type DefineProfileInput,
+  type ProfilePlan,
   validatePlan,
 } from '@eedsh/config'
 import * as Result from 'effect/Result'
@@ -25,11 +27,23 @@ function issuesOf(error: unknown) {
   return formatIssues((error as Schema.SchemaError).issue).issues
 }
 
+function planOf(input: DefineProfileInput): ProfilePlan {
+  const result = defineProfile(input)
+  if (Result.isFailure(result)) throw new Error(result.failure.message)
+  return result.success
+}
+
+function failureOf(input: DefineProfileInput): Schema.SchemaError {
+  const result = defineProfile(input)
+  if (Result.isSuccess(result)) throw new Error('expected authoring to fail')
+  return result.failure
+}
+
 const base = { name: 'work', dsh: '0.2.1-rc.2' }
 
 describe('defineProfile', () => {
   it('produces a validated plan with defaults', () => {
-    const plan = defineProfile({ ...base, bundles: [bundle('@deepseek-ai/dsh-base')] })
+    const plan = planOf({ ...base, bundles: [bundle('@deepseek-ai/dsh-base')] })
     expect(plan).toMatchObject({
       format: PLAN_FORMAT,
       version: PLAN_VERSION,
@@ -42,7 +56,7 @@ describe('defineProfile', () => {
   })
 
   it('preserves the positional generated marker', () => {
-    const plan = defineProfile({
+    const plan = planOf({
       ...base,
       bundles: [bundle('first'), generated(), bundle('second')],
     })
@@ -53,42 +67,39 @@ describe('defineProfile', () => {
     ])
   })
 
-  it('rejects a missing profile name', () => {
-    expect(() => defineProfile({ name: '', dsh: base.dsh, bundles: [] })).toThrow(
-      Schema.SchemaError,
-    )
+  it('returns a failure Result for a missing profile name', () => {
+    const error = failureOf({ name: '', dsh: base.dsh, bundles: [] })
+    expect(Schema.isSchemaError(error)).toBe(true)
+    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['profile', 'name'])
   })
 
   it('rejects reserved bundle names', () => {
     for (const name of ['@eedsh/runtime', '@eedsh/generated']) {
-      try {
-        defineProfile({ ...base, bundles: [bundle(name)] })
-        expect.unreachable('reserved bundle name must be rejected')
-      } catch (error) {
-        expect(Schema.isSchemaError(error)).toBe(true)
-        const issues = issuesOf(error)
-        expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 0, 'name'])
-        expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(
-          true,
-        )
-      }
+      const error = failureOf({ ...base, bundles: [bundle(name)] })
+      const issues = issuesOf(error)
+      expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 0, 'name'])
+      expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(
+        true,
+      )
     }
   })
 
   it('rejects reserved package names', () => {
-    expect(() =>
-      defineProfile({ ...base, bundles: [], packages: { '@eedsh/generated': 'link:./x' } }),
-    ).toThrow(Schema.SchemaError)
+    const error = failureOf({
+      ...base,
+      bundles: [],
+      packages: { '@eedsh/generated': 'link:./x' },
+    })
+    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['packages', '@eedsh/generated'])
   })
 
   it('rejects duplicate generated markers', () => {
-    expect(() => defineProfile({ ...base, bundles: [generated(), generated()] })).toThrow(
-      Schema.SchemaError,
-    )
+    const error = failureOf({ ...base, bundles: [generated(), generated()] })
+    expect(issuesOf(error).some((issue) => issue.message.includes('generated marker'))).toBe(true)
   })
 
   it('accepts expression nodes in layer config', () => {
-    const plan = defineProfile({
+    const plan = planOf({
       ...base,
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [
@@ -102,6 +113,14 @@ describe('defineProfile', () => {
       $eedsh: { expr: "ctx.get('profileContext').name" },
     })
     expect(Result.isSuccess(validatePlan(parsed))).toBe(true)
+  })
+
+  it('returns a Promise-free Result and exposes no throwing helper', async () => {
+    const result = defineProfile({ ...base, bundles: [] })
+    expect(Result.isSuccess(result)).toBe(true)
+    expect(result).not.toBeInstanceOf(Promise)
+    const module = await import('@eedsh/config')
+    expect('assertPlan' in module).toBe(false)
   })
 })
 

@@ -1,4 +1,10 @@
-import { type PlanPatch, type ProfilePlan, validatePlan } from '@eedsh/config'
+import {
+  defineProfile,
+  type DefineProfileInput,
+  type PlanPatch,
+  type ProfilePlan,
+  validatePlan,
+} from '@eedsh/config'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
@@ -28,6 +34,12 @@ void assertDerivedShape
 const validateSignature: (value: unknown) => Result.Result<ProfilePlan, Schema.SchemaError> =
   validatePlan
 void validateSignature
+
+/** Authoring returns the same native Result shape synchronously. */
+const defineSignature: (
+  input: DefineProfileInput,
+) => Result.Result<ProfilePlan, Schema.SchemaError> = defineProfile
+void defineSignature
 
 describe('derived plan types', () => {
   it('derives the public plan from the schema', () => {

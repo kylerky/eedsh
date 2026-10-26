@@ -1,7 +1,6 @@
 import {
   bundle,
   canonicalJson,
-  defineProfile,
   generated,
   type PlanBundle,
   type ProfilePlan,
@@ -15,12 +14,13 @@ import {
 } from '../../src/materialize/manifest'
 import { ensureProfileFiles } from '../../src/materialize/profile'
 import { memoryFileSystem } from '../support/fakes'
+import { planOf } from '../support/plan'
 
 const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'
 
 function plan(bundles: readonly PlanBundle[], packages: Record<string, string> = {}): ProfilePlan {
-  return defineProfile({ name: 'work', dsh: '0.2.1-rc.2', bundles, packages })
+  return planOf({ name: 'work', dsh: '0.2.1-rc.2', bundles, packages })
 }
 
 function reconcile(

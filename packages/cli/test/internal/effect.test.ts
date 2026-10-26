@@ -1,4 +1,4 @@
-import { bundle, defineProfile, insert, type ProfilePlan, layer as planLayer } from '@eedsh/config'
+import { bundle, insert, type ProfilePlan, layer as planLayer } from '@eedsh/config'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -21,6 +21,7 @@ import {
   fakeSyncLock,
   memoryFileSystem,
 } from '../support/fakes'
+import { planOf } from '../support/plan'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'
@@ -31,7 +32,7 @@ const lockPath = `${profileDir}/.eedsh/sync.lock`
 const generatedManifestPath = `${profileDir}/.eedsh/generated/package.json`
 
 function fixturePlan(): ProfilePlan {
-  return defineProfile({
+  return planOf({
     name: 'work',
     dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base')],
@@ -136,7 +137,7 @@ describe('Effect materialization', () => {
     const firstRun = await Effect.runPromise(first.program)
     const publishedManifest = first.fs.files.get(manifestPath)
 
-    const changedPlan = defineProfile({
+    const changedPlan = planOf({
       name: 'work',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base')],

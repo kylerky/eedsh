@@ -3,7 +3,7 @@ import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, defineProfile, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
+import { bundle, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -11,6 +11,7 @@ import { resolveDshInstallation } from '../../src/dsh'
 import { liveServiceLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
 import { preflightLayer } from '../../src/preflight'
+import { planOf } from '../support/plan'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
@@ -61,7 +62,7 @@ async function waitForServerUrl(
 }
 
 function webPlan(name: string, layers: ProfilePlan['layers']): ProfilePlan {
-  return defineProfile({
+  return planOf({
     name,
     dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), bundle('@deepseek-ai/dsh-web-app'), generated()],

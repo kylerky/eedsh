@@ -6,7 +6,6 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   bundle,
-  defineProfile,
   generated,
   insert,
   layer,
@@ -31,6 +30,7 @@ import {
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
+import { planOf } from './support/plan'
 import {
   fakeDsh,
   fakePackageManager,
@@ -441,6 +441,130 @@ describe('config evaluation', () => {
   })
 })
 
+describe('config export forms', () => {
+  async function writeConfig(source: string): Promise<string> {
+    const dir = await tempDir('config-export-')
+    const configPath = join(dir, 'eedsh.config.ts')
+    await writeFile(configPath, source)
+    return configPath
+  }
+
+  const successResult = `
+import * as Result from 'effect/Result'
+export default Result.succeed({
+  format: 'eedsh/profile-plan',
+  version: 1,
+  profile: { name: 'result-export' },
+  dsh: '0.2.1-rc.2',
+  bundles: [],
+  layers: [],
+  packages: {},
+})
+`
+
+  const plainPlan = `
+export default {
+  format: 'eedsh/profile-plan',
+  version: 1,
+  profile: { name: 'plain-export' },
+  dsh: '0.2.1-rc.2',
+  bundles: [],
+  layers: [],
+  packages: {},
+}
+`
+
+  const failureResult = `
+import { defineProfile } from '@eedsh/config'
+export default defineProfile({
+  name: '',
+  dsh: 'latest',
+  bundles: [],
+})
+`
+
+  const forgedSuccess = `
+import * as Result from 'effect/Result'
+export default Result.succeed({
+  format: 'eedsh/profile-plan',
+  version: 1,
+  profile: { name: 'forged-export' },
+  dsh: 'latest',
+  bundles: [],
+  layers: [],
+  packages: {},
+})
+`
+
+  const authoringThrow = `
+import { validatePlan } from '@eedsh/config'
+import * as Result from 'effect/Result'
+const result = validatePlan({
+  format: 'eedsh/profile-plan',
+  version: 1,
+  profile: { name: 'thrown-export' },
+  dsh: 'latest',
+  bundles: [],
+  layers: [],
+  packages: {},
+})
+if (Result.isFailure(result)) throw result.failure
+export default {}
+`
+
+  it('unwraps a successful Result export', async () => {
+    const h = harness()
+    const configPath = await writeConfig(successResult)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile result-export')
+    expect(h.fs.files.has('/home/profiles/result-export/.eedsh/generated/package.json')).toBe(true)
+  })
+
+  it('accepts a plain plan export', async () => {
+    const h = harness()
+    const configPath = await writeConfig(plainPlan)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile plain-export')
+    expect(h.fs.files.has('/home/profiles/plain-export/.eedsh/generated/package.json')).toBe(true)
+  })
+
+  it('reports a failed Result export with the native schema message', async () => {
+    const h = harness()
+    const configPath = await writeConfig(failureResult)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('profile name "" is not usable as a profile directory')
+    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('revalidates a forged successful Result export', async () => {
+    const h = harness()
+    const configPath = await writeConfig(forgedSuccess)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('surfaces a schema failure raised during module evaluation', async () => {
+    const h = harness()
+    const configPath = await writeConfig(authoringThrow)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+})
+
 describe('eedsh arguments', () => {
   it('returns exit 2 for usage errors without ANSI escapes', async () => {
     const h = harness()
@@ -616,13 +740,13 @@ describe('tagged failures', () => {
 describe('eedsh sync --watch', () => {
   it('reruns on change, retains the last generation on failure, and reuses services', async () => {
     const h = harness()
-    const planA = defineProfile({
+    const planA = planOf({
       name: 'cli-fixture',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-a', name: '@scope/row-a' })])],
     })
-    const planB: ProfilePlan = defineProfile({
+    const planB = planOf({
       name: 'cli-fixture',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
@@ -811,13 +935,13 @@ describe('eedsh sync --watch', () => {
     const h = harness({
       packages: { beforeInstall: (count) => (count === 2 ? Deferred.await(gate) : Effect.void) },
     })
-    const planA = defineProfile({
+    const planA = planOf({
       name: 'cli-fixture',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-a', name: '@scope/row-a' })])],
     })
-    const planB: ProfilePlan = defineProfile({
+    const planB = planOf({
       name: 'cli-fixture',
       dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
@@ -998,7 +1122,10 @@ describe('documentation', () => {
   it('keeps the README example a valid plan', async () => {
     const example = './fixtures/readme/eedsh.config.ts'
     const module = (await import(example)) as { default: unknown }
-    const result = validatePlan(module.default)
+    const exported = Result.isResult(module.default)
+      ? Result.getOrThrow(module.default)
+      : module.default
+    const result = validatePlan(exported)
     expect(Result.isSuccess(result)).toBe(true)
   })
 })
