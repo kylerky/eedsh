@@ -6,7 +6,7 @@
  */
 import { dirname, join } from 'node:path'
 import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import { writeFileAtomic } from '../internal/atomic-write'
@@ -25,30 +25,58 @@ export const GENERATION_FORMAT = 'eedsh/generation'
 /** The generation-record format version. */
 export const GENERATION_VERSION = 1
 
-/** One emitted layer file. */
-export interface GenerationLayer {
-  id: string
+/** Schema for one emitted layer file. */
+export const GenerationLayerSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
   /** Package-relative patch file path. */
-  file: string
+  file: Schema.NonEmptyString,
   /** SHA-256 of the emitted YAML content. */
-  hash: string
-}
+  hash: Schema.NonEmptyString,
+})
+
+/** One emitted layer file. */
+export type GenerationLayer = Schema.Schema.Type<typeof GenerationLayerSchema>
+
+const planHashSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))
+
+const managedBundlesSchema = Schema.Array(Schema.NonEmptyString).check(
+  Schema.isNonEmpty(),
+  Schema.makeFilter(
+    (bundles: readonly string[]) =>
+      bundles.includes(RUNTIME_PACKAGE_NAME) && bundles.includes(GENERATED_PACKAGE_NAME),
+  ),
+)
+
+const managedPackagesSchema = Schema.Record(Schema.NonEmptyString, Schema.NonEmptyString).check(
+  Schema.makeFilter(
+    (packages: Readonly<Record<string, string>>) => Object.keys(packages).length > 0,
+  ),
+)
+
+/** Schema for the generation record stored under `eedsh`. */
+export const GenerationRecordSchema = Schema.Struct({
+  format: Schema.Literal(GENERATION_FORMAT),
+  version: Schema.Literal(GENERATION_VERSION),
+  generationId: Schema.NonEmptyString,
+  planHash: planHashSchema,
+  eedshVersion: Schema.String,
+  dshVersion: Schema.String,
+  /** Layers in application order. */
+  layers: Schema.Array(GenerationLayerSchema),
+  /** Managed bundle order, including the runtime and generated bundles. */
+  bundles: managedBundlesSchema,
+  /** Managed package specifications. */
+  packages: managedPackagesSchema,
+})
 
 /** Provenance for one published generation. */
-export interface GenerationRecord {
-  format: typeof GENERATION_FORMAT
-  version: typeof GENERATION_VERSION
-  generationId: string
-  planHash: string
-  eedshVersion: string
-  dshVersion: string
-  /** Layers in application order. */
-  layers: GenerationLayer[]
-  /** Managed bundle order, including the runtime and generated bundles. */
-  bundles: string[]
-  /** Managed package specifications. */
-  packages: Record<string, string>
-}
+export type GenerationRecord = Schema.Schema.Type<typeof GenerationRecordSchema>
+
+/** Schema for the generated package manifest fields the reader trusts. */
+export const GenerationManifestSchema = Schema.Struct({
+  name: Schema.Literal(GENERATED_PACKAGE_NAME),
+  eedsh: GenerationRecordSchema,
+})
 
 /** The generated package manifest. */
 export interface GeneratedManifest {

@@ -5,17 +5,18 @@
  * record means "no previous generation".
  * @module @eedsh/cli/materialize/generation-record
  */
-import { Effect } from 'effect'
+import { Effect, Option, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
+import type * as SchemaIssue from 'effect/SchemaIssue'
 import { messageOf } from '../internal/error-message'
-import { asRecord } from '../internal/record'
+import { readRecord, readStringArray } from '../internal/schema-readers'
 import {
   GENERATED_PACKAGE_NAME,
   GENERATION_FORMAT,
   GENERATION_VERSION,
-  type GenerationLayer,
+  GenerationManifestSchema,
   type GenerationRecord,
   RUNTIME_PACKAGE_NAME,
 } from './generated-bundle'
@@ -67,7 +68,11 @@ export type GenerationLookup =
   | InvalidGenerationRecord
   | ValidGenerationRecord
 
-const PLAN_HASH = /^[0-9a-f]{64}$/
+type ClassifiedReason = Exclude<GenerationInvalidReason, 'missing'>
+
+const versionProbeSchema = Schema.Struct({
+  eedsh: Schema.Struct({ version: Schema.Number }),
+})
 
 function invalidRecord(
   path: string,
@@ -103,40 +108,114 @@ export function describeInvalidRecord(invalid: {
     : message
 }
 
-function readLayers(value: unknown): GenerationLayer[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const layers: GenerationLayer[] = []
-  for (const item of value) {
-    const layer = asRecord(item)
-    if (layer === undefined) return undefined
-    const { id, file, hash } = layer
-    if (typeof id !== 'string' || id === '') return undefined
-    if (typeof file !== 'string' || file === '') return undefined
-    if (typeof hash !== 'string' || hash === '') return undefined
-    layers.push({ id, file, hash })
+/** Follow the first issue path through pointer and composite nodes. */
+function firstIssuePath(issue: SchemaIssue.Issue): PropertyKey[] {
+  if (issue._tag === 'Pointer') return [...issue.path, ...firstIssuePath(issue.issue)]
+  if (issue._tag === 'Composite' && issue.issues[0] !== undefined) {
+    return firstIssuePath(issue.issues[0])
   }
-  return layers
+  return []
 }
 
-function readStringList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const items: string[] = []
-  for (const item of value) {
-    if (typeof item !== 'string' || item === '') return undefined
-    items.push(item)
+/** Map the first schema issue path to the reader's stable reason. */
+function reasonForPath(path: readonly PropertyKey[]): ClassifiedReason {
+  const [root, field] = path
+  if (root === undefined) return 'unparseable'
+  if (root === 'name') return 'name'
+  if (root !== 'eedsh') return 'format'
+  if (
+    field === undefined ||
+    field === 'format' ||
+    field === 'eedshVersion' ||
+    field === 'dshVersion'
+  ) {
+    return 'format'
   }
-  return items
+  if (field === 'version') return 'version'
+  if (field === 'generationId') return 'generation-id'
+  if (field === 'planHash') return 'plan-hash'
+  if (field === 'layers') return 'layers'
+  if (field === 'bundles') return 'bundles'
+  if (field === 'packages') return 'packages'
+  return 'format'
 }
 
-function readStringMap(value: unknown): Record<string, string> | undefined {
-  const record = asRecord(value)
-  if (record === undefined) return undefined
-  const map: Record<string, string> = {}
-  for (const [key, item] of Object.entries(record)) {
-    if (key === '' || typeof item !== 'string' || item === '') return undefined
-    map[key] = item
+/** Keep the existing detail text and adoptability for one failed decode. */
+function failureDetail(
+  reason: ClassifiedReason,
+  path: readonly PropertyKey[],
+  value: unknown,
+): { detail: string; adoptable: boolean } {
+  const manifest = readRecord(value)
+  const metadata = readRecord(manifest.eedsh)
+  switch (reason) {
+    case 'unparseable':
+      return { detail: 'the document is not a JSON object', adoptable: true }
+    case 'name':
+      return {
+        detail: `the generated package is named ${String(manifest.name)} instead of "${GENERATED_PACKAGE_NAME}"`,
+        adoptable: true,
+      }
+    case 'format':
+      if (path.length === 1) {
+        return { detail: 'the manifest has no eedsh generation record', adoptable: true }
+      }
+      if (path[1] === 'eedshVersion' || path[1] === 'dshVersion') {
+        return {
+          detail: 'the record is missing its eedsh or dsh version',
+          adoptable: true,
+        }
+      }
+      return {
+        detail: `the generation format is ${String(metadata.format)} instead of "${GENERATION_FORMAT}"`,
+        adoptable: true,
+      }
+    case 'version': {
+      const probe = Schema.decodeUnknownOption(versionProbeSchema)(value)
+      if (Option.isSome(probe) && probe.value.eedsh.version > GENERATION_VERSION) {
+        return {
+          detail: `record format version ${probe.value.eedsh.version} is newer than the supported version ${GENERATION_VERSION}; upgrade eedsh`,
+          adoptable: false,
+        }
+      }
+      return {
+        detail: `record format version ${String(metadata.version)} is not the supported version ${GENERATION_VERSION}`,
+        adoptable: true,
+      }
+    }
+    case 'generation-id':
+      return {
+        detail: 'the generation identifier is missing or empty',
+        adoptable: true,
+      }
+    case 'plan-hash':
+      return {
+        detail: 'the plan hash is not a 64-character SHA-256 hex digest',
+        adoptable: true,
+      }
+    case 'layers':
+      return { detail: 'the layer list is missing or malformed', adoptable: true }
+    case 'bundles': {
+      const raw = Array.isArray(metadata.bundles) ? metadata.bundles : []
+      const valid = readStringArray(metadata.bundles)
+      const malformed = raw.length !== valid.length || valid.some((item) => item === '')
+      if (raw.length === 0 || malformed) {
+        return {
+          detail: 'the managed bundle list must be a non-empty list of bundle names',
+          adoptable: true,
+        }
+      }
+      return {
+        detail: `the managed bundle list does not include "${RUNTIME_PACKAGE_NAME}" and "${GENERATED_PACKAGE_NAME}"`,
+        adoptable: true,
+      }
+    }
+    case 'packages':
+      return {
+        detail: 'the managed package map must be a non-empty record of package specifications',
+        adoptable: true,
+      }
   }
-  return map
 }
 
 /**
@@ -147,98 +226,14 @@ function readStringMap(value: unknown): Record<string, string> | undefined {
  * @returns the classification.
  */
 export function classifyGenerationRecord(value: unknown, path: string): GenerationLookup {
-  const manifest = asRecord(value)
-  if (manifest === undefined) {
-    return invalidRecord(path, 'unparseable', 'the document is not a JSON object')
+  const decoded = Schema.decodeUnknownResult(GenerationManifestSchema, { errors: 'first' })(value)
+  if (Result.isFailure(decoded)) {
+    const issuePath = firstIssuePath(decoded.failure.issue)
+    const reason = reasonForPath(issuePath)
+    const { detail, adoptable } = failureDetail(reason, issuePath, value)
+    return invalidRecord(path, reason, detail, adoptable)
   }
-  if (manifest.name !== GENERATED_PACKAGE_NAME) {
-    return invalidRecord(
-      path,
-      'name',
-      `the generated package is named ${String(manifest.name)} instead of "${GENERATED_PACKAGE_NAME}"`,
-    )
-  }
-
-  const metadata = asRecord(manifest.eedsh)
-  if (metadata === undefined) {
-    return invalidRecord(path, 'format', 'the manifest has no eedsh generation record')
-  }
-  if (metadata.format !== GENERATION_FORMAT) {
-    return invalidRecord(
-      path,
-      'format',
-      `the generation format is ${String(metadata.format)} instead of "${GENERATION_FORMAT}"`,
-    )
-  }
-  if (metadata.version !== GENERATION_VERSION) {
-    if (typeof metadata.version === 'number' && metadata.version > GENERATION_VERSION) {
-      return invalidRecord(
-        path,
-        'version',
-        `record format version ${metadata.version} is newer than the supported version ${GENERATION_VERSION}; upgrade eedsh`,
-        false,
-      )
-    }
-    return invalidRecord(
-      path,
-      'version',
-      `record format version ${String(metadata.version)} is not the supported version ${GENERATION_VERSION}`,
-    )
-  }
-  const generationId = metadata.generationId
-  if (typeof generationId !== 'string' || generationId === '') {
-    return invalidRecord(path, 'generation-id', 'the generation identifier is missing or empty')
-  }
-  const planHash = metadata.planHash
-  if (typeof planHash !== 'string' || !PLAN_HASH.test(planHash)) {
-    return invalidRecord(
-      path,
-      'plan-hash',
-      'the plan hash is not a 64-character SHA-256 hex digest',
-    )
-  }
-  if (typeof metadata.eedshVersion !== 'string' || typeof metadata.dshVersion !== 'string') {
-    return invalidRecord(path, 'format', 'the record is missing its eedsh or dsh version')
-  }
-  const layers = readLayers(metadata.layers)
-  if (layers === undefined) {
-    return invalidRecord(path, 'layers', 'the layer list is missing or malformed')
-  }
-  const bundles = readStringList(metadata.bundles)
-  if (bundles === undefined || bundles.length === 0) {
-    return invalidRecord(
-      path,
-      'bundles',
-      'the managed bundle list must be a non-empty list of bundle names',
-    )
-  }
-  if (!bundles.includes(RUNTIME_PACKAGE_NAME) || !bundles.includes(GENERATED_PACKAGE_NAME)) {
-    return invalidRecord(
-      path,
-      'bundles',
-      `the managed bundle list does not include "${RUNTIME_PACKAGE_NAME}" and "${GENERATED_PACKAGE_NAME}"`,
-    )
-  }
-  const packages = readStringMap(metadata.packages)
-  if (packages === undefined || Object.keys(packages).length === 0) {
-    return invalidRecord(
-      path,
-      'packages',
-      'the managed package map must be a non-empty record of package specifications',
-    )
-  }
-
-  const record: GenerationRecord = {
-    format: GENERATION_FORMAT,
-    version: GENERATION_VERSION,
-    generationId,
-    planHash,
-    eedshVersion: metadata.eedshVersion,
-    dshVersion: metadata.dshVersion,
-    layers,
-    bundles,
-    packages,
-  }
+  const record = decoded.success.eedsh
   return {
     _tag: 'valid',
     record,
@@ -276,20 +271,4 @@ export function lookupGenerationRecord(
     const text = yield* fs.readFileString(path)
     return yield* classifyText(text, path)
   })
-}
-
-/**
- * Read the published generation identifier without validating the rest of the
- * record. Used to detect a generation change while a read-only check runs.
- * @param generatedManifest - parsed generated package manifest.
- * @returns the generation identifier, or undefined when it cannot be read.
- */
-export function readGenerationId(generatedManifest: unknown): string | undefined {
-  const manifest = asRecord(generatedManifest)
-  if (manifest === undefined) return undefined
-  const metadata = asRecord(manifest.eedsh)
-  if (metadata === undefined || metadata.format !== GENERATION_FORMAT) return undefined
-  return typeof metadata.generationId === 'string' && metadata.generationId !== ''
-    ? metadata.generationId
-    : undefined
 }
