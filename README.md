@@ -167,22 +167,28 @@ exists in the plan; a preset is an ordinary inserted row.
 
 ```
 $DSH_HOME/profiles/<name>/
-  package.json                      bundles + reconciled dependencies
-  cordis.yml                        empty root config (DSH mounts the stack over it)
-  cordis.patch.yml                  your layer; created empty only when missing
-  pnpm-workspace.yaml               pnpm settings DSH expects
-  .eedsh/plan.json                  the validated plan, canonical JSON
-  .eedsh/generated/package.json     generation record — the publication commit point
+  package.json                                   bundles + reconciled dependencies
+  cordis.yml                                     empty root config (DSH mounts the stack over it)
+  cordis.patch.yml                               your layer; created empty only when missing
+  pnpm-workspace.yaml                            pnpm settings DSH expects
+  .eedsh/plan.json                               plan mirror, written at the commit point
+  .eedsh/generated/package.json                  generation record — the publication commit point
+  .eedsh/generated/plans/<generationId>.json     authoritative validated plan (canonical JSON)
   .eedsh/generated/patches/<generationId>/<layerId>.yml
 ```
 
 Publication is atomic and idempotent:
 
-- patch files and the plan are written first, the generated package manifest last;
-- an unchanged plan changes nothing (same generation id, same bytes);
-- the generation id covers the plan hash and every emitted layer hash;
-- a failed install, preflight, or write leaves the previous generation published and
-  restores the profile manifest and lockfile.
+- patch files, the authoritative `plans/<generationId>.json`, and the profile manifest
+  are written first; the plan mirror and then the generated package manifest are last;
+- an unchanged plan with intact plan artifacts changes nothing (same generation id,
+  same bytes);
+- the generation id covers the plan hash and every emitted layer hash, so the record's
+  `planHash` locates and verifies `plans/<generationId>.json`;
+- a stale `.eedsh/plan.json` or a missing/mismatched authoritative plan is repaired by
+  the next successful sync with the same generation id, without reinstalling;
+- a failed install, preflight, mirror write, or commit leaves the previous generation
+  published and restores the profile manifest, lockfile, and plan mirror.
 
 ## Coexist contract
 
@@ -206,9 +212,10 @@ manifest; it is not a way to re-adopt a removal you already published.
 ## CLI
 
 ```sh
-eedsh sync  [--config <path>] [--strict] [--watch]
-eedsh check [--config <path>] [-- <tsc args>]
-eedsh run   [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh sync   [--config <path>] [--strict] [--watch] [--adopt-ownership]
+eedsh doctor [--profile <name> | --config <path>] [--strict]
+eedsh check  [--config <path>] [-- <tsc args>]
+eedsh run    [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
@@ -218,6 +225,21 @@ eedsh --help | --version
 - `--strict` turns unmatched patch targets into a failure and skips publication.
 - `--watch` re-evaluates the config when files in its directory change; a compile
   failure keeps the last published generation.
+- `--adopt-ownership` re-baselines ownership from the current manifest when the
+  generation record cannot be read. Without it, sync fails closed on an eedsh-managed
+  profile instead of silently treating managed entries as user-owned. It is not for
+  re-adopting a removal you already published.
+- `doctor` inspects a published profile without changing it. It verifies the
+  generation record, the authoritative `plans/<generationId>.json`, the
+  `.eedsh/plan.json` mirror, managed bundles and dependencies, dependency-section
+  conflicts, scaffolding, the lockfile, and installed package resolution. It takes no
+  lock and never repairs; findings point at `eedsh sync` or
+  `eedsh sync --adopt-ownership`. `--profile` selects a profile under `DSH_HOME`
+  without evaluating a config, `--config` uses the configured profile, and supplying
+  both is a usage error. Findings print errors first and end with
+  `N errors, M warnings`. `doctor` exits `0` with no errors (warnings are fine
+  unless `--strict` is set), `1` with an error or with `--strict` and a warning,
+  and `2` on a usage error.
 - `check` runs the config project's own TypeScript compiler: it finds the nearest
   `tsconfig.json`, resolves `typescript` from the config's directory, prints the exact
   command line, and runs `tsc --noEmit -p <tsconfig>`. It never evaluates the config
