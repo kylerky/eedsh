@@ -9,6 +9,7 @@ import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
 import { type MaterializeError, OwnershipRecordInvalid } from '../internal/effect/errors'
 import {
   DshInstallation,
@@ -196,6 +197,25 @@ function authoritativePlanIntact(
   })
 }
 
+/** Whether the stable mirror is present and parses to the committed plan. */
+function planMirrorIntact(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  generated: GeneratedBundle,
+): Effect.Effect<boolean, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const path = join(profileDir, PLAN_RELATIVE_PATH)
+    if (!(yield* fs.exists(path))) return false
+    const text = yield* fs.readFileString(path)
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: (cause) => cause,
+    }).pipe(Effect.result)
+    if (Result.isFailure(parsed)) return false
+    return canonicalJson(parsed.success) === generated.authoritativePlanContent
+  })
+}
+
 /**
  * Materialize a validated plan into a profile.
  * @param options - plan, profile location, dependency specs, and mode.
@@ -247,7 +267,8 @@ export function materialize(
         lookup._tag === 'valid' &&
         lookup.record.generationId === generated.generationId &&
         canonicalJson(existingManifest) === canonicalJson(reconciled.manifest) &&
-        (yield* authoritativePlanIntact(fs, options.profileDir, generated))
+        (yield* authoritativePlanIntact(fs, options.profileDir, generated)) &&
+        (yield* planMirrorIntact(fs, options.profileDir, generated))
 
       if (unchanged) {
         return {

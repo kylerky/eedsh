@@ -79,6 +79,47 @@ describe('authoritative plan verification', () => {
   })
 })
 
+describe('plan mirror verification', () => {
+  function mirrorPath(): string {
+    return `${PROFILE_DIR}/.eedsh/plan.json`
+  }
+
+  it('republishes the same generation when the mirror is missing', async () => {
+    const h = harness()
+    const first = await h.run()
+    const mirror = h.fs.files.get(mirrorPath())
+    expect(mirror).toBe(`${canonicalJson(basePlan())}\n`)
+    h.fs.files.delete(mirrorPath())
+
+    const second = await h.run()
+    expect(second.changed).toBe(true)
+    expect(second.generationId).toBe(first.generationId)
+    expect(h.fs.files.get(mirrorPath())).toBe(mirror)
+  })
+
+  it('republishes the same generation when the mirror differs', async () => {
+    const h = harness()
+    const first = await h.run()
+    h.fs.files.set(mirrorPath(), '{"tampered":true}\n')
+
+    const second = await h.run()
+    expect(second.changed).toBe(true)
+    expect(second.generationId).toBe(first.generationId)
+    expect(h.fs.files.get(mirrorPath())).toBe(`${canonicalJson(basePlan())}\n`)
+  })
+
+  it('treats a semantically equal mirror as intact', async () => {
+    const h = harness()
+    await h.run()
+    const reformatted = `${JSON.stringify(JSON.parse(canonicalJson(basePlan())), null, 4)}\n`
+    h.fs.files.set(mirrorPath(), reformatted)
+
+    const second = await h.run()
+    expect(second.changed).toBe(false)
+    expect(h.fs.files.get(mirrorPath())).toBe(reformatted)
+  })
+})
+
 describe('dependency-section notices', () => {
   it('reports a cleanup notice in the materialization result', async () => {
     const h = harness()

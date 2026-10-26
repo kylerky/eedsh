@@ -1,8 +1,8 @@
 /**
  * Publication: write every artifact before the generated package manifest is
- * committed. Package installation and preflight failures restore the profile
- * manifest and lockfile snapshots, so no failed run publishes a new
- * generation or leaves a half-updated dependency set.
+ * committed. The profile manifest, lockfile, and plan mirror are snapshotted
+ * first and restored on any later failure, so no failed run publishes a new
+ * generation, leaves a half-updated dependency set, or leaves a stale mirror.
  * @module @eedsh/cli/materialize/publish
  */
 import { dirname, join } from 'node:path'
@@ -51,8 +51,10 @@ export interface PublishProfileResult {
 interface ProfileSnapshot {
   manifestPath: string
   lockfilePath: string
+  mirrorPath: string
   manifestContent: string | undefined
   lockfileContent: string | undefined
+  mirrorContent: string | undefined
 }
 
 function readOptional(
@@ -65,7 +67,7 @@ function readOptional(
   })
 }
 
-/** Write profile scaffolding, generated layers, and the plan copy. */
+/** Write profile scaffolding, generated layers, and the authoritative plan. */
 function writePublicationArtifacts(
   input: PublishProfileInput,
   generatedDir: string,
@@ -75,13 +77,22 @@ function writePublicationArtifacts(
     yield* ensureProfileFiles(input.profileDir, fs)
     yield* fs.makeDirectory(generatedDir, { recursive: true })
     yield* writeGeneratedBundle(generatedDir, input.generated, fs, { includeManifest: false })
-    const planPath = join(input.profileDir, PLAN_RELATIVE_PATH)
-    yield* fs.makeDirectory(dirname(planPath), { recursive: true })
-    yield* writeFileAtomic(fs, planPath, input.generated.planContent)
   })
 }
 
-/** Snapshot the profile manifest and lockfile before publication changes them. */
+/** Write the stable plan mirror at the publication commit point. */
+function writePlanMirror(
+  fs: FileSystem.FileSystem,
+  path: string,
+  content: string,
+): Effect.Effect<void, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    yield* fs.makeDirectory(dirname(path), { recursive: true })
+    yield* writeFileAtomic(fs, path, content)
+  })
+}
+
+/** Snapshot the profile manifest, lockfile, and mirror before any write. */
 function snapshotProfileFiles(
   fs: FileSystem.FileSystem,
   profileDir: string,
@@ -89,9 +100,18 @@ function snapshotProfileFiles(
   return Effect.gen(function* () {
     const manifestPath = join(profileDir, 'package.json')
     const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
+    const mirrorPath = join(profileDir, PLAN_RELATIVE_PATH)
     const manifestContent = yield* readOptional(fs, manifestPath)
     const lockfileContent = yield* readOptional(fs, lockfilePath)
-    return { manifestPath, lockfilePath, manifestContent, lockfileContent }
+    const mirrorContent = yield* readOptional(fs, mirrorPath)
+    return {
+      manifestPath,
+      lockfilePath,
+      mirrorPath,
+      manifestContent,
+      lockfileContent,
+      mirrorContent,
+    }
   })
 }
 
@@ -126,7 +146,7 @@ function restoreFile(
     : writeFileAtomic(fs, path, content)
 }
 
-/** Restore the profile manifest and lockfile to their pre-publication state. */
+/** Restore the manifest, lockfile, and mirror to their pre-publication state. */
 function restoreProfileFiles(
   fs: FileSystem.FileSystem,
   snapshot: ProfileSnapshot,
@@ -134,6 +154,7 @@ function restoreProfileFiles(
   return Effect.gen(function* () {
     yield* restoreFile(fs, snapshot.manifestPath, snapshot.manifestContent)
     yield* restoreFile(fs, snapshot.lockfilePath, snapshot.lockfileContent)
+    yield* restoreFile(fs, snapshot.mirrorPath, snapshot.mirrorContent)
   })
 }
 
@@ -162,8 +183,9 @@ function commitGeneratedManifest(
 
 /**
  * Publish a generation. The generated package manifest is the commit point and
- * is written last; a failed install or preflight restores the manifest and
- * lockfile snapshots first.
+ * is written last; the plan mirror is written immediately before it. A failed
+ * install, preflight, mirror write, or commit restores the manifest, lockfile,
+ * and mirror snapshots first.
  * @param input - plan, reconciled manifest, generated artifacts, and mode.
  * @returns preflight diagnostics and whether packages were installed.
  */
@@ -180,9 +202,9 @@ export function publishProfile(
     const preflight = yield* Preflight
 
     const generatedDir = join(input.profileDir, GENERATED_DIRNAME)
+    const snapshot = yield* snapshotProfileFiles(fs, input.profileDir)
     yield* writePublicationArtifacts(input, generatedDir, fs)
 
-    const snapshot = yield* snapshotProfileFiles(fs, input.profileDir)
     const dependenciesChanged = profileDependenciesChanged(input.previousManifest, input.manifest)
     yield* writeProfileManifest(fs, snapshot.manifestPath, input.manifest)
     const restore = restoreProfileFiles(fs, snapshot)
@@ -202,7 +224,11 @@ export function publishProfile(
       restore,
     )
 
-    yield* commitGeneratedManifest(fs, generatedDir, input.generated)
+    yield* restoreOnFailure(
+      writePlanMirror(fs, snapshot.mirrorPath, input.generated.planContent),
+      restore,
+    )
+    yield* restoreOnFailure(commitGeneratedManifest(fs, generatedDir, input.generated), restore)
 
     return {
       warnings: checked.warnings,
