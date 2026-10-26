@@ -18,6 +18,7 @@ import {
   Preflight,
   type PreflightShape,
 } from '../internal/effect/services'
+import type { Diagnostic } from './diagnostics'
 import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle'
 import { readProfileDependencies } from './manifest'
 import { ensureProfileFiles, GENERATED_DIRNAME, PLAN_RELATIVE_PATH } from './profile'
@@ -34,12 +35,16 @@ export interface PublishProfileInput {
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
+  /** Reconciliation diagnostics to report with the publication. */
+  notices: readonly Diagnostic[]
 }
 
 /** What publication did. */
 export interface PublishProfileResult {
   warnings: string[]
   installed: boolean
+  /** Reconciliation diagnostics, passed through for the CLI to print. */
+  notices: Diagnostic[]
 }
 
 /** The profile files publication snapshots before changing them. */
@@ -199,6 +204,10 @@ export function publishProfile(
 
     yield* commitGeneratedManifest(fs, generatedDir, input.generated)
 
-    return { warnings: checked.warnings, installed: dependenciesChanged }
+    return {
+      warnings: checked.warnings,
+      installed: dependenciesChanged,
+      notices: [...input.notices],
+    }
   })
 }

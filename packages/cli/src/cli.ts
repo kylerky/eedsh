@@ -46,6 +46,7 @@ import type {
   PreflightShape,
   SyncLockShape,
 } from './internal/effect/services'
+import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
 import { defaultSpawn, type SpawnLike } from './spawn'
@@ -203,6 +204,14 @@ function describeError(error: unknown): string[] {
       }
       case 'SyncLocked':
         return [`another sync is running for this profile; lock: ${String(tagged.lockPath)}`]
+      case 'OwnershipRecordInvalid':
+        return [
+          describeInvalidRecord({
+            path: String(tagged.path),
+            detail: String(tagged.detail),
+            adoptable: tagged.adoptable === true,
+          }),
+        ]
       case 'DshResolveFailure':
         return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
       default:
@@ -235,6 +244,7 @@ function printResult(
   explain: boolean,
 ): void {
   for (const warning of result.warnings) stderr(`eedsh: warning: ${warning}`)
+  for (const note of result.notices) stderr(`eedsh: ${note.severity}: ${note.message}`)
   if (!explain && result.warnings.length > 0) stderr(EXPLAIN_HINT)
   stdout(
     `eedsh: ${result.changed ? 'published' : 'unchanged'} profile ${plan.profile.name} (generation ${result.generationId.slice(0, 12)})`,
@@ -281,6 +291,7 @@ function programFor(
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
+  adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
   return Effect.gen(function* () {
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
@@ -292,6 +303,7 @@ function programFor(
       generatedSpec: 'link:./.eedsh/generated',
       strict,
       explain,
+      adoptOwnership,
     })
   })
 }
@@ -307,8 +319,9 @@ function syncProgram(
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
+  adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
-  return programFor(context.env, plan, strict, explain)
+  return programFor(context.env, plan, strict, explain, adoptOwnership)
 }
 
 /** Run one one-shot materialization with its own service layer. */
@@ -316,9 +329,10 @@ function syncOnce(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
+  adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshResolveFailure> {
   return Effect.suspend(() =>
-    syncProgram(context, context.plan, strict, explain).pipe(
+    syncProgram(context, context.plan, strict, explain, adoptOwnership).pipe(
       Effect.provide(serviceLayerFor(context.options)),
     ),
   )
@@ -352,9 +366,10 @@ function runWatch(
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
+  adoptOwnership: boolean,
 ): Effect.Effect<void, never, CliService> {
   return Effect.gen(function* () {
-    const runExit = yield* Effect.exit(syncProgram(context, plan, strict, explain))
+    const runExit = yield* Effect.exit(syncProgram(context, plan, strict, explain, adoptOwnership))
     if (Exit.isFailure(runExit)) {
       if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
       yield* Effect.sync(() =>
@@ -381,6 +396,7 @@ function syncWatch(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
+  adoptOwnership: boolean,
 ): Effect.Effect<void, ConfigError | DshResolveFailure> {
   return Effect.gen(function* () {
     const dir = dirname(context.configPath)
@@ -427,12 +443,12 @@ function syncWatch(
             yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
             continue
           }
-          yield* runWatch(context, planExit.value, strict, explain)
+          yield* runWatch(context, planExit.value, strict, explain, adoptOwnership)
         }
       })
 
       yield* Effect.race(
-        runWatch(context, context.plan, strict, explain).pipe(Effect.andThen(loop)),
+        runWatch(context, context.plan, strict, explain, adoptOwnership).pipe(Effect.andThen(loop)),
         stopSignal(context.options.signal),
       )
     })
@@ -514,6 +530,7 @@ interface SyncCommandInput {
   strict: boolean
   watch: boolean
   explain: boolean
+  adoptOwnership: boolean
 }
 
 function runSyncCommand(
@@ -527,10 +544,10 @@ function runSyncCommand(
     const plan = yield* loadPlan(configPath, runtime)
     const context: CommandContext = { ...runtime, configPath, plan }
     if (input.watch) {
-      yield* syncWatch(context, input.strict, input.explain)
+      yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
       return EXIT_OK
     }
-    const result = yield* syncOnce(context, input.strict, input.explain)
+    const result = yield* syncOnce(context, input.strict, input.explain, input.adoptOwnership)
     yield* Effect.sync(() =>
       printResult(runtime.stdout, runtime.stderr, plan, result, input.explain),
     )
@@ -558,7 +575,7 @@ function runRunCommand(
     const plan = yield* loadPlan(configPath, runtime)
     const context: CommandContext = { ...runtime, configPath, plan }
     if (!input.noSync) {
-      const result = yield* syncOnce(context, false, false)
+      const result = yield* syncOnce(context, false, false, false)
       yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
     }
     return yield* runBoot(context, input.dshArgs)
@@ -647,6 +664,12 @@ export async function runEedsh(
     Flag.withDescription('skip publication and boot the last published generation'),
     Flag.withDefault(false),
   )
+  const adoptOwnershipFlag = Flag.Boolean('adopt-ownership').pipe(
+    Flag.withDescription(
+      're-baseline ownership from the current manifest when the generation record is unreadable',
+    ),
+    Flag.withDefault(false),
+  )
 
   const syncCommand = Command.make(
     'sync',
@@ -655,6 +678,7 @@ export async function runEedsh(
       strict: strictFlag,
       watch: watchFlag,
       explain: explainFlag,
+      adoptOwnership: adoptOwnershipFlag,
     },
     (parsed) =>
       Effect.gen(function* () {
@@ -664,6 +688,7 @@ export async function runEedsh(
             strict: parsed.strict,
             watch: parsed.watch,
             explain: parsed.explain,
+            adoptOwnership: parsed.adoptOwnership,
           },
           runtime,
         )

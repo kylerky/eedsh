@@ -7,15 +7,11 @@
  */
 import type { ProfilePlan } from '@eedsh/config'
 import * as Predicate from 'effect/Predicate'
-import { GENERATED_PACKAGE_NAME, GENERATION_FORMAT, RUNTIME_PACKAGE_NAME } from './generated-bundle'
+import type { Diagnostic } from './diagnostics'
+import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
+import type { PreviousGeneration } from './generation-record'
 
-/** What the previous published generation owned. */
-export interface PreviousGeneration {
-  /** Managed bundle order, including the runtime and generated bundles. */
-  bundles: readonly string[]
-  /** Managed package specifications. */
-  packages: Readonly<Record<string, string>>
-}
+export type { PreviousGeneration } from './generation-record'
 
 /** Inputs for {@link reconcileManifest}. */
 export interface ReconcileManifestInput {
@@ -42,6 +38,8 @@ export interface ReconcileManifestResult {
   dependencies: Record<string, string>
   /** Managed package specifications. */
   managedPackages: Record<string, string>
+  /** Structured diagnostics for changes eedsh made or could not reconcile. */
+  notices: Diagnostic[]
 }
 
 function stringArray(value: unknown): string[] {
@@ -101,8 +99,12 @@ function childRecord(
   return asRecord(parent?.[key]) ?? {}
 }
 
-/** Read the bundle list of an existing profile manifest. */
-function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
+/**
+ * Read the bundle list of an existing profile manifest.
+ * @param manifest - the profile manifest, when one exists.
+ * @returns the listed bundle names, ignoring malformed entries.
+ */
+export function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
   const dsh = childRecord(manifest, 'dsh')
   return stringArray(childRecord(dsh, 'profile').bundles)
 }
@@ -115,29 +117,16 @@ export function readProfileDependencies(
 }
 
 /**
- * Read the previous generation's managed sets from the generated package
- * manifest. Only a record written by eedsh is trusted.
- * @param generatedManifest - parsed generated package manifest.
- * @returns the managed sets, or undefined when no eedsh generation is recorded.
+ * Whether the manifest already selects a bundle eedsh manages. Either bundle
+ * means the profile was materialized before, even when its generation record
+ * is unreadable.
+ * @param manifest - the existing profile manifest, when one exists.
+ * @returns whether eedsh already owns part of the profile.
  */
-export function readPreviousGeneration(generatedManifest: unknown): PreviousGeneration | undefined {
-  const manifest = asRecord(generatedManifest)
-  if (manifest === undefined) return undefined
-  const metadata = asRecord(manifest.eedsh)
-  if (metadata === undefined || metadata.format !== GENERATION_FORMAT) return undefined
-  const bundles = stringArray(metadata.bundles)
-  const packages = stringRecord(metadata.packages)
-  if (bundles.length === 0 && Object.keys(packages).length === 0) return undefined
-  return { bundles, packages }
-}
-
-/** Read the published generation id from a generated package manifest. */
-export function readGenerationId(generatedManifest: unknown): string | undefined {
-  const manifest = asRecord(generatedManifest)
-  if (manifest === undefined) return undefined
-  const metadata = asRecord(manifest.eedsh)
-  if (metadata === undefined || metadata.format !== GENERATION_FORMAT) return undefined
-  return typeof metadata.generationId === 'string' ? metadata.generationId : undefined
+export function hasManagedBundles(manifest: Record<string, unknown> | undefined): boolean {
+  return readProfileBundles(manifest).some(
+    (name) => name === RUNTIME_PACKAGE_NAME || name === GENERATED_PACKAGE_NAME,
+  )
 }
 
 function buildManifest(
@@ -224,5 +213,6 @@ export function reconcileManifest(input: ReconcileManifestInput): ReconcileManif
     managedBundles,
     dependencies,
     managedPackages,
+    notices: [],
   }
 }

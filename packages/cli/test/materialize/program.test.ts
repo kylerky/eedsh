@@ -1,0 +1,162 @@
+import { describe, expect, it } from 'vitest'
+import {
+  BUNDLE,
+  failureOf,
+  harness,
+  MANIFEST_PATH,
+  managedManifest,
+  PROFILE_DIR,
+  RECORD_PATH,
+} from '../support/materialize'
+
+describe('materialization notices', () => {
+  it('returns an empty notice list for a normal first publish', async () => {
+    const h = harness()
+    const result = await h.run()
+    expect(result.notices).toEqual([])
+    expect(result.changed).toBe(true)
+  })
+})
+
+describe('generation-record trust', () => {
+  it('treats a valid record with unchanged inputs as unchanged', async () => {
+    const h = harness()
+    const first = await h.run()
+    const second = await h.run()
+    expect(second.changed).toBe(false)
+    expect(second.generationId).toBe(first.generationId)
+  })
+
+  it('exposes a failing materialization for tests that need one', async () => {
+    const h = harness({ installFail: true })
+    const error = failureOf(await h.runExit())
+    expect(error).toMatchObject({ _tag: 'PackageInstallFailure' })
+  })
+})
+
+describe('invalid generation records', () => {
+  it('fails without writing when an eedsh-managed profile has an unparseable record', async () => {
+    const manifest = managedManifest()
+    const h = harness({ files: { [MANIFEST_PATH]: manifest, [RECORD_PATH]: '{ not json' } })
+    const error = failureOf(await h.runExit())
+    expect(error).toMatchObject({
+      _tag: 'OwnershipRecordInvalid',
+      path: RECORD_PATH,
+      reason: 'unparseable',
+      adoptable: true,
+    })
+    expect(h.fs.writeOrder).toEqual([])
+    expect(h.fs.files.get(MANIFEST_PATH)).toBe(manifest)
+  })
+
+  it('fails without writing when an eedsh-managed profile has no record', async () => {
+    const manifest = managedManifest()
+    const h = harness({ files: { [MANIFEST_PATH]: manifest } })
+    const error = failureOf(await h.runExit())
+    expect(error).toMatchObject({
+      _tag: 'OwnershipRecordInvalid',
+      path: RECORD_PATH,
+      reason: 'missing',
+      adoptable: true,
+    })
+    expect(h.fs.writeOrder).toEqual([])
+  })
+
+  it('fails when a leftover generated directory marks the profile as published', async () => {
+    const h = harness({
+      files: { [MANIFEST_PATH]: JSON.stringify({ name: 'mine' }) },
+      directories: [`${PROFILE_DIR}/.eedsh/generated`],
+    })
+    expect(failureOf(await h.runExit())).toMatchObject({
+      _tag: 'OwnershipRecordInvalid',
+      reason: 'missing',
+    })
+  })
+
+  it('proceeds on a fresh profile without eedsh artifacts', async () => {
+    const h = harness()
+    const result = await h.run()
+    expect(result.changed).toBe(true)
+    expect(h.fs.files.has(RECORD_PATH)).toBe(true)
+  })
+
+  it('proceeds on an existing profile that eedsh never materialized', async () => {
+    const h = harness({
+      files: {
+        [MANIFEST_PATH]: `${JSON.stringify({
+          name: 'mine',
+          dsh: { profile: { bundles: ['@user/bundle'] } },
+        })}\n`,
+      },
+    })
+    const result = await h.run()
+    expect(result.changed).toBe(true)
+    expect(h.fs.files.has(RECORD_PATH)).toBe(true)
+  })
+
+  it('adopts ownership from the live manifest and reports the adopted names', async () => {
+    const userBundle = '@edsh/adapted-ptc'
+    const userPackage = '@user/plugin'
+    const h = harness({
+      files: {
+        [MANIFEST_PATH]: `${JSON.stringify(
+          {
+            name: 'dsh-profile-work',
+            private: true,
+            dsh: {
+              profile: { bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated', userBundle] },
+            },
+            dependencies: {
+              [userPackage]: '2.0.0',
+              '@eedsh/runtime': 'link:/repo/packages/runtime',
+              '@eedsh/generated': 'link:./.eedsh/generated',
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        [RECORD_PATH]: '{ not json',
+      },
+    })
+    const result = await h.run({ adoptOwnership: true })
+    expect(result.changed).toBe(true)
+    expect(result.notices).toContainEqual({
+      severity: 'notice',
+      message: expect.stringContaining(userBundle),
+    })
+    expect(result.notices).toContainEqual({
+      severity: 'notice',
+      message: expect.stringContaining(userPackage),
+    })
+    const manifest = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
+      dsh: { profile: { bundles: string[] } }
+      dependencies: Record<string, string>
+    }
+    expect(manifest.dsh.profile.bundles).toContain(userBundle)
+    expect(manifest.dependencies[userPackage]).toBe('2.0.0')
+    const record = JSON.parse(h.fs.files.get(RECORD_PATH) ?? '{}') as {
+      eedsh: { generationId: string; bundles: string[] }
+    }
+    expect(record.eedsh.generationId).toBe(result.generationId)
+    expect(record.eedsh.bundles).not.toContain(userBundle)
+  })
+
+  it('refuses to adopt a newer record version', async () => {
+    const h = harness({
+      files: {
+        [MANIFEST_PATH]: managedManifest(),
+        [RECORD_PATH]: JSON.stringify({
+          name: '@eedsh/generated',
+          eedsh: { format: 'eedsh/generation', version: 2 },
+        }),
+      },
+    })
+    const error = failureOf(await h.runExit({ adoptOwnership: true }))
+    expect(error).toMatchObject({
+      _tag: 'OwnershipRecordInvalid',
+      reason: 'version',
+      adoptable: false,
+    })
+    expect(h.fs.writeOrder).toEqual([])
+  })
+})

@@ -1,11 +1,7 @@
 import { bundle, canonicalJson, generated, type PlanBundle, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
-import {
-  managedBundleOrder,
-  readPreviousGeneration,
-  reconcileManifest,
-} from '../../src/materialize/manifest'
+import { managedBundleOrder, reconcileManifest } from '../../src/materialize/manifest'
 import { ensureProfileFiles } from '../../src/materialize/profile'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
@@ -83,6 +79,11 @@ describe('manifest reconciliation', () => {
       '@eedsh/runtime': runtimeSpec,
       '@scope/plugin': '1.2.3',
     })
+  })
+
+  it('exposes an empty notice list for a first reconciliation', () => {
+    const result = reconcile(plan([bundle(BUNDLE)]))
+    expect(result.notices).toEqual([])
   })
 
   it('preserves unrelated manifest fields', () => {
@@ -227,24 +228,6 @@ describe('manifest reconciliation', () => {
     const manifest = { dependencies: { '@scope/plugin': '^1.0.0' } }
     const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '2.0.0' }), { manifest })
     expect(result.dependencies['@scope/plugin']).toBe('2.0.0')
-  })
-
-  it('reads previous managed sets from the generation record', () => {
-    const record = {
-      eedsh: {
-        format: 'eedsh/generation',
-        version: 1,
-        generationId: 'a'.repeat(64),
-        bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'],
-        packages: { '@eedsh/generated': generatedSpec },
-      },
-    }
-    expect(readPreviousGeneration(record)).toEqual({
-      bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'],
-      packages: { '@eedsh/generated': generatedSpec },
-    })
-    expect(readPreviousGeneration({})).toBeUndefined()
-    expect(readPreviousGeneration({ eedsh: { format: 'other' } })).toBeUndefined()
   })
 })
 

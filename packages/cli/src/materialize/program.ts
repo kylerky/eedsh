@@ -9,7 +9,7 @@ import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import * as Predicate from 'effect/Predicate'
-import type { MaterializeError } from '../internal/effect/errors'
+import { type MaterializeError, OwnershipRecordInvalid } from '../internal/effect/errors'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -18,9 +18,32 @@ import {
   type SyncLockShape,
 } from '../internal/effect/services'
 import { withSyncLock } from '../internal/lock'
-import { buildGeneratedBundle } from './generated-bundle'
-import { readGenerationId, readPreviousGeneration, reconcileManifest } from './manifest'
-import { GENERATED_MANIFEST_RELATIVE_PATH, LOCK_RELATIVE_PATH } from './profile'
+import type { Diagnostic } from './diagnostics'
+import { notice } from './diagnostics'
+import {
+  buildGeneratedBundle,
+  GENERATED_PACKAGE_NAME,
+  RUNTIME_PACKAGE_NAME,
+} from './generated-bundle'
+import {
+  type GenerationLookup,
+  lookupGenerationRecord,
+  missingGenerationRecord,
+} from './generation-record'
+import {
+  hasManagedBundles,
+  managedBundleOrder,
+  type PreviousGeneration,
+  readProfileBundles,
+  readProfileDependencies,
+  reconcileManifest,
+} from './manifest'
+import {
+  GENERATED_DIRNAME,
+  GENERATED_MANIFEST_RELATIVE_PATH,
+  LOCK_RELATIVE_PATH,
+  PLAN_RELATIVE_PATH,
+} from './profile'
 import { publishProfile } from './publish'
 
 /** Inputs for {@link materialize}. */
@@ -38,6 +61,8 @@ export interface MaterializeOptions {
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
+  /** Re-baseline ownership from the current manifest when the record is invalid. */
+  adoptOwnership?: boolean
 }
 
 /** What a materialization run did. */
@@ -46,6 +71,8 @@ export interface MaterializeResult {
   /** Whether a new generation or manifest was published. */
   changed: boolean
   warnings: string[]
+  /** Structured reconciliation diagnostics. */
+  notices: Diagnostic[]
   createdProfile: boolean
 }
 
@@ -70,6 +97,90 @@ function readJsonFile(
           cause,
         }),
     })
+  })
+}
+
+/** The ownership baseline and diagnostics a materialization starts from. */
+interface GenerationBaseline {
+  previous: PreviousGeneration | undefined
+  notices: Diagnostic[]
+}
+
+/**
+ * Whether the profile already contains an eedsh artifact, which makes an
+ * absent generation record invalid rather than a first run.
+ */
+function hasPublishedArtifacts(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  manifest: Record<string, unknown> | undefined,
+): Effect.Effect<boolean, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    if (hasManagedBundles(manifest)) return true
+    if (yield* fs.exists(join(profileDir, PLAN_RELATIVE_PATH))) return true
+    return yield* fs.exists(join(profileDir, GENERATED_DIRNAME))
+  })
+}
+
+/** Names the live manifest declares that the plan does not manage. */
+function adoptedNames(plan: ProfilePlan, manifest: Record<string, unknown> | undefined): string[] {
+  if (manifest === undefined) return []
+  const managedBundles = new Set(managedBundleOrder(plan))
+  const managedPackages = new Set([
+    ...Object.keys(plan.packages),
+    RUNTIME_PACKAGE_NAME,
+    GENERATED_PACKAGE_NAME,
+  ])
+  const bundles = readProfileBundles(manifest).filter((name) => !managedBundles.has(name))
+  const packages = Object.keys(readProfileDependencies(manifest)).filter(
+    (name) => !managedPackages.has(name),
+  )
+  return [...bundles, ...packages]
+}
+
+/** Re-baseline ownership from the current manifest and report what was adopted. */
+function adoptionBaseline(
+  plan: ProfilePlan,
+  manifest: Record<string, unknown> | undefined,
+): GenerationBaseline {
+  const names = adoptedNames(plan, manifest)
+  return {
+    previous: undefined,
+    notices: names.length === 0 ? [] : [notice(`adopted ownership of ${names.join(', ')}`)],
+  }
+}
+
+/**
+ * Decide the ownership baseline. A missing record is a first run only when no
+ * eedsh artifact exists; otherwise materialization fails closed unless the run
+ * explicitly adopts ownership.
+ */
+function resolveGenerationBaseline(
+  lookup: GenerationLookup,
+  options: MaterializeOptions,
+  manifest: Record<string, unknown> | undefined,
+  fs: FileSystem.FileSystem,
+): Effect.Effect<GenerationBaseline, PlatformError.PlatformError | OwnershipRecordInvalid> {
+  return Effect.gen(function* () {
+    if (lookup._tag === 'valid') return { previous: lookup.previous, notices: [] }
+    const invalid =
+      lookup._tag === 'invalid'
+        ? lookup
+        : (yield* hasPublishedArtifacts(fs, options.profileDir, manifest))
+          ? missingGenerationRecord(join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH))
+          : undefined
+    if (invalid === undefined) return { previous: undefined, notices: [] }
+    if (options.adoptOwnership === true && invalid.adoptable) {
+      return adoptionBaseline(options.plan, manifest)
+    }
+    return yield* Effect.fail(
+      new OwnershipRecordInvalid({
+        path: invalid.path,
+        reason: invalid.reason,
+        detail: invalid.detail,
+        adoptable: invalid.adoptable,
+      }),
+    )
   })
 }
 
@@ -98,8 +209,9 @@ export function materialize(
       const manifestPath = join(options.profileDir, 'package.json')
       const generatedManifestPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
       const existingManifest = yield* readJsonFile(fs, manifestPath)
-      const existingGenerated = yield* readJsonFile(fs, generatedManifestPath)
-      const previous = readPreviousGeneration(existingGenerated)
+      const lookup = yield* lookupGenerationRecord(generatedManifestPath, fs)
+      const baseline = yield* resolveGenerationBaseline(lookup, options, existingManifest, fs)
+      const previous = baseline.previous
 
       const reconcileInput = {
         profileName: options.plan.profile.name,
@@ -120,7 +232,8 @@ export function materialize(
 
       const unchanged =
         existingManifest !== undefined &&
-        readGenerationId(existingGenerated) === generated.generationId &&
+        lookup._tag === 'valid' &&
+        lookup.record.generationId === generated.generationId &&
         canonicalJson(existingManifest) === canonicalJson(reconciled.manifest)
 
       if (unchanged) {
@@ -128,6 +241,7 @@ export function materialize(
           generationId: generated.generationId,
           changed: false,
           warnings: [],
+          notices: [...baseline.notices, ...reconciled.notices],
           createdProfile: false,
         }
       }
@@ -140,12 +254,14 @@ export function materialize(
         previousManifest: existingManifest,
         strict: options.strict,
         explain: options.explain,
+        notices: reconciled.notices,
       })
 
       return {
         generationId: generated.generationId,
         changed: true,
         warnings: published.warnings,
+        notices: [...baseline.notices, ...published.notices],
         createdProfile: existingManifest === undefined,
       }
     }),

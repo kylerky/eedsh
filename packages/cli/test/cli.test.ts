@@ -699,6 +699,90 @@ describe('strict mode', () => {
   })
 })
 
+describe('generation record diagnostics', () => {
+  const profileDir = '/home/profiles/cli-fixture'
+  const recordPath = `${profileDir}/.eedsh/generated/package.json`
+  const manifestPath = `${profileDir}/package.json`
+  const adopted = '@edsh/adapted-ptc'
+
+  function managedManifest(
+    bundles: string[] = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated'],
+  ): string {
+    return `${JSON.stringify(
+      {
+        name: 'dsh-profile-cli-fixture',
+        private: true,
+        dsh: { profile: { bundles } },
+        dependencies: {
+          '@eedsh/runtime': 'link:/repo/runtime',
+          '@eedsh/generated': 'link:./.eedsh/generated',
+        },
+      },
+      null,
+      2,
+    )}\n`
+  }
+
+  it('fails an eedsh-managed profile with a corrupt record and names the recovery', async () => {
+    const manifest = managedManifest()
+    const h = harness({ files: { [manifestPath]: manifest, [recordPath]: '{ not json' } })
+    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain(recordPath)
+    expect(errors).toContain('--adopt-ownership')
+    expect(errors).not.toContain('--explain')
+    expect(h.fs.files.get(manifestPath)).toBe(manifest)
+    expect(h.packages.installs).toEqual([])
+  })
+
+  it('does not suggest adoption for a newer record version', async () => {
+    const h = harness({
+      files: {
+        [manifestPath]: managedManifest(),
+        [recordPath]: JSON.stringify({
+          name: '@eedsh/generated',
+          eedsh: { format: 'eedsh/generation', version: 2 },
+        }),
+      },
+    })
+    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('upgrade eedsh')
+    expect(errors).not.toContain('--adopt-ownership')
+  })
+
+  it('documents --adopt-ownership in sync help', async () => {
+    const h = harness()
+    expect(await runEedsh(['sync', '--help'], h.options)).toBe(0)
+    expect(h.out.join('\n')).toContain('--adopt-ownership')
+  })
+
+  it('prints an ownership notice without adding the --explain hint', async () => {
+    const h = harness({
+      files: {
+        [manifestPath]: managedManifest([
+          '@deepseek-ai/dsh-base',
+          '@eedsh/runtime',
+          '@eedsh/generated',
+          adopted,
+        ]),
+        [recordPath]: '{ not json',
+      },
+    })
+    const code = await runEedsh(
+      ['sync', '--config', fixture('basic'), '--adopt-ownership'],
+      h.options,
+    )
+    expect(code).toBe(0)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('eedsh: notice:')
+    expect(errors).toContain(adopted)
+    expect(errors).not.toContain('--explain')
+  })
+})
+
 describe('tagged failures', () => {
   it('maps a preflight failure to a diagnostic and exit 1', async () => {
     const h = harness({ preflight: { fail: true } })

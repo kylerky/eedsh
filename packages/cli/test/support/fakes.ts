@@ -23,13 +23,18 @@ function notFound(method: string, path: string): PlatformError.PlatformError {
  * In-memory core FileSystem. Only the operations a test exercises need to be
  * functional; the rest keep the no-op defaults.
  */
-export function memoryFileSystem(initial: Record<string, string> = {}) {
+export function memoryFileSystem(
+  initial: Record<string, string> = {},
+  options: { directories?: readonly string[] } = {},
+) {
   const files = new Map(Object.entries(initial))
+  const directories = new Set(options.directories ?? [])
   const writeOrder: string[] = []
   const renameOrder: string[] = []
+  const createdDirectories: string[] = []
   let writes = 0
   const fs = FileSystem.makeNoop({
-    exists: (path) => Effect.succeed(files.has(path)),
+    exists: (path) => Effect.succeed(files.has(path) || directories.has(path)),
     readFileString: (path) => {
       const value = files.get(path)
       return value === undefined
@@ -42,9 +47,14 @@ export function memoryFileSystem(initial: Record<string, string> = {}) {
       files.set(path, content)
       return Effect.void
     },
-    makeDirectory: () => Effect.void,
+    makeDirectory: (path) => {
+      if (!directories.has(path)) createdDirectories.push(path)
+      directories.add(path)
+      return Effect.void
+    },
     remove: (path) => {
       files.delete(path)
+      directories.delete(path)
       return Effect.void
     },
     rename: (from, to) => {
@@ -56,7 +66,15 @@ export function memoryFileSystem(initial: Record<string, string> = {}) {
       return Effect.void
     },
   })
-  return { fs, files, writeOrder, renameOrder, writeCount: () => writes }
+  return {
+    fs,
+    files,
+    directories,
+    writeOrder,
+    renameOrder,
+    createdDirectories,
+    writeCount: () => writes,
+  }
 }
 
 /** Sync lock that records acquisition and release, with a simulated holder. */

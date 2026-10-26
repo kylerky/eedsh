@@ -45,6 +45,22 @@ export class DshResolveFailure extends Data.TaggedError('DshResolveFailure')<{
   readonly cause: unknown
 }> {}
 
+/**
+ * The generation record cannot establish which manifest entries eedsh owns.
+ * Materialization fails closed instead of reclassifying managed entries as
+ * user-owned; `--adopt-ownership` is the explicit re-baseline.
+ */
+export class OwnershipRecordInvalid extends Data.TaggedError('OwnershipRecordInvalid')<{
+  /** Absolute path of the generated package manifest. */
+  readonly path: string
+  /** Stable reason code, such as `unparseable` or `version`. */
+  readonly reason: string
+  /** Human-readable explanation naming the offending field or value. */
+  readonly detail: string
+  /** Whether `--adopt-ownership` can re-baseline this record. */
+  readonly adoptable: boolean
+}> {}
+
 /** Every failure the materializer can report. */
 export type MaterializeError =
   | PlatformError.PlatformError
@@ -52,3 +68,4 @@ export type MaterializeError =
   | PreflightFailure
   | SyncLocked
   | DshResolveFailure
+  | OwnershipRecordInvalid
