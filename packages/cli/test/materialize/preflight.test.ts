@@ -10,7 +10,6 @@ import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { DshResolveFailure } from '../../src/internal/effect/errors'
-import { planOf } from '../support/plan'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -25,6 +24,7 @@ import {
   parseGeneratedLayers,
   preflightLayer,
 } from '../../src/preflight'
+import { planOf } from '../support/plan'
 
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 

@@ -8,8 +8,8 @@ import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-i
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
-import * as Result from 'effect/Result'
 import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
 import {

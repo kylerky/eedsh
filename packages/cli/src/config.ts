@@ -1,7 +1,8 @@
 /**
  * Config discovery and evaluation. A config is a TypeScript module whose
- * default export is a validated profile plan; it is imported in-process
- * through tsx's ESM and CJS hooks, with no build step or temporary file.
+ * default export is a validated profile plan or a validation Result; it is
+ * imported in-process through tsx's ESM and CJS hooks, with no build step or
+ * temporary file.
  * @module @eedsh/cli/config
  */
 import { existsSync, statSync } from 'node:fs'

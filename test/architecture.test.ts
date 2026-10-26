@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -50,6 +50,35 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
   return imports
 }
 
+/**
+ * The only production exception sites the architecture check permits. The
+ * malformed-expression branch is unreachable after plan validation, and the
+ * Effect-free runtime is outside this scan.
+ */
+const EXCEPTION_ALLOWLIST = new Set(['packages/cli/src/materialize/yaml.ts'])
+
+/** JavaScript exception control flow in one source text. */
+function exceptionSites(text: string): string[] {
+  const sites: string[] = []
+  if (/\bthrow\b/.test(text)) sites.push('throw')
+  if (/\btry\s*\{/.test(text)) sites.push('try')
+  if (/(?<!Effect)\.catch\s*\(/.test(text)) sites.push('.catch')
+  return sites
+}
+
+function exceptionViolations(): { file: string; sites: string[] }[] {
+  const violations: { file: string; sites: string[] }[] = []
+  for (const name of ['config', 'cli'] as const) {
+    for (const file of sourceFiles(join(root, 'packages', name, 'src'))) {
+      const relativePath = relative(root, file).replaceAll('\\', '/')
+      if (EXCEPTION_ALLOWLIST.has(relativePath)) continue
+      const sites = exceptionSites(readFileSync(file, 'utf8'))
+      if (sites.length > 0) violations.push({ file: relativePath, sites })
+    }
+  }
+  return violations
+}
+
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
 function declaresEffect(name: PackageName): boolean {
@@ -87,6 +116,18 @@ describe('package boundaries', () => {
         `@eedsh/config must not depend on ${dependency}`,
       ).toBe(false)
     }
+  })
+
+  it('rejects new expected-failure exception control flow', () => {
+    expect(exceptionSites('throw new Error("x")')).toEqual(['throw'])
+    expect(exceptionSites('try { throw 1 } catch {}')).toEqual(['throw', 'try'])
+    expect(exceptionSites('promise.catch(() => {})')).toEqual(['.catch'])
+    expect(exceptionSites('Effect.catch(() => {})')).toEqual([])
+    expect(exceptionSites('Effect.try({ try: () => 1, catch: () => 2 })')).toEqual([])
+  })
+
+  it('confines exception control flow to the documented allowlist', () => {
+    expect(exceptionViolations()).toEqual([])
   })
 
   it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {

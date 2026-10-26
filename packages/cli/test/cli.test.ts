@@ -31,7 +31,6 @@ import {
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import type { ReadableLike, SpawnedProcessLike, SpawnLike, SpawnOptionsLike } from '../src/spawn'
-import { planOf } from './support/plan'
 import {
   fakeDsh,
   fakePackageManager,
@@ -39,6 +38,7 @@ import {
   fakeSyncLock,
   memoryFileSystem,
 } from './support/fakes'
+import { planOf } from './support/plan'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()

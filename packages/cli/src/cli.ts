@@ -1,9 +1,10 @@
 /**
  * The `eedsh` command: evaluate the typed config, publish it into a DSH
  * profile, optionally boot the pinned launcher, or run the config project's
- * TypeScript compiler. The command surface is parsed by `effect/cli`; one-shot
- * syncs use `Effect.runPromise`, while watch mode is one scoped Effect program
- * that builds the materializer's services once for the whole session.
+ * TypeScript compiler. The command surface is parsed by `effect/cli`; each
+ * invocation is one Effect program observed by one `Effect.runPromiseExit`, and
+ * watch mode is one scoped Effect program that builds the materializer's services
+ * once for the whole session.
  * @module @eedsh/cli/cli
  */
 import { readFileSync } from 'node:fs'
@@ -13,17 +14,17 @@ import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
-import * as Result from 'effect/Result'
 import * as Console from 'effect/Console'
 import { CliError, Command, Flag } from 'effect/cli'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import {
-  ConfigError,
   CONFIG_FILENAMES,
+  ConfigError,
   findConfigPath,
   findUnsupportedConfigPath,
   loadConfig,
@@ -518,10 +519,7 @@ interface SyncCommandInput {
 function runSyncCommand(
   input: SyncCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<
-  number,
-  ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure
-> {
+): Effect.Effect<number, ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)

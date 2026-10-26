@@ -36,6 +36,14 @@ plain Cordis plugin because DSH's HMR service owns its lifecycle, and
 data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
 that Result or a plain plan.
 
+Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
+The resulting `Exit` is rendered once into a diagnostic and an exit code. Expected
+failures are `Result` values or Effect failures; only the external API adapters and
+the Effect-free runtime use exception handling. `test/architecture.test.ts` rejects
+new JavaScript `throw`, `try`, and `.catch` sites in production config and CLI
+source outside the one allowlisted impossible-state branch in the generated YAML
+emitter.
+
 `test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
 `effect/Schema` and `effect/Result`, may not depend on DSH, and must use the same
 Effect version as `@eedsh/cli`; the workspace declares no separate `@effect/cli`,
@@ -210,7 +218,9 @@ eedsh --help | --version
   signals, and shutdown stay exactly DSH's.
 - Exit codes: `0` success, `1` validation/materialization/launch/check failure, `2`
   usage error. Validation failures print Effect's native formatted schema message,
-  including its location annotations; there are no stable `plan.*` codes.
+  including its location annotations; there are no stable `plan.*` codes. Each
+  failure is printed once. `check` and `run` forward the compiler's or DSH's own
+  exit code as a successful command outcome.
 
 ## Hot reload
 

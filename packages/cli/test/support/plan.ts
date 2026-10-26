@@ -1,4 +1,4 @@
-import { defineProfile, type DefineProfileInput, type ProfilePlan } from '@eedsh/config'
+import { type DefineProfileInput, defineProfile, type ProfilePlan } from '@eedsh/config'
 import * as Result from 'effect/Result'
 
 /**

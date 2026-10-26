@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import * as Result from 'effect/Result'
 import { promisify } from 'node:util'
+import * as Result from 'effect/Result'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
 

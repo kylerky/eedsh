@@ -106,7 +106,9 @@ describe('Windows sync lock protocol', () => {
 
   it('maps WAIT_TIMEOUT to SyncLocked and closes the contender handle', async () => {
     const fake = fakeWin32({ contended: true })
-    const error = await failureOf(makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath))
+    const error = await failureOf(
+      makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath),
+    )
     expect(error).toBeInstanceOf(SyncLocked)
     expect(error.lockPath).toBe(lockPath)
     expect(fake.calls).toEqual([`create(1,1,${win32LockName(lockPath)})`, 'wait(1,0)', 'close(1)'])
@@ -114,7 +116,9 @@ describe('Windows sync lock protocol', () => {
 
   it('fails with a platform error when CreateSemaphoreW returns no handle', async () => {
     const fake = fakeWin32({ createFailure: true })
-    const error = await failureOf(makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath))
+    const error = await failureOf(
+      makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath),
+    )
     expect(PlatformError.isPlatformError(error)).toBe(true)
     expect(error.reason.method).toBe('lock')
     expect(error.reason.pathOrDescriptor).toBe(lockPath)
@@ -123,7 +127,9 @@ describe('Windows sync lock protocol', () => {
 
   it('fails with a platform error on an unexpected wait result and closes the handle', async () => {
     const fake = fakeWin32({ waitResult: 0xffff_ffff })
-    const error = await failureOf(makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath))
+    const error = await failureOf(
+      makeWin32SyncLock(async () => Result.succeed(fake.binding)).acquire(lockPath),
+    )
     expect(PlatformError.isPlatformError(error)).toBe(true)
     expect(error.reason.method).toBe('lock')
     expect(error.reason.pathOrDescriptor).toBe(lockPath)
@@ -132,9 +138,7 @@ describe('Windows sync lock protocol', () => {
 
   it('fails closed when the kernel32 binding cannot be loaded', async () => {
     const error = await failureOf(
-      makeWin32SyncLock(async () => Result.fail(new Error('koffi unavailable'))).acquire(
-        lockPath,
-      ),
+      makeWin32SyncLock(async () => Result.fail(new Error('koffi unavailable'))).acquire(lockPath),
     )
     expect(PlatformError.isPlatformError(error)).toBe(true)
     expect(error.reason.method).toBe('loadWin32Lock')

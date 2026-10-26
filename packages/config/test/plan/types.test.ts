@@ -1,6 +1,6 @@
 import {
-  defineProfile,
   type DefineProfileInput,
+  defineProfile,
   type PlanPatch,
   type ProfilePlan,
   validatePlan,

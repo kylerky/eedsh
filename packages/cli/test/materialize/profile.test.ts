@@ -1,10 +1,4 @@
-import {
-  bundle,
-  canonicalJson,
-  generated,
-  type PlanBundle,
-  type ProfilePlan,
-} from '@eedsh/config'
+import { bundle, canonicalJson, generated, type PlanBundle, type ProfilePlan } from '@eedsh/config'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {

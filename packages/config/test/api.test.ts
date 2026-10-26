@@ -1,5 +1,6 @@
 import {
   bundle,
+  type DefineProfileInput,
   defineProfile,
   disable,
   enable,
@@ -11,9 +12,8 @@ import {
   override,
   PLAN_FORMAT,
   PLAN_VERSION,
-  raw,
-  type DefineProfileInput,
   type ProfilePlan,
+  raw,
   validatePlan,
 } from '@eedsh/config'
 import * as Result from 'effect/Result'
@@ -78,9 +78,7 @@ describe('defineProfile', () => {
       const error = failureOf({ ...base, bundles: [bundle(name)] })
       const issues = issuesOf(error)
       expect(issues.map((issue) => issue.path)).toContainEqual(['bundles', 0, 'name'])
-      expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(
-        true,
-      )
+      expect(issues.some((issue) => issue.message.includes('owned by the materializer'))).toBe(true)
     }
   })
 
@@ -90,7 +88,10 @@ describe('defineProfile', () => {
       bundles: [],
       packages: { '@eedsh/generated': 'link:./x' },
     })
-    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['packages', '@eedsh/generated'])
+    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual([
+      'packages',
+      '@eedsh/generated',
+    ])
   })
 
   it('rejects duplicate generated markers', () => {

@@ -1,9 +1,13 @@
 /**
  * The typed authoring surface: `defineProfile` plus small helpers that map
- * one-to-one onto Loader patch concepts. Every helper returns plain plan data;
- * nothing here executes configuration or hides patch semantics.
+ * one-to-one onto Loader patch concepts. The helpers return plain plan data and
+ * `defineProfile` returns a validation Result; nothing here executes
+ * configuration or hides patch semantics.
  * @module @eedsh/config/api
  */
+
+import type * as Result from 'effect/Result'
+import type * as Schema from 'effect/Schema'
 import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants'
 import type {
   ExpressionNode,
@@ -16,8 +20,6 @@ import type {
 } from './plan/schema'
 import type { JsonObject, JsonValue } from './plan/types'
 import { validatePlan } from './plan/validate'
-import type * as Result from 'effect/Result'
-import type * as Schema from 'effect/Schema'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject

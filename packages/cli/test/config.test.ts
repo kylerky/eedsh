@@ -1,10 +1,6 @@
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import {
-  ConfigError,
-  unsupportedConfigExtensionError,
-  validateConfigPath,
-} from '../src/config'
+import { ConfigError, unsupportedConfigExtensionError, validateConfigPath } from '../src/config'
 
 describe('config path validation', () => {
   it('accepts a supported TypeScript config path', () => {
