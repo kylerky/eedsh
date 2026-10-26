@@ -783,6 +783,90 @@ describe('generation record diagnostics', () => {
   })
 })
 
+async function syncedProfile() {
+  const h = harness()
+  expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+  return h
+}
+
+function doctorOptions(h: ReturnType<typeof harness>) {
+  return {
+    ...h.options,
+    fileSystem: () => Layer.succeed(FileSystem.FileSystem, h.fs.fs),
+  }
+}
+
+describe('eedsh doctor', () => {
+  const profileDir = '/home/profiles/cli-fixture'
+  const profileName = 'cli-fixture'
+
+  it('inspects --profile without evaluating a config', async () => {
+    const h = await syncedProfile()
+    const code = await runEedsh(['doctor', '--profile', profileName], {
+      ...doctorOptions(h),
+      loadConfig: () => Effect.die(new Error('doctor --profile must not evaluate the config')),
+    })
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('clean: 0 errors, 0 warnings')
+  })
+
+  it('takes the profile name from the config', async () => {
+    const h = await syncedProfile()
+    const code = await runEedsh(['doctor', '--config', fixture('basic')], doctorOptions(h))
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('clean: 0 errors, 0 warnings')
+  })
+
+  it('rejects --profile together with --config as a usage error', async () => {
+    const h = harness()
+    const code = await runEedsh(
+      ['doctor', '--profile', profileName, '--config', fixture('basic')],
+      doctorOptions(h),
+    )
+    expect(code).toBe(2)
+    expect(h.err.join('\n')).toContain('--profile')
+  })
+
+  it('rejects an unusable profile name as a usage error', async () => {
+    const h = harness()
+    expect(await runEedsh(['doctor', '--profile', '../escape'], doctorOptions(h))).toBe(2)
+    expect(await runEedsh(['doctor', '--profile', 'node_modules'], doctorOptions(h))).toBe(2)
+  })
+
+  it('reports a missing profile with exit 1', async () => {
+    const h = harness()
+    const code = await runEedsh(['doctor', '--profile', 'missing'], doctorOptions(h))
+    expect(code).toBe(1)
+    expect(h.out.join('\n')).toContain('does not exist')
+  })
+
+  it('exits 1 when a finding is an error', async () => {
+    const h = await syncedProfile()
+    h.fs.files.delete(`${profileDir}/.eedsh/generated/package.json`)
+    const code = await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))
+    expect(code).toBe(1)
+    expect(h.out.join('\n')).toContain('error: record:')
+  })
+
+  it('exits 0 with warnings and 1 with --strict', async () => {
+    const h = await syncedProfile()
+    h.fs.files.delete(`${profileDir}/cordis.yml`)
+    expect(await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))).toBe(0)
+    expect(h.out.join('\n')).toContain('warning: scaffolding:')
+    const strict = await runEedsh(
+      ['doctor', '--profile', profileName, '--strict'],
+      doctorOptions(h),
+    )
+    expect(strict).toBe(1)
+  })
+
+  it('rejects --explain as a usage error', async () => {
+    const h = await syncedProfile()
+    const code = await runEedsh(['doctor', '--profile', profileName, '--explain'], doctorOptions(h))
+    expect(code).toBe(2)
+  })
+})
+
 describe('dependency section notices', () => {
   const manifestPath = '/home/profiles/cli-fixture/package.json'
 

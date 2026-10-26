@@ -31,6 +31,7 @@ import {
   unsupportedConfigExtensionError,
   validateConfigPath,
 } from './config'
+import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import {
@@ -76,6 +77,8 @@ export interface CliRunOptions {
   loadConfig?: (configPath: string) => Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
+  /** Replace the file system `doctor` inspects. */
+  fileSystem?: () => Layer.Layer<FileSystem.FileSystem>
   /** Replace the launcher spawn. */
   spawn?: SpawnLike
   /** Replace the config-directory watcher. */
@@ -279,11 +282,26 @@ function defaultServices(): CliServiceLayer {
   ).pipe(Layer.provideMerge(NodeServices.layer))
 }
 
-function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {
+function profileDirForName(name: string, env: Record<string, string | undefined>): string {
   const home = env.DSH_HOME
-  return home === undefined || home === ''
-    ? resolveProfileDir(plan.profile.name)
-    : resolveProfileDir(plan.profile.name, home)
+  return home === undefined || home === '' ? resolveProfileDir(name) : resolveProfileDir(name, home)
+}
+
+function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {
+  return profileDirForName(plan.profile.name, env)
+}
+
+/** The profile-name rules: one path segment that is not a reserved name. */
+function isUsableProfileName(name: string): boolean {
+  return (
+    name.trim() === name &&
+    name !== '' &&
+    name !== '.' &&
+    name !== '..' &&
+    name !== 'node_modules' &&
+    !name.includes('/') &&
+    !name.includes('\\')
+  )
 }
 
 function programFor(
@@ -607,6 +625,46 @@ function runCheckCommand(
   })
 }
 
+interface DoctorCommandInput {
+  configPath: string | undefined
+  profile: string | undefined
+  strict: boolean
+}
+
+/** Inspect one published profile and print its findings. */
+function runDoctorCommand(
+  input: DoctorCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<number, ConfigError | Schema.SchemaError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext(undefined)
+    if (input.profile !== undefined && input.configPath !== undefined) {
+      runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
+      return EXIT_USAGE
+    }
+    let profileName: string
+    if (input.profile !== undefined) {
+      if (!isUsableProfileName(input.profile)) {
+        runtime.stderr(
+          `eedsh: profile name "${input.profile}" is not usable as a profile directory`,
+        )
+        return EXIT_USAGE
+      }
+      profileName = input.profile
+    } else {
+      const configPath = resolveConfigPath(input.configPath, runtime)
+      if (configPath === undefined) return EXIT_FAILURE
+      const plan = yield* loadPlan(configPath, runtime)
+      profileName = plan.profile.name
+    }
+    const result = yield* doctor({ profileDir: profileDirForName(profileName, runtime.env) })
+    yield* Effect.sync(() => {
+      for (const line of formatDoctorReport(result)) runtime.stdout(line)
+    })
+    return doctorExitCode(result, input.strict)
+  })
+}
+
 /**
  * Run the CLI with an explicit argument vector.
  * @param argv - arguments after the executable and script.
@@ -670,6 +728,16 @@ export async function runEedsh(
     ),
     Flag.withDefault(false),
   )
+  const profileFlag = Flag.String('profile').pipe(
+    Flag.withDescription(
+      'profile name to inspect under DSH_HOME (default: the configured profile)',
+    ),
+    Flag.optional,
+  )
+  const doctorStrictFlag = Flag.Boolean('strict').pipe(
+    Flag.withDescription('exit 1 when there is at least one warning'),
+    Flag.withDefault(false),
+  )
 
   const syncCommand = Command.make(
     'sync',
@@ -720,9 +788,29 @@ export async function runEedsh(
     }),
   ).pipe(Command.withDescription("typecheck the config's project with its own tsc"))
 
+  const doctorCommandLine = Command.make(
+    'doctor',
+    { config: configFlag, profile: profileFlag, strict: doctorStrictFlag },
+    (parsed) =>
+      Effect.gen(function* () {
+        const program = runDoctorCommand(
+          {
+            configPath: Option.getOrUndefined(parsed.config),
+            profile: Option.getOrUndefined(parsed.profile),
+            strict: parsed.strict,
+          },
+          runtime,
+        )
+        const fileSystem = runtime.options.fileSystem
+        exitCode = yield* fileSystem === undefined
+          ? program
+          : program.pipe(Effect.provide(fileSystem()))
+      }),
+  ).pipe(Command.withDescription('inspect a published profile without changing it'))
+
   const rootCommand = Command.make('eedsh').pipe(
     Command.withDescription('typed configuration for DeepSeek Harness profiles'),
-    Command.withSubcommands([syncCommand, runCommandLine, checkCommandLine]),
+    Command.withSubcommands([syncCommand, runCommandLine, checkCommandLine, doctorCommandLine]),
   )
 
   const parsedArgs = split.args.length === 0 ? ['--help'] : split.args

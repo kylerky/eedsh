@@ -244,7 +244,24 @@ const OWNED_SECTIONS = ['devDependencies', 'optionalDependencies'] as const
 /** Fields that may pin a managed package outside reconciliation; reported only. */
 const CONFLICT_FIELDS = ['peerDependencies', 'pnpm.overrides', 'overrides', 'resolutions'] as const
 
-type ConflictField = (typeof CONFLICT_FIELDS)[number]
+/** A dependency section eedsh reads for managed names. */
+export type DependencyConflictField =
+  | (typeof OWNED_SECTIONS)[number]
+  | (typeof CONFLICT_FIELDS)[number]
+
+/** One managed name found in a dependency section. */
+export interface DependencyConflict {
+  readonly field: DependencyConflictField
+  readonly name: string
+}
+
+/** What a scan of the dependency sections found. */
+export interface DependencySectionScan {
+  /** Managed names in every section, in section and package order. */
+  readonly conflicts: DependencyConflict[]
+  /** Owned sections that are not a record of string specifications. */
+  readonly malformed: readonly (typeof OWNED_SECTIONS)[number][]
+}
 
 type SectionRead =
   | { readonly kind: 'absent' }
@@ -270,11 +287,46 @@ function readStrictSection(value: unknown): SectionRead {
 /** Read the value a conflict field resolves to, including `pnpm.overrides`. */
 function conflictValue(
   manifest: Record<string, unknown> | undefined,
-  field: ConflictField,
+  field: (typeof CONFLICT_FIELDS)[number],
 ): unknown {
   if (field !== 'pnpm.overrides') return manifest?.[field]
   const pnpm = asRecord(manifest?.pnpm)
   return pnpm?.overrides
+}
+
+/**
+ * Find managed names in every dependency section eedsh inventories. Sync turns
+ * owned-section hits into removals and the rest into warnings; doctor reports
+ * all of them. Sharing the scan keeps the two commands from drifting.
+ * @param manifest - the profile manifest, when one exists.
+ * @param names - the package names eedsh manages.
+ * @returns the conflicts and any owned sections that cannot be read.
+ */
+export function scanDependencyConflicts(
+  manifest: Record<string, unknown> | undefined,
+  names: ReadonlySet<string>,
+): DependencySectionScan {
+  const conflicts: DependencyConflict[] = []
+  const malformed: (typeof OWNED_SECTIONS)[number][] = []
+  for (const section of OWNED_SECTIONS) {
+    const read = readStrictSection(manifest?.[section])
+    if (read.kind === 'malformed') {
+      malformed.push(section)
+      continue
+    }
+    if (read.kind === 'absent') continue
+    for (const name of Object.keys(read.value).sort()) {
+      if (names.has(name)) conflicts.push({ field: section, name })
+    }
+  }
+  for (const field of CONFLICT_FIELDS) {
+    const value = asRecord(conflictValue(manifest, field))
+    if (value === undefined) continue
+    for (const name of Object.keys(value).sort()) {
+      if (names.has(name)) conflicts.push({ field, name })
+    }
+  }
+  return { conflicts, malformed }
 }
 
 /** Remove managed names from the owned sections and report every diagnostic. */
@@ -286,46 +338,39 @@ function reconcileDependencySections(
     ...Object.keys(managedPackages),
     ...Object.keys(input.previous?.packages ?? {}),
   ])
+  const scan = scanDependencyConflicts(input.manifest, owned)
   const entries: { key: string; diagnostic: Diagnostic }[] = []
   const cleaned: CleanedDependencySections = {}
 
   for (const section of OWNED_SECTIONS) {
     const read = readStrictSection(input.manifest?.[section])
-    if (read.kind === 'absent') continue
-    if (read.kind === 'malformed') {
-      entries.push({
-        key: `${section}\u0000`,
-        diagnostic: warning(
-          `cannot reconcile ${section}: it is not a record of package specifications; left unchanged`,
-        ),
-      })
-      continue
-    }
+    if (read.kind !== 'valid') continue
     const value = { ...read.value }
-    for (const name of Object.keys(read.value).sort()) {
-      if (!owned.has(name)) continue
-      delete value[name]
-      entries.push({
-        key: `${section}\u0000${name}`,
-        diagnostic: notice(`removed ${name} from ${section}`),
-      })
+    for (const name of Object.keys(value)) {
+      if (owned.has(name)) delete value[name]
     }
     if (section === 'devDependencies') cleaned.devDependencies = value
     else cleaned.optionalDependencies = value
   }
 
-  for (const field of CONFLICT_FIELDS) {
-    const value = asRecord(conflictValue(input.manifest, field))
-    if (value === undefined) continue
-    for (const name of Object.keys(value).sort()) {
-      if (!owned.has(name)) continue
-      entries.push({
-        key: `${field}\u0000${name}`,
-        diagnostic: warning(
-          `managed package ${name} is also declared in ${field}; the resolved version may differ`,
-        ),
-      })
-    }
+  for (const section of scan.malformed) {
+    entries.push({
+      key: `${section}\u0000`,
+      diagnostic: warning(
+        `cannot reconcile ${section}: it is not a record of package specifications; left unchanged`,
+      ),
+    })
+  }
+  for (const conflict of scan.conflicts) {
+    entries.push({
+      key: `${conflict.field}\u0000${conflict.name}`,
+      diagnostic:
+        conflict.field === 'devDependencies' || conflict.field === 'optionalDependencies'
+          ? notice(`removed ${conflict.name} from ${conflict.field}`)
+          : warning(
+              `managed package ${conflict.name} is also declared in ${conflict.field}; the resolved version may differ`,
+            ),
+    })
   }
 
   entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
