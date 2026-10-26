@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -7,6 +7,16 @@ import { resolveDshInstallation } from '../../src/dsh'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
+
+/** The TypeScript version the repository itself pins in its root manifest. */
+async function pinnedTypeScriptVersion(): Promise<string> {
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as {
+    devDependencies?: Record<string, string>
+  }
+  const version = manifest.devDependencies?.typescript
+  if (version === undefined) throw new Error('the root package.json pins no typescript')
+  return version
+}
 
 describe('built CLI integration', () => {
   beforeAll(async () => {
@@ -78,12 +88,13 @@ describe('built CLI integration', () => {
     const home = await mkdtemp(join(root, '.tmp', 'check-home-'))
     const env = { ...process.env, DSH_HOME: home }
 
+    const pinnedTypeScript = await pinnedTypeScriptVersion()
     const clean = await execFileAsync(process.execPath, [cli, 'check', '--config', configPath], {
       cwd: project,
       env,
     })
     expect(clean.stdout).toContain('eedsh: check passed')
-    expect(clean.stdout).toContain('TypeScript')
+    expect(clean.stdout).toContain(`eedsh: TypeScript ${pinnedTypeScript}`)
     expect(clean.stdout).toContain('eedsh: running')
 
     await writeFile(
@@ -99,7 +110,7 @@ describe('built CLI integration', () => {
       },
       (error: { code?: number; stdout?: string; stderr?: string }) => error,
     )
-    // tsc 5.9 reports diagnostics with exit code 2; eedsh forwards it unchanged.
+    // tsc reports diagnostics with exit code 2; eedsh forwards it unchanged.
     expect(failure.code).toBe(2)
     const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`
     expect(output).toContain('error TS2322')

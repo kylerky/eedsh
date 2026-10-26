@@ -7,6 +7,6 @@ export default defineConfig({
   fixedExtension: false,
   target: false,
   sourcemap: true,
-  dts: { sourcemap: true, resolver: 'tsc' },
+  dts: { sourcemap: true },
   deps: { neverBundle: [/^@eedsh\//] },
 })
