@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { bundle, generated, insert, layer } from '@eedsh/config'
 import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { describe, expect, it } from 'vitest'
@@ -9,11 +10,77 @@ import {
   doctorExitCode,
   formatDoctorReport,
 } from '../src/doctor'
-import { harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
+import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
+import { planOf } from './support/plan'
 
-async function published() {
-  const h = harness()
+const LOCKFILE_PATH = `${PROFILE_DIR}/pnpm-lock.yaml`
+
+/** Lockfile text with the managed entries, optionally overridden. */
+function lockfileText(options: { pluginSpecifier?: string; pluginVersion?: string } = {}): string {
+  const specifier = options.pluginSpecifier ?? '1.0.0'
+  const version = options.pluginVersion ?? '1.0.0'
+  return `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@scope/plugin':
+        specifier: ${specifier}
+        version: ${version}
+      '@eedsh/runtime':
+        specifier: link:/repo/packages/runtime
+      '@eedsh/generated':
+        specifier: link:./.eedsh/generated
+`
+}
+
+/** A plan whose managed package uses a semantic-version range. */
+function rangePlan() {
+  return planOf({
+    name: 'work',
+    dsh: '0.2.1-rc.2',
+    bundles: [bundle(BUNDLE), generated()],
+    layers: [layer('cli', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })])],
+    packages: { '@scope/plugin': '^1.0.0' },
+  })
+}
+
+function addInstalled(
+  h: Awaited<ReturnType<typeof published>>,
+  name: string,
+  version: string,
+): void {
+  h.fs.files.set(
+    `${PROFILE_DIR}/node_modules/${name}/package.json`,
+    `${JSON.stringify({ name, version })}\n`,
+  )
+}
+
+interface RuntimeStateOptions {
+  pluginSpecifier?: string
+  pluginVersion?: string
+  pluginInstalledVersion?: string
+  lockfile?: string
+}
+
+/** Write a lockfile and the installed packages a clean doctor run expects. */
+function addRuntimeState(
+  h: Awaited<ReturnType<typeof published>>,
+  options: RuntimeStateOptions = {},
+): void {
+  h.fs.files.set(LOCKFILE_PATH, options.lockfile ?? lockfileText(options))
+  addInstalled(
+    h,
+    '@scope/plugin',
+    options.pluginInstalledVersion ?? options.pluginVersion ?? '1.0.0',
+  )
+  addInstalled(h, '@eedsh/runtime', '0.0.0')
+  addInstalled(h, '@eedsh/generated', '0.0.0')
+}
+
+async function published(options: { range?: boolean } = {}) {
+  const h = options.range === true ? harness({ plan: rangePlan() }) : harness()
   await h.run()
+  addRuntimeState(h)
   return h
 }
 
@@ -254,6 +321,124 @@ describe('doctor scaffolding checks', () => {
     const h = await published()
     const result = await diagnose(h.fs.fs)
     expect(finding(result, 'scaffolding')).toBeUndefined()
+  })
+})
+
+describe('doctor lockfile checks', () => {
+  it('accepts a v9 lockfile with a root importer', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toBeUndefined()
+  })
+
+  it('accepts a single non-root importer', async () => {
+    const h = await published()
+    h.fs.files.set(LOCKFILE_PATH, lockfileText().replace('  .:', `  ${PROFILE_DIR}:`))
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toBeUndefined()
+  })
+
+  it('errors when the lockfile is missing', async () => {
+    const h = await published()
+    h.fs.files.delete(LOCKFILE_PATH)
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toContain('cannot be verified')
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('errors when a managed package is missing from the importer', async () => {
+    const h = await published()
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@eedsh/runtime':
+        specifier: link:/repo/packages/runtime
+      '@eedsh/generated':
+        specifier: link:./.eedsh/generated
+`,
+    )
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toContain('@scope/plugin')
+  })
+
+  it('warns when the lockfile specifier differs from the record', async () => {
+    const h = await published()
+    h.fs.files.set(LOCKFILE_PATH, lockfileText({ pluginSpecifier: '^1.0.0' }))
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'warning', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toContain('^1.0.0')
+    expect(result.errors).toBe(0)
+  })
+
+  it('errors when the resolved version is outside the recorded range', async () => {
+    const h = await published()
+    addRuntimeState(h, { pluginVersion: '2.0.0', pluginInstalledVersion: '2.0.0' })
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toContain('2.0.0')
+  })
+
+  it('errors on an unsupported lockfile version', async () => {
+    const h = await published()
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      lockfileText().replace("lockfileVersion: '9.0'", "lockfileVersion: '8.0'"),
+    )
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')?.message).toContain('cannot be verified')
+  })
+})
+
+describe('doctor installed checks', () => {
+  it('accepts a clean installation', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'installed')).toBeUndefined()
+    expect(result.findings).toEqual([])
+  })
+
+  it('errors when a managed package is not installed', async () => {
+    const h = await published()
+    h.fs.files.delete(`${PROFILE_DIR}/node_modules/@scope/plugin/package.json`)
+    const result = await diagnose(h.fs.fs)
+    const installed = finding(result, 'installed')
+    expect(installed).toMatchObject({ severity: 'error', check: 'installed' })
+    expect(installed?.message).toContain('@scope/plugin')
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('errors when the installed version differs from the lockfile', async () => {
+    const h = await published()
+    addInstalled(h, '@scope/plugin', '1.2.0')
+    const result = await diagnose(h.fs.fs)
+    const installed = finding(result, 'installed')
+    expect(installed).toMatchObject({ severity: 'error', check: 'installed' })
+    expect(installed?.message).toContain('1.2.0')
+    expect(installed?.message).toContain('1.0.0')
+  })
+
+  it('accepts an installed version inside the recorded range', async () => {
+    const h = await published({ range: true })
+    addRuntimeState(h, {
+      pluginSpecifier: '^1.0.0',
+      pluginVersion: '1.4.0',
+      pluginInstalledVersion: '1.4.0',
+    })
+    const result = await diagnose(h.fs.fs)
+    expect(finding(result, 'installed')).toBeUndefined()
+    expect(result.findings).toEqual([])
+  })
+
+  it('reports a link specification without a range error', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs)
+    expect(result.findings.filter((item) => item.check === 'installed')).toEqual([])
   })
 })
 

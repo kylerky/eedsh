@@ -14,7 +14,9 @@ import type * as PlatformError from 'effect/PlatformError'
 import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import * as yaml from 'js-yaml'
 import { EXIT_FAILURE, EXIT_OK } from './exit'
+import { isSemverRange, versionSatisfies } from './internal/semver'
 import {
   authoritativePlanPath,
   GENERATED_PACKAGE_NAME,
@@ -467,6 +469,241 @@ function checkScaffolding(
   })
 }
 
+/** One dependency entry in the lockfile root importer. */
+interface LockfileEntry {
+  readonly specifier?: string
+  readonly version?: string
+}
+
+/** Resolved dependency entries from the lockfile root importer. */
+type LockfileDependencies = ReadonlyMap<string, LockfileEntry>
+
+/** Strip a trailing pnpm peer suffix such as `(peer@1.0.0)`. */
+function resolvedVersion(version: string | undefined): string | undefined {
+  if (version === undefined) return undefined
+  const base = version.split('(')[0]?.trim()
+  return base === undefined || base === '' ? undefined : base
+}
+
+/** Read the lockfile and verify every managed entry and resolved range. */
+function checkLockfile(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  record: GenerationRecord,
+  findings: DoctorFinding[],
+): Effect.Effect<LockfileDependencies | undefined> {
+  return Effect.gen(function* () {
+    const path = join(profileDir, 'pnpm-lock.yaml')
+    const read = yield* readOptional(fs, path).pipe(Effect.result)
+    if (Result.isFailure(read)) {
+      findings.push(
+        errorFinding('lockfile', `cannot read pnpm-lock.yaml: ${messageOf(read.failure)}`, path),
+      )
+      return undefined
+    }
+    const text = read.success
+    if (text === undefined) {
+      findings.push(
+        errorFinding(
+          'lockfile',
+          'there is no pnpm-lock.yaml, so the installed state cannot be verified; run "eedsh sync"',
+          path,
+        ),
+      )
+      return undefined
+    }
+    const parsed = yield* Effect.try({
+      try: () => yaml.load(text) as unknown,
+      catch: (cause) => messageOf(cause),
+    }).pipe(Effect.result)
+    if (Result.isFailure(parsed)) {
+      findings.push(
+        errorFinding('lockfile', `cannot parse pnpm-lock.yaml: ${parsed.failure}`, path),
+      )
+      return undefined
+    }
+    if (!Predicate.isObject(parsed.success)) {
+      findings.push(errorFinding('lockfile', 'the lockfile is not a YAML object', path))
+      return undefined
+    }
+    const lockfile = parsed.success as Record<string, unknown>
+    const version = String(lockfile.lockfileVersion ?? '')
+    if (!/^9(?:\.|$)/.test(version)) {
+      findings.push(
+        errorFinding(
+          'lockfile',
+          `unsupported lockfile version ${version === '' ? '(missing)' : version}; the installed state cannot be verified`,
+          path,
+        ),
+      )
+      return undefined
+    }
+    const importers = Predicate.isObject(lockfile.importers)
+      ? (lockfile.importers as Record<string, unknown>)
+      : {}
+    const names = Object.keys(importers)
+    const importerValue =
+      importers['.'] ?? (names.length === 1 ? importers[names[0] as string] : undefined)
+    if (!Predicate.isObject(importerValue)) {
+      findings.push(
+        errorFinding(
+          'lockfile',
+          'the lockfile has no root importer, so the installed state cannot be verified; run "eedsh sync"',
+          path,
+        ),
+      )
+      return undefined
+    }
+    const importer = importerValue as Record<string, unknown>
+    const dependencies = Predicate.isObject(importer.dependencies)
+      ? (importer.dependencies as Record<string, unknown>)
+      : {}
+    const entries = new Map<string, LockfileEntry>()
+    for (const [name, value] of Object.entries(dependencies)) {
+      const entry = Predicate.isObject(value) ? (value as Record<string, unknown>) : {}
+      entries.set(name, {
+        ...(typeof entry.specifier === 'string' ? { specifier: entry.specifier } : {}),
+        ...(typeof entry.version === 'string' ? { version: entry.version } : {}),
+      })
+    }
+
+    for (const [name, spec] of Object.entries(record.packages)) {
+      const entry = entries.get(name)
+      if (entry === undefined) {
+        findings.push(
+          errorFinding(
+            'lockfile',
+            `managed package ${name} is missing from the lockfile root importer; run "eedsh sync"`,
+            path,
+          ),
+        )
+        continue
+      }
+      if (entry.specifier !== undefined && entry.specifier !== spec) {
+        findings.push(
+          warningFinding(
+            'lockfile',
+            `the lockfile specifier "${entry.specifier}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
+            path,
+          ),
+        )
+      }
+      if (!isSemverRange(spec)) continue
+      const resolved = resolvedVersion(entry.version)
+      if (resolved === undefined) {
+        findings.push(
+          errorFinding(
+            'lockfile',
+            `the lockfile has no resolved version for ${name}; run "eedsh sync"`,
+            path,
+          ),
+        )
+        continue
+      }
+      const matches = versionSatisfies(spec, resolved)
+      if (matches === false) {
+        findings.push(
+          errorFinding(
+            'lockfile',
+            `the resolved version ${resolved} of ${name} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
+            path,
+          ),
+        )
+      } else if (matches === undefined) {
+        findings.push(
+          errorFinding(
+            'lockfile',
+            `the lockfile version ${resolved} of ${name} is not a semantic version; run "eedsh sync"`,
+            path,
+          ),
+        )
+      }
+    }
+    return entries
+  })
+}
+
+/** Verify each managed package is installed and its version agrees. */
+function checkInstalled(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  record: GenerationRecord,
+  lockfile: LockfileDependencies | undefined,
+  findings: DoctorFinding[],
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    for (const [name, spec] of Object.entries(record.packages)) {
+      const path = join(profileDir, 'node_modules', name, 'package.json')
+      const read = yield* readOptional(fs, path).pipe(Effect.result)
+      if (Result.isFailure(read)) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `cannot read the installed package ${name}: ${messageOf(read.failure)}`,
+            path,
+          ),
+        )
+        continue
+      }
+      if (read.success === undefined) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `managed package ${name} is not installed; run "eedsh sync"`,
+            path,
+          ),
+        )
+        continue
+      }
+      const parsed = parseJson(read.success)
+      if (
+        Result.isFailure(parsed) ||
+        !Predicate.isObject(parsed.success) ||
+        typeof parsed.success.version !== 'string'
+      ) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `the installed package ${name} has no readable version; reinstall it`,
+            path,
+          ),
+        )
+        continue
+      }
+      const installed = parsed.success.version
+      const lockVersion = resolvedVersion(lockfile?.get(name)?.version)
+      if (lockVersion !== undefined && lockVersion !== installed) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `installed ${name} version ${installed} differs from the lockfile version ${lockVersion}; run "eedsh sync"`,
+            path,
+          ),
+        )
+      }
+      if (!isSemverRange(spec)) continue
+      const matches = versionSatisfies(spec, installed)
+      if (matches === false) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `installed ${name} version ${installed} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
+            path,
+          ),
+        )
+      } else if (matches === undefined) {
+        findings.push(
+          errorFinding(
+            'installed',
+            `installed ${name} version ${installed} is not a semantic version; reinstall it`,
+            path,
+          ),
+        )
+      }
+    }
+  })
+}
+
 /** Report a generation change or a now-invalid record after the checks ran. */
 function checkSnapshot(
   fs: FileSystem.FileSystem,
@@ -525,6 +762,8 @@ export function doctor(
     }
     yield* checkManifest(fs, options.profileDir, record, findings)
     yield* checkScaffolding(fs, options.profileDir, findings)
+    const lockfile = yield* checkLockfile(fs, options.profileDir, record, findings)
+    yield* checkInstalled(fs, options.profileDir, record, lockfile, findings)
     yield* checkSnapshot(fs, recordPath, record, findings)
     return summarize(findings)
   })

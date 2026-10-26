@@ -783,9 +783,32 @@ describe('generation record diagnostics', () => {
   })
 })
 
+/** Add the lockfile and installed packages a clean doctor run expects. */
+function addPublishedRuntimeState(h: ReturnType<typeof harness>): void {
+  const profileDir = '/home/profiles/cli-fixture'
+  const record = JSON.parse(
+    h.fs.files.get(`${profileDir}/.eedsh/generated/package.json`) ?? '{}',
+  ) as { eedsh?: { packages?: Record<string, string> } }
+  const packages = record.eedsh?.packages ?? {}
+  const entries = Object.entries(packages)
+    .map(([name, spec]) => `      '${name}':\n        specifier: ${spec}`)
+    .join('\n')
+  h.fs.files.set(
+    `${profileDir}/pnpm-lock.yaml`,
+    `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n${entries}\n`,
+  )
+  for (const name of Object.keys(packages)) {
+    h.fs.files.set(
+      `${profileDir}/node_modules/${name}/package.json`,
+      `${JSON.stringify({ name, version: '0.0.0' })}\n`,
+    )
+  }
+}
+
 async function syncedProfile() {
   const h = harness()
   expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+  addPublishedRuntimeState(h)
   return h
 }
 
