@@ -7,7 +7,7 @@
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
@@ -17,7 +17,7 @@ import {
   Preflight,
   type PreflightShape,
 } from './internal/effect/services'
-import { asRecord } from './internal/record'
+import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
 
 /** One preflight composition layer. */
@@ -33,6 +33,9 @@ export interface PreflightWarning {
   message: string
 }
 
+const patchEntrySchema = Schema.Record(Schema.String, Schema.Unknown)
+const patchListSchema = Schema.Array(patchEntrySchema)
+
 /** The result of composing a preflight layer stack. */
 export interface PreflightComposition {
   entries: Record<string, unknown>[]
@@ -46,8 +49,7 @@ export interface PreflightComposition {
 function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
   const ids: string[] = []
   const visitEntry = (entry: unknown) => {
-    const record = asRecord(entry)
-    if (record === undefined) return
+    const record = readRecord(entry)
     if (typeof record.id === 'string') ids.push(record.id)
     if (record.group === true && Array.isArray(record.config)) record.config.forEach(visitEntry)
   }
@@ -146,8 +148,7 @@ function checkNoPlanExpression(
     }
     return Result.succeed(undefined)
   }
-  const record = asRecord(value)
-  if (record === undefined) return Result.succeed(undefined)
+  const record = readRecord(value)
   if ('$eedsh' in record) {
     return Result.fail(
       fail(`generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`),
@@ -178,21 +179,24 @@ export function parseGeneratedLayers(
       catch: (cause) => fail(`cannot parse generated layer ${id}: ${String(cause)}`),
     })
     if (Result.isFailure(parsed)) return Result.fail(parsed.failure)
-    if (!Array.isArray(parsed.success)) {
+    const decoded = Schema.decodeUnknownOption(patchListSchema)(parsed.success)
+    if (Option.isNone(decoded)) {
       return Result.fail(
-        fail(`generated layer ${id} must be a top-level YAML array of patch entries`),
+        fail(
+          Array.isArray(parsed.success)
+            ? `generated layer ${id} contains a non-object patch entry`
+            : `generated layer ${id} must be a top-level YAML array of patch entries`,
+        ),
       )
     }
-    for (const item of parsed.success) {
-      if (asRecord(item) === undefined) {
-        return Result.fail(fail(`generated layer ${id} contains a non-object patch entry`))
-      }
-      const checked = checkNoPlanExpression(item, id)
+    const entries = decoded.value.map((entry) => readRecord(entry))
+    for (const entry of entries) {
+      const checked = checkNoPlanExpression(entry, id)
       if (Result.isFailure(checked)) return Result.fail(checked.failure)
     }
     layers.push({
       label: `generated:${id}`,
-      patches: parsed.success as Record<string, unknown>[],
+      patches: entries,
     })
   }
   return Result.succeed(layers)

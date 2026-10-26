@@ -177,6 +177,23 @@ describe('preflight composition', () => {
     }
   })
 
+  it('rejects a non-object generated patch entry', () => {
+    const plan = fixturePlan([planLayer('base', [override('timer', { interval: 1 })])])
+    const generated = buildGenerated(plan)
+    const tampered: GeneratedBundle = {
+      ...generated,
+      files: generated.files.map((file) =>
+        file.path.endsWith('.yml') ? { ...file, content: '- 42\n' } : file,
+      ),
+    }
+    const failed = parseGeneratedLayers(tampered)
+    expect(Result.isFailure(failed)).toBe(true)
+    if (Result.isFailure(failed)) {
+      expect(failed.failure._tag).toBe('PreflightFailure')
+      expect(failed.failure.message).toContain('contains a non-object patch entry')
+    }
+  })
+
   it('rejects duplicate ids inserted by generated layers', () => {
     const layers: PreflightLayer[] = [
       { label: 'generated:one', patches: [{ insert: [{ id: 'dup', name: 'a' }] }] },

@@ -7,15 +7,23 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
-import { Effect } from 'effect'
+import { Effect, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
 import { EXIT_FAILURE } from './exit'
 import { CheckFailure } from './internal/effect/errors'
 import { messageOf } from './internal/error-message'
-import { asRecord } from './internal/record'
+import { readVersion } from './internal/schema-readers'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
 
 const TSCONFIG_FILENAME = 'tsconfig.json'
+
+const packageBinSchema = Schema.Union([Schema.String, Schema.Struct({ tsc: Schema.String })])
+
+function readPackageBin(value: unknown): string | undefined {
+  const decoded = Schema.decodeUnknownOption(packageBinSchema)(value)
+  if (Option.isNone(decoded)) return undefined
+  return typeof decoded.value === 'string' ? decoded.value : decoded.value.tsc
+}
 
 /** The project's TypeScript installation. */
 export interface TypeScriptInstallation {
@@ -74,12 +82,10 @@ export function resolveTypeScript(configDir: string): TypeScriptInstallation | u
   })
   if (Result.isFailure(parsed)) return undefined
   const manifest = parsed.success
-  const bin = manifest.bin
-  const binRecord = asRecord(bin)
-  const relative = typeof bin === 'string' ? bin : binRecord?.tsc
-  if (typeof relative !== 'string') return undefined
+  const relative = readPackageBin(manifest.bin)
+  if (relative === undefined) return undefined
   return {
-    version: typeof manifest.version === 'string' ? manifest.version : 'unknown',
+    version: readVersion(manifest.version, 'unknown'),
     binPath: resolve(dirname(manifestPath), relative),
   }
 }

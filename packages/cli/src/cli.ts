@@ -48,6 +48,7 @@ import type {
 } from './internal/effect/services'
 import { messageOf } from './internal/error-message'
 import { asRecord } from './internal/record'
+import { readVersion } from './internal/schema-readers'
 import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
@@ -174,9 +175,7 @@ function cliVersion(): string {
       },
     catch: () => undefined,
   })
-  return Result.isSuccess(parsed) && typeof parsed.success.version === 'string'
-    ? parsed.success.version
-    : '0.0.0'
+  return Result.isSuccess(parsed) ? readVersion(parsed.success.version, '0.0.0') : '0.0.0'
 }
 
 function describeError(error: unknown): string[] {

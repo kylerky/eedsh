@@ -14,6 +14,7 @@ import {
 } from '@deepseek-ai/dsh-app-boot'
 import * as Result from 'effect/Result'
 import { DshResolveFailure } from './internal/effect/errors'
+import { readVersion } from './internal/schema-readers'
 
 /** Resolved facts about the DSH installation this CLI is pinned to. */
 export interface DshInstallationInfo {
@@ -38,7 +39,7 @@ export function resolveDshInstallation(): Result.Result<DshInstallationInfo, Dsh
       const installAnchor = require.resolve('@deepseek-ai/dsh/package.json')
       const manifest = JSON.parse(readFileSync(installAnchor, 'utf8')) as { version?: unknown }
       return {
-        version: typeof manifest.version === 'string' ? manifest.version : 'unknown',
+        version: readVersion(manifest.version, 'unknown'),
         installAnchor,
         binPath: require.resolve('@deepseek-ai/dsh/lib/bin.js'),
       }

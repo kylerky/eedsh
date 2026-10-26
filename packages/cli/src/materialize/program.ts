@@ -5,7 +5,7 @@
  */
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Option, Schema } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
@@ -18,7 +18,6 @@ import {
   type SyncLockShape,
 } from '../internal/effect/services'
 import { withSyncLock } from '../internal/lock'
-import { asRecord } from '../internal/record'
 import type { Diagnostic } from './diagnostics'
 import { notice } from './diagnostics'
 import {
@@ -78,6 +77,8 @@ export interface MaterializeResult {
   createdProfile: boolean
 }
 
+const profileManifestSchema = Schema.Record(Schema.String, Schema.Unknown)
+
 function readJsonFile(
   fs: FileSystem.FileSystem,
   path: string,
@@ -85,11 +86,8 @@ function readJsonFile(
   return Effect.gen(function* () {
     if (!(yield* fs.exists(path))) return undefined
     const text = yield* fs.readFileString(path)
-    return yield* Effect.try({
-      try: () => {
-        const parsed: unknown = JSON.parse(text)
-        return asRecord(parsed)
-      },
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
       catch: (cause) =>
         PlatformError.systemError({
           _tag: 'InvalidData',
@@ -99,6 +97,8 @@ function readJsonFile(
           cause,
         }),
     })
+    const decoded = Schema.decodeUnknownOption(profileManifestSchema)(parsed)
+    return Option.isSome(decoded) ? { ...decoded.value } : undefined
   })
 }
 

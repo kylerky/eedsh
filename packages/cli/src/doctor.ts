@@ -7,9 +7,8 @@
  */
 import { join } from 'node:path'
 import { canonicalJson, type ProfilePlan, ProfilePlanSchema } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Predicate from 'effect/Predicate'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as yaml from 'js-yaml'
@@ -154,6 +153,9 @@ function parseJson(text: string): Result.Result<unknown, string> {
     catch: (cause) => messageOf(cause),
   })
 }
+
+const jsonRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const installedManifestSchema = Schema.Struct({ version: Schema.String })
 
 function recordProblem(invalid: InvalidGenerationRecord): string {
   const recovery = invalid.adoptable
@@ -377,7 +379,10 @@ function checkManifest(
       return
     }
     const parsed = parseJson(read.success)
-    if (Result.isFailure(parsed) || !Predicate.isObject(parsed.success)) {
+    const decoded = Result.isSuccess(parsed)
+      ? Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
+      : Option.none()
+    if (Option.isNone(decoded)) {
       findings.push(
         errorFinding(
           'manifest',
@@ -387,7 +392,7 @@ function checkManifest(
       )
       return
     }
-    const manifest = parsed.success as Record<string, unknown>
+    const manifest = { ...decoded.value }
 
     const listed = readProfileBundles(manifest)
     const prefixIntact =
@@ -504,11 +509,12 @@ function checkLockfile(
       )
       return undefined
     }
-    if (!Predicate.isObject(parsed.success)) {
+    const decoded = Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
+    if (Option.isNone(decoded)) {
       findings.push(errorFinding('lockfile', 'the lockfile is not a YAML object', path))
       return undefined
     }
-    const lockfile = parsed.success as Record<string, unknown>
+    const lockfile = { ...decoded.value }
     const version = String(lockfile.lockfileVersion ?? '')
     if (!/^9(?:\.|$)/.test(version)) {
       findings.push(
@@ -524,7 +530,8 @@ function checkLockfile(
     const names = Object.keys(importers)
     const importerValue =
       importers['.'] ?? (names.length === 1 ? importers[names[0] as string] : undefined)
-    if (!Predicate.isObject(importerValue)) {
+    const importer = Schema.decodeUnknownOption(jsonRecordSchema)(importerValue)
+    if (Option.isNone(importer)) {
       findings.push(
         errorFinding(
           'lockfile',
@@ -534,8 +541,7 @@ function checkLockfile(
       )
       return undefined
     }
-    const importer = importerValue as Record<string, unknown>
-    const dependencies = readJsonRecord(importer.dependencies)
+    const dependencies = readJsonRecord(importer.value.dependencies)
     const entries = new Map<string, LockfileEntry>()
     for (const [name, value] of Object.entries(dependencies)) {
       entries.set(name, readLockfileEntry(value))
@@ -630,11 +636,10 @@ function checkInstalled(
         continue
       }
       const parsed = parseJson(read.success)
-      if (
-        Result.isFailure(parsed) ||
-        !Predicate.isObject(parsed.success) ||
-        typeof parsed.success.version !== 'string'
-      ) {
+      const decoded = Result.isSuccess(parsed)
+        ? Schema.decodeUnknownOption(installedManifestSchema)(parsed.success)
+        : Option.none()
+      if (Option.isNone(decoded)) {
         findings.push(
           errorFinding(
             'installed',
@@ -644,7 +649,7 @@ function checkInstalled(
         )
         continue
       }
-      const installed = parsed.success.version
+      const installed = decoded.value.version
       const lockVersion = resolvedVersion(lockfile?.get(name)?.version)
       if (lockVersion !== undefined && lockVersion !== installed) {
         findings.push(

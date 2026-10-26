@@ -6,7 +6,7 @@
  * @module @eedsh/cli/materialize/manifest
  */
 import type { ProfilePlan } from '@eedsh/config'
-import { asRecord } from '../internal/record'
+import { Option, Schema } from 'effect'
 import { readRecord, readStringArray, readStringRecord } from '../internal/schema-readers'
 import { type Diagnostic, notice, warning } from './diagnostics'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
@@ -234,17 +234,14 @@ type SectionRead =
   | { readonly kind: 'valid'; readonly value: Record<string, string> }
   | { readonly kind: 'malformed' }
 
+const strictSectionSchema = Schema.Record(Schema.String, Schema.String)
+
 /** Read a section strictly: a malformed section is reported, never rewritten. */
 function readStrictSection(value: unknown): SectionRead {
   if (value === undefined) return { kind: 'absent' }
-  const record = asRecord(value)
-  if (record === undefined) return { kind: 'malformed' }
-  const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(record)) {
-    if (typeof item !== 'string') return { kind: 'malformed' }
-    out[key] = item
-  }
-  return { kind: 'valid', value: out }
+  const decoded = Schema.decodeUnknownOption(strictSectionSchema)(value)
+  if (Option.isNone(decoded)) return { kind: 'malformed' }
+  return { kind: 'valid', value: { ...decoded.value } }
 }
 
 /** Read the value a conflict field resolves to, including `pnpm.overrides`. */
