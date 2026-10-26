@@ -13,6 +13,7 @@ import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
+import * as Result from 'effect/Result'
 import * as Console from 'effect/Console'
 import { CliError, Command, Flag } from 'effect/cli'
 import type * as FileSystem from 'effect/FileSystem'
@@ -21,13 +22,12 @@ import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import {
-  assertSupportedConfigPath,
   CONFIG_FILENAMES,
-  ConfigError,
   findConfigPath,
   findUnsupportedConfigPath,
   loadConfig,
   unsupportedConfigExtensionError,
+  validateConfigPath,
 } from './config'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
@@ -165,10 +165,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function describeError(error: unknown): string[] {
   if (Schema.isSchemaError(error)) return error.message.split('\n')
-  if (error instanceof ConfigError) return [`${error.code}: ${error.message}`]
   const tagged = asRecord(error)
   if (tagged !== undefined && '_tag' in tagged) {
     switch (tagged._tag) {
+      case 'ConfigError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'CheckFailure':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'SpawnFailure':
+        return [`cannot launch dsh: ${String(tagged.cause)}`]
       case 'PackageInstallFailure':
         return [
           `package installation failed in ${String(tagged.profileDir)}: ${String(tagged.cause)}`,
@@ -422,13 +427,12 @@ async function runBoot(
     const outcome = await syncOnce(context, false, false)
     if (!outcome.ok) return EXIT_FAILURE
   }
-  let binPath: string
-  try {
-    binPath = resolveDshInstallation().binPath
-  } catch (error) {
-    report(context.stderr, error)
+  const installation = resolveDshInstallation()
+  if (Result.isFailure(installation)) {
+    report(context.stderr, installation.failure)
     return EXIT_FAILURE
   }
+  const binPath = installation.success.binPath
   const spawnFn: SpawnLike = context.options.spawn ?? defaultSpawn
   return await new Promise<number>((resolveExit) => {
     const child = spawnFn(
@@ -454,13 +458,12 @@ function resolveConfigPath(
 ): string | undefined {
   if (requested !== undefined) {
     const configPath = resolve(runtime.cwd, requested)
-    try {
-      assertSupportedConfigPath(configPath)
-      return configPath
-    } catch (error) {
-      report(runtime.stderr, error)
+    const valid = validateConfigPath(configPath)
+    if (Result.isFailure(valid)) {
+      report(runtime.stderr, valid.failure)
       return undefined
     }
+    return configPath
   }
 
   const discovered = findConfigPath(runtime.cwd)

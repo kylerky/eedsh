@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as Result from 'effect/Result'
 import { promisify } from 'node:util'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
@@ -35,7 +36,7 @@ describe('built CLI integration', () => {
     })
     expect(sync.stdout).toContain('published profile built-cli')
 
-    const { binPath } = resolveDshInstallation()
+    const { binPath } = Result.getOrThrow(resolveDshInstallation())
     const dump = await execFileAsync(
       process.execPath,
       [binPath, '--profile', 'built-cli', '--dump-config'],

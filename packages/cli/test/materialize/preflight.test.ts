@@ -7,6 +7,7 @@ import {
   layer as planLayer,
 } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { DshResolveFailure } from '../../src/internal/effect/errors'
 import { planOf } from '../support/plan'
@@ -21,6 +22,7 @@ import {
   attributePreflightWarnings,
   composePreflightLayers,
   type PreflightLayer,
+  parseGeneratedLayers,
   preflightLayer,
 } from '../../src/preflight'
 
@@ -153,6 +155,26 @@ describe('preflight composition', () => {
       { id: 'timer', name: '@deepseek-ai/cordis-plugin-timer', config: { ms: 3 } },
     ])
     expect(result.warnings).toEqual([])
+  })
+
+  it('parses generated layers as a Result', () => {
+    const plan = fixturePlan([planLayer('base', [override('timer', { interval: 1 })])])
+    const generated = buildGenerated(plan)
+    const result = parseGeneratedLayers(generated)
+    expect(Result.isSuccess(result)).toBe(true)
+
+    const tampered: GeneratedBundle = {
+      ...generated,
+      files: generated.files.map((file) =>
+        file.path.endsWith('.yml') ? { ...file, content: 'not: an array\n' } : file,
+      ),
+    }
+    const failed = parseGeneratedLayers(tampered)
+    expect(Result.isFailure(failed)).toBe(true)
+    if (Result.isFailure(failed)) {
+      expect(failed.failure._tag).toBe('PreflightFailure')
+      expect(failed.failure.message).toContain('must be a top-level YAML array')
+    }
   })
 
   it('rejects duplicate ids inserted by generated layers', () => {

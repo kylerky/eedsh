@@ -12,6 +12,8 @@ import {
   readProfileManifest,
   resolveBundleDir,
 } from '@deepseek-ai/dsh-app-boot'
+import * as Result from 'effect/Result'
+import { DshResolveFailure } from './internal/effect/errors'
 
 /** Resolved facts about the DSH installation this CLI is pinned to. */
 export interface DshInstallationInfo {
@@ -26,17 +28,23 @@ export interface DshInstallationInfo {
 /**
  * Resolve the pinned `@deepseek-ai/dsh` package from this CLI's own
  * dependencies.
- * @returns the installation's version, manifest anchor, and launcher path.
+ * @returns a success Result carrying the installation's version, manifest
+ * anchor, and launcher path, or a resolution failure.
  */
-export function resolveDshInstallation(): DshInstallationInfo {
-  const require = createRequire(import.meta.url)
-  const installAnchor = require.resolve('@deepseek-ai/dsh/package.json')
-  const manifest = JSON.parse(readFileSync(installAnchor, 'utf8')) as { version?: unknown }
-  return {
-    version: typeof manifest.version === 'string' ? manifest.version : 'unknown',
-    installAnchor,
-    binPath: require.resolve('@deepseek-ai/dsh/lib/bin.js'),
-  }
+export function resolveDshInstallation(): Result.Result<DshInstallationInfo, DshResolveFailure> {
+  return Result.try({
+    try: () => {
+      const require = createRequire(import.meta.url)
+      const installAnchor = require.resolve('@deepseek-ai/dsh/package.json')
+      const manifest = JSON.parse(readFileSync(installAnchor, 'utf8')) as { version?: unknown }
+      return {
+        version: typeof manifest.version === 'string' ? manifest.version : 'unknown',
+        installAnchor,
+        binPath: require.resolve('@deepseek-ai/dsh/lib/bin.js'),
+      }
+    },
+    catch: (cause) => new DshResolveFailure({ packageName: '@deepseek-ai/dsh', cause }),
+  })
 }
 
 /**
@@ -46,23 +54,27 @@ export function resolveDshInstallation(): DshInstallationInfo {
  * @param packageName - the bundle package name.
  * @param profileDir - absolute profile directory.
  * @param installAnchor - absolute DSH package.json path.
- * @returns the bundle's patches in application order.
- * @throws when the bundle cannot be resolved or declares no dsh.bundle.
+ * @returns the bundle's patches in application order, or a resolution failure.
  */
 export function resolveBundleLayers(
   packageName: string,
   profileDir: string,
   installAnchor: string,
-): Record<string, unknown>[] {
-  const packageDir = resolveBundleDir('eedsh', packageName, installAnchor, profileDir)
-  const manifest = readProfileManifest('eedsh', packageDir)
-  const bundle = manifest.dsh?.bundle
-  if (bundle === undefined) {
-    throw new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`)
-  }
-  const files = bundlePatchFiles(bundle as Parameters<typeof bundlePatchFiles>[0])
-  return files.flatMap((file) => loadOverlayPatches('eedsh', join(packageDir, file))) as Record<
-    string,
-    unknown
-  >[]
+): Result.Result<Record<string, unknown>[], DshResolveFailure> {
+  return Result.try({
+    try: () => {
+      const packageDir = resolveBundleDir('eedsh', packageName, installAnchor, profileDir)
+      const manifest = readProfileManifest('eedsh', packageDir)
+      const bundle = manifest.dsh?.bundle
+      if (bundle === undefined) {
+        throw new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`)
+      }
+      const files = bundlePatchFiles(bundle as Parameters<typeof bundlePatchFiles>[0])
+      return files.flatMap((file) => loadOverlayPatches('eedsh', join(packageDir, file))) as Record<
+        string,
+        unknown
+      >[]
+    },
+    catch: (cause) => new DshResolveFailure({ packageName, cause }),
+  })
 }

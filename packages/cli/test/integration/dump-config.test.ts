@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { bundle, generated, insert, layer, override } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
 import { liveServiceLayer } from '../../src/internal/effect/layer'
@@ -58,7 +59,7 @@ describe('bootable profile integration', () => {
     )
     expect(result.changed).toBe(true)
 
-    const { binPath } = resolveDshInstallation()
+    const { binPath } = Result.getOrThrow(resolveDshInstallation())
     const { stdout } = await execFileAsync(
       process.execPath,
       [binPath, '--profile', profileName, '--dump-config'],

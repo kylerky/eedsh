@@ -8,6 +8,7 @@ import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type ProfilePlan, validatePlan } from '@eedsh/config'
+import { Data } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
@@ -20,14 +21,12 @@ export const UNSUPPORTED_CONFIG_FILENAMES = ['eedsh.config.mjs', 'eedsh.config.j
 const SUPPORTED_EXTENSIONS = new Set(['.ts', '.mts'])
 
 /** A config discovery, evaluation, or export failure. */
-export class ConfigError extends Error {
-  /** Stable diagnostic code. */
+export class ConfigError extends Data.TaggedError('ConfigError')<{
   readonly code: string
-
+  readonly message: string
+}> {
   constructor(code: string, message: string) {
-    super(message)
-    this.name = 'ConfigError'
-    this.code = code
+    super({ code, message })
   }
 }
 
@@ -136,13 +135,15 @@ export function unsupportedConfigExtensionError(configPath: string): ConfigError
 }
 
 /**
- * Reject a config path whose extension eedsh does not evaluate.
+ * Check a config path's extension.
  * @param configPath - absolute config path.
- * @throws {ConfigError} with `config.unsupported_extension` for a JavaScript config.
+ * @returns success for a supported path, or `config.unsupported_extension` for a
+ * JavaScript config.
  */
-export function assertSupportedConfigPath(configPath: string): void {
-  if (SUPPORTED_EXTENSIONS.has(extname(configPath))) return
-  throw unsupportedConfigExtensionError(configPath)
+export function validateConfigPath(configPath: string): Result.Result<void, ConfigError> {
+  return SUPPORTED_EXTENSIONS.has(extname(configPath))
+    ? Result.succeed(undefined)
+    : Result.fail(unsupportedConfigExtensionError(configPath))
 }
 
 /**
@@ -155,7 +156,8 @@ export function assertSupportedConfigPath(configPath: string): void {
  * @throws {import('effect/Schema').SchemaError} when the exported plan is invalid.
  */
 export async function loadConfig(configPath: string): Promise<ProfilePlan> {
-  assertSupportedConfigPath(configPath)
+  const pathResult = validateConfigPath(configPath)
+  if (Result.isFailure(pathResult)) throw pathResult.failure
   try {
     await ensureTsxLoader()
   } catch (cause) {

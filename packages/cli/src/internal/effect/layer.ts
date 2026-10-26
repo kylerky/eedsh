@@ -10,7 +10,7 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import { resolveBundleLayers, resolveDshInstallation } from '../../dsh'
 import { posixSyncLock } from '../lock-posix'
 import { win32SyncLock } from '../lock-win32'
-import { DshResolveFailure, PackageInstallFailure } from './errors'
+import { PackageInstallFailure } from './errors'
 import {
   DshInstallation,
   type DshInstallationShape,
@@ -84,19 +84,14 @@ export const pnpmPackageManagerLayer: Layer.Layer<
 /** The pinned DSH installation layer; construction fails when DSH is missing. */
 export const dshInstallationLayer = Layer.effect(
   DshInstallation,
-  Effect.try({
-    try: (): DshInstallationShape => {
-      const info = resolveDshInstallation()
-      return {
-        ...info,
-        resolveBundlePatches: (packageName, profileDir) =>
-          Effect.try({
-            try: () => resolveBundleLayers(packageName, profileDir, info.installAnchor),
-            catch: (cause) => new DshResolveFailure({ packageName, cause }),
-          }),
-      }
-    },
-    catch: (cause) => new DshResolveFailure({ packageName: '@deepseek-ai/dsh', cause }),
+  Effect.gen(function* () {
+    const info = yield* Effect.fromResult(resolveDshInstallation())
+    const shape: DshInstallationShape = {
+      ...info,
+      resolveBundlePatches: (packageName, profileDir) =>
+        Effect.fromResult(resolveBundleLayers(packageName, profileDir, info.installAnchor)),
+    }
+    return shape
   }),
 )
 

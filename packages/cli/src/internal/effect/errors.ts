@@ -28,6 +28,17 @@ export class SyncLocked extends Data.TaggedError('SyncLocked')<{
   readonly lockPath: string
 }> {}
 
+/** Checking the config project could not run. */
+export class CheckFailure extends Data.TaggedError('CheckFailure')<{
+  readonly code: string
+  readonly message: string
+}> {}
+
+/** The DSH launcher could not be started. */
+export class SpawnFailure extends Data.TaggedError('SpawnFailure')<{
+  readonly cause: unknown
+}> {}
+
 /** A DSH package or bundle could not be resolved. */
 export class DshResolveFailure extends Data.TaggedError('DshResolveFailure')<{
   readonly packageName: string

@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { bundle, disable, generated, layer, type ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
+import * as Result from 'effect/Result'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { resolveDshInstallation } from '../../src/dsh'
 import { liveServiceLayer } from '../../src/internal/effect/layer'
@@ -99,7 +100,7 @@ describe('slow Web HMR integration', () => {
     const first = await publish(webPlan(profileName, []))
     expect(first.changed).toBe(true)
 
-    const { binPath } = resolveDshInstallation()
+    const { binPath } = Result.getOrThrow(resolveDshInstallation())
     const child = spawn(
       process.execPath,
       [binPath, '--profile', profileName, '--no-open', '--port', String(port)],

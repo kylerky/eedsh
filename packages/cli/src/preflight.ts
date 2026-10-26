@@ -8,6 +8,7 @@ import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-i
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/config'
 import { Effect, Layer } from 'effect'
+import * as Result from 'effect/Result'
 import * as Predicate from 'effect/Predicate'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
@@ -139,50 +140,67 @@ function fail(message: string, warnings: readonly string[] = []): PreflightFailu
   return new PreflightFailure({ message, warnings: [...warnings] })
 }
 
-function assertNoPlanExpression(value: unknown, layerId: string): void {
+function checkNoPlanExpression(
+  value: unknown,
+  layerId: string,
+): Result.Result<void, PreflightFailure> {
   if (Array.isArray(value)) {
-    value.forEach((item) => {
-      assertNoPlanExpression(item, layerId)
-    })
-    return
+    for (const item of value) {
+      const checked = checkNoPlanExpression(item, layerId)
+      if (Result.isFailure(checked)) return checked
+    }
+    return Result.succeed(undefined)
   }
   const record = asRecord(value)
-  if (record === undefined) return
+  if (record === undefined) return Result.succeed(undefined)
   if ('$eedsh' in record) {
-    throw fail(
-      `generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`,
+    return Result.fail(
+      fail(`generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`),
     )
   }
-  for (const item of Object.values(record)) assertNoPlanExpression(item, layerId)
+  for (const item of Object.values(record)) {
+    const checked = checkNoPlanExpression(item, layerId)
+    if (Result.isFailure(checked)) return checked
+  }
+  return Result.succeed(undefined)
 }
 
 /**
  * Parse the emitted generated layer files back into DSH patch lists.
  * @param generated - the generated bundle.
- * @returns one preflight layer per emitted file, in application order.
- * @throws {PreflightFailure} for malformed content.
+ * @returns one preflight layer per emitted file in application order, or a
+ * preflight failure for malformed content.
  */
-export function parseGeneratedLayers(generated: GeneratedBundle): PreflightLayer[] {
+export function parseGeneratedLayers(
+  generated: GeneratedBundle,
+): Result.Result<PreflightLayer[], PreflightFailure> {
   const files = generated.files.filter((file) => file.path.endsWith('.yml'))
-  return files.map((file, index) => {
+  const layers: PreflightLayer[] = []
+  for (const [index, file] of files.entries()) {
     const id = generated.generation.layers[index]?.id ?? file.path
-    let parsed: unknown
-    try {
-      parsed = yaml.load(file.content, { schema: entryListSchema })
-    } catch (cause) {
-      throw fail(`cannot parse generated layer ${id}: ${String(cause)}`)
+    const parsed = Result.try({
+      try: () => yaml.load(file.content, { schema: entryListSchema }),
+      catch: (cause) => fail(`cannot parse generated layer ${id}: ${String(cause)}`),
+    })
+    if (Result.isFailure(parsed)) return Result.fail(parsed.failure)
+    if (!Array.isArray(parsed.success)) {
+      return Result.fail(
+        fail(`generated layer ${id} must be a top-level YAML array of patch entries`),
+      )
     }
-    if (!Array.isArray(parsed)) {
-      throw fail(`generated layer ${id} must be a top-level YAML array of patch entries`)
-    }
-    for (const item of parsed) {
+    for (const item of parsed.success) {
       if (asRecord(item) === undefined) {
-        throw fail(`generated layer ${id} contains a non-object patch entry`)
+        return Result.fail(fail(`generated layer ${id} contains a non-object patch entry`))
       }
-      assertNoPlanExpression(item, id)
+      const checked = checkNoPlanExpression(item, id)
+      if (Result.isFailure(checked)) return Result.fail(checked.failure)
     }
-    return { label: `generated:${id}`, patches: parsed as Record<string, unknown>[] }
-  })
+    layers.push({
+      label: `generated:${id}`,
+      patches: parsed.success as Record<string, unknown>[],
+    })
+  }
+  return Result.succeed(layers)
 }
 
 function bundleLayers(
@@ -226,10 +244,7 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
       const dsh = yield* DshInstallation
       const check: PreflightShape['check'] = (input) =>
         Effect.gen(function* () {
-          const generatedLayers = yield* Effect.try({
-            try: () => parseGeneratedLayers(input.generated),
-            catch: (cause) => (cause instanceof PreflightFailure ? cause : fail(String(cause))),
-          })
+          const generatedLayers = yield* Effect.fromResult(parseGeneratedLayers(input.generated))
           const layers = yield* bundleLayers(input.plan, input.profileDir, generatedLayers).pipe(
             Effect.provideService(DshInstallation, dsh),
           )

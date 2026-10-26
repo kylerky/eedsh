@@ -8,6 +8,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
 import { ConfigError } from './config'
 import { EXIT_FAILURE } from './exit'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
@@ -58,18 +59,19 @@ export function findTsconfigPath(configPath: string): string | undefined {
  */
 export function resolveTypeScript(configDir: string): TypeScriptInstallation | undefined {
   const require = createRequire(join(configDir, 'eedsh-check.cjs'))
-  let manifestPath: string
-  try {
-    manifestPath = require.resolve('typescript/package.json')
-  } catch {
-    return undefined
-  }
-  let manifest: { version?: unknown; bin?: unknown }
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as typeof manifest
-  } catch {
-    return undefined
-  }
+  const resolved = Result.try({
+    try: () => require.resolve('typescript/package.json'),
+    catch: () => undefined,
+  })
+  if (Result.isFailure(resolved)) return undefined
+  const manifestPath = resolved.success
+  const parsed = Result.try({
+    try: () =>
+      JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: unknown; bin?: unknown },
+    catch: () => undefined,
+  })
+  if (Result.isFailure(parsed)) return undefined
+  const manifest = parsed.success
   const bin = manifest.bin
   const binRecord = Predicate.isObject(bin) ? (bin as Record<string, unknown>) : undefined
   const relative = typeof bin === 'string' ? bin : binRecord?.tsc
@@ -85,11 +87,8 @@ function formatCommandLine(parts: readonly string[]): string {
 }
 
 function samePath(left: string, right: string): boolean {
-  try {
-    return realpathSync(left) === realpathSync(right)
-  } catch {
-    return resolve(left) === resolve(right)
-  }
+  const real = Result.try(() => realpathSync(left) === realpathSync(right))
+  return Result.isSuccess(real) ? real.success : resolve(left) === resolve(right)
 }
 
 function listedFiles(stdout: string, configPath: string): boolean {
