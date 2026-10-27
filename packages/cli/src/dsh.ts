@@ -72,8 +72,9 @@ export function resolveBundleLayers(
     catch: (cause) => new DshResolveFailure({ packageName, cause }),
   })
   if (Result.isFailure(resolved)) return Result.fail(resolved.failure)
-  const { packageDir, bundle } = resolved.success
-  if (bundle === undefined) {
+  const { packageDir } = resolved.success
+  const bundle = Option.fromUndefinedOr(resolved.success.bundle)
+  if (Option.isNone(bundle)) {
     return Result.fail(
       new DshResolveFailure({
         packageName,
@@ -83,7 +84,7 @@ export function resolveBundleLayers(
   }
   return Result.try({
     try: () => {
-      const files = bundlePatchFiles(bundle as Parameters<typeof bundlePatchFiles>[0])
+      const files = bundlePatchFiles(bundle.value as Parameters<typeof bundlePatchFiles>[0])
       return files.flatMap((file) => loadOverlayPatches('eedsh', join(packageDir, file))) as Record<
         string,
         unknown

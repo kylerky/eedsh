@@ -9,7 +9,7 @@ import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type ProfilePlan, validatePlan } from '@eedsh/config'
-import { Data, Effect } from 'effect'
+import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
@@ -96,27 +96,27 @@ function ensureTsxLoader(): Promise<Result.Result<void, unknown>> {
 /**
  * Find the config file in a directory.
  * @param cwd - directory to search.
- * @returns the absolute config path, or undefined when none exists.
+ * @returns the absolute config path, or None when none exists.
  */
-export function findConfigPath(cwd: string): string | undefined {
+export function findConfigPath(cwd: string): Option.Option<string> {
   for (const name of CONFIG_FILENAMES) {
     const candidate = join(cwd, name)
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) return Option.some(candidate)
   }
-  return undefined
+  return Option.none()
 }
 
 /**
  * Find a JavaScript config that discovery rejects rather than silently skips.
  * @param cwd - directory to search.
- * @returns the rejected absolute config path, or undefined when none exists.
+ * @returns the rejected absolute config path, or None when none exists.
  */
-export function findUnsupportedConfigPath(cwd: string): string | undefined {
+export function findUnsupportedConfigPath(cwd: string): Option.Option<string> {
   for (const name of UNSUPPORTED_CONFIG_FILENAMES) {
     const candidate = join(cwd, name)
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) return Option.some(candidate)
   }
-  return undefined
+  return Option.none()
 }
 
 /**

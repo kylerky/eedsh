@@ -491,30 +491,30 @@ function runBoot(
 }
 
 function resolveConfigPath(
-  requested: string | undefined,
+  requested: Option.Option<string>,
   runtime: CommandRuntime,
-): string | undefined {
-  if (requested !== undefined) {
-    const configPath = resolve(runtime.cwd, requested)
+): Option.Option<string> {
+  if (Option.isSome(requested)) {
+    const configPath = resolve(runtime.cwd, requested.value)
     const valid = validateConfigPath(configPath)
     if (Result.isFailure(valid)) {
       report(runtime.stderr, valid.failure)
-      return undefined
+      return Option.none()
     }
-    return configPath
+    return Option.some(configPath)
   }
 
   const discovered = findConfigPath(runtime.cwd)
-  if (discovered !== undefined) return discovered
+  if (Option.isSome(discovered)) return discovered
 
   const rejected = findUnsupportedConfigPath(runtime.cwd)
-  if (rejected !== undefined) {
-    report(runtime.stderr, unsupportedConfigExtensionError(rejected))
-    return undefined
+  if (Option.isSome(rejected)) {
+    report(runtime.stderr, unsupportedConfigExtensionError(rejected.value))
+    return Option.none()
   }
 
   runtime.stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${runtime.cwd}`)
-  return undefined
+  return Option.none()
 }
 
 function loadPlan(
@@ -525,7 +525,7 @@ function loadPlan(
 }
 
 interface SyncCommandInput {
-  configPath: string | undefined
+  configPath: Option.Option<string>
   strict: boolean
   watch: boolean
   explain: boolean
@@ -539,9 +539,9 @@ function runSyncCommand(
   return Effect.gen(function* () {
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)
-    if (configPath === undefined) return EXIT_FAILURE
-    const plan = yield* loadPlan(configPath, runtime)
-    const context: CommandContext = { ...runtime, configPath, plan }
+    if (Option.isNone(configPath)) return EXIT_FAILURE
+    const plan = yield* loadPlan(configPath.value, runtime)
+    const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
     if (input.watch) {
       yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
       return EXIT_OK
@@ -555,7 +555,7 @@ function runSyncCommand(
 }
 
 interface RunCommandInput {
-  configPath: string | undefined
+  configPath: Option.Option<string>
   noSync: boolean
   dshArgs: readonly string[]
 }
@@ -570,9 +570,9 @@ function runRunCommand(
   return Effect.gen(function* () {
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
-    if (configPath === undefined) return EXIT_FAILURE
-    const plan = yield* loadPlan(configPath, runtime)
-    const context: CommandContext = { ...runtime, configPath, plan }
+    if (Option.isNone(configPath)) return EXIT_FAILURE
+    const plan = yield* loadPlan(configPath.value, runtime)
+    const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
     if (!input.noSync) {
       const result = yield* syncOnce(context, false, false, false)
       yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
@@ -582,7 +582,7 @@ function runRunCommand(
 }
 
 interface CheckCommandInput {
-  configPath: string | undefined
+  configPath: Option.Option<string>
   tscArgs: readonly string[]
 }
 
@@ -593,9 +593,9 @@ function runCheckCommand(
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
     const configPath = resolveConfigPath(input.configPath, runtime)
-    if (configPath === undefined) return EXIT_FAILURE
+    if (Option.isNone(configPath)) return EXIT_FAILURE
     return yield* runCheck({
-      configPath,
+      configPath: configPath.value,
       tscArgs: input.tscArgs,
       stdout: runtime.stdout,
       stderr: runtime.stderr,
@@ -607,8 +607,8 @@ function runCheckCommand(
 }
 
 interface DoctorCommandInput {
-  configPath: string | undefined
-  profile: string | undefined
+  configPath: Option.Option<string>
+  profile: Option.Option<string>
   strict: boolean
 }
 
@@ -619,23 +619,23 @@ function runDoctorCommand(
 ): Effect.Effect<number, ConfigError | Schema.SchemaError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
-    if (input.profile !== undefined && input.configPath !== undefined) {
+    if (Option.isSome(input.profile) && Option.isSome(input.configPath)) {
       runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
     let profileName: string
-    if (input.profile !== undefined) {
-      if (!isSafeProfileName(input.profile)) {
+    if (Option.isSome(input.profile)) {
+      if (!isSafeProfileName(input.profile.value)) {
         runtime.stderr(
-          `eedsh: profile name "${input.profile}" is not usable as a profile directory`,
+          `eedsh: profile name "${input.profile.value}" is not usable as a profile directory`,
         )
         return EXIT_USAGE
       }
-      profileName = input.profile
+      profileName = input.profile.value
     } else {
       const configPath = resolveConfigPath(input.configPath, runtime)
-      if (configPath === undefined) return EXIT_FAILURE
-      const plan = yield* loadPlan(configPath, runtime)
+      if (Option.isNone(configPath)) return EXIT_FAILURE
+      const plan = yield* loadPlan(configPath.value, runtime)
       profileName = plan.profile.name
     }
     const result = yield* doctor({ profileDir: profileDirForName(profileName, runtime.env) })
@@ -733,7 +733,7 @@ export async function runEedsh(
       Effect.gen(function* () {
         exitCode = yield* runSyncCommand(
           {
-            configPath: Option.getOrUndefined(parsed.config),
+            configPath: parsed.config,
             strict: parsed.strict,
             watch: parsed.watch,
             explain: parsed.explain,
@@ -748,7 +748,7 @@ export async function runEedsh(
     Effect.gen(function* () {
       exitCode = yield* runRunCommand(
         {
-          configPath: Option.getOrUndefined(parsed.config),
+          configPath: parsed.config,
           noSync: parsed.noSync,
           dshArgs: split.passthrough,
         },
@@ -761,7 +761,7 @@ export async function runEedsh(
     Effect.gen(function* () {
       exitCode = yield* runCheckCommand(
         {
-          configPath: Option.getOrUndefined(parsed.config),
+          configPath: parsed.config,
           tscArgs: split.passthrough,
         },
         runtime,
@@ -776,8 +776,8 @@ export async function runEedsh(
       Effect.gen(function* () {
         const program = runDoctorCommand(
           {
-            configPath: Option.getOrUndefined(parsed.config),
-            profile: Option.getOrUndefined(parsed.profile),
+            configPath: parsed.config,
+            profile: parsed.profile,
             strict: parsed.strict,
           },
           runtime,

@@ -19,10 +19,10 @@ const TSCONFIG_FILENAME = 'tsconfig.json'
 
 const packageBinSchema = Schema.Union([Schema.String, Schema.Struct({ tsc: Schema.String })])
 
-function readPackageBin(value: unknown): string | undefined {
+function readPackageBin(value: unknown): Option.Option<string> {
   const decoded = Schema.decodeUnknownOption(packageBinSchema)(value)
-  if (Option.isNone(decoded)) return undefined
-  return typeof decoded.value === 'string' ? decoded.value : decoded.value.tsc
+  if (Option.isNone(decoded)) return Option.none()
+  return Option.some(typeof decoded.value === 'string' ? decoded.value : decoded.value.tsc)
 }
 
 /** The project's TypeScript installation. */
@@ -49,15 +49,15 @@ export interface CheckInput {
 /**
  * Find the nearest tsconfig.json at or above the config file.
  * @param configPath - absolute config path.
- * @returns the absolute tsconfig path, or undefined when there is none.
+ * @returns the absolute tsconfig path, or None when there is none.
  */
-export function findTsconfigPath(configPath: string): string | undefined {
+export function findTsconfigPath(configPath: string): Option.Option<string> {
   let dir = dirname(configPath)
   for (;;) {
     const candidate = join(dir, TSCONFIG_FILENAME)
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) return Option.some(candidate)
     const parent = dirname(dir)
-    if (parent === dir) return undefined
+    if (parent === dir) return Option.none()
     dir = parent
   }
 }
@@ -65,29 +65,29 @@ export function findTsconfigPath(configPath: string): string | undefined {
 /**
  * Resolve the TypeScript package from the config's project.
  * @param configDir - directory the config lives in.
- * @returns the installation's version and tsc path, or undefined when unresolved.
+ * @returns the installation's version and tsc path, or None when unresolved.
  */
-export function resolveTypeScript(configDir: string): TypeScriptInstallation | undefined {
+export function resolveTypeScript(configDir: string): Option.Option<TypeScriptInstallation> {
   const require = createRequire(join(configDir, 'eedsh-check.cjs'))
   const resolved = Result.try({
     try: () => require.resolve('typescript/package.json'),
     catch: () => undefined,
   })
-  if (Result.isFailure(resolved)) return undefined
+  if (Result.isFailure(resolved)) return Option.none()
   const manifestPath = resolved.success
   const parsed = Result.try({
     try: () =>
       JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: unknown; bin?: unknown },
     catch: () => undefined,
   })
-  if (Result.isFailure(parsed)) return undefined
+  if (Result.isFailure(parsed)) return Option.none()
   const manifest = parsed.success
   const relative = readPackageBin(manifest.bin)
-  if (relative === undefined) return undefined
-  return {
+  if (Option.isNone(relative)) return Option.none()
+  return Option.some({
     version: Option.getOrElse(readVersion(manifest.version), () => 'unknown'),
-    binPath: resolve(dirname(manifestPath), relative),
-  }
+    binPath: resolve(dirname(manifestPath), relative.value),
+  })
 }
 
 function formatCommandLine(parts: readonly string[]): string {
@@ -172,7 +172,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
     }
 
     const tsconfigPath = findTsconfigPath(input.configPath)
-    if (tsconfigPath === undefined) {
+    if (Option.isNone(tsconfigPath)) {
       return yield* Effect.fail(
         checkFailure(
           'check.tsconfig_missing',
@@ -183,7 +183,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
 
     const configDir = dirname(input.configPath)
     const typescript = resolveTypeScript(configDir)
-    if (typescript === undefined) {
+    if (Option.isNone(typescript)) {
       return yield* Effect.fail(
         checkFailure(
           'check.typescript_missing',
@@ -192,26 +192,26 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
       )
     }
 
-    const args = ['--noEmit', '-p', tsconfigPath, ...input.tscArgs]
-    input.stdout(`eedsh: TypeScript ${typescript.version}`)
-    input.stdout(`eedsh: tsconfig ${tsconfigPath}`)
+    const args = ['--noEmit', '-p', tsconfigPath.value, ...input.tscArgs]
+    input.stdout(`eedsh: TypeScript ${typescript.value.version}`)
+    input.stdout(`eedsh: tsconfig ${tsconfigPath.value}`)
     input.stdout(
-      `eedsh: running ${formatCommandLine([process.execPath, typescript.binPath, ...args])}`,
+      `eedsh: running ${formatCommandLine([process.execPath, typescript.value.binPath, ...args])}`,
     )
 
     const listing = yield* Effect.tryPromise({
       try: () =>
         capture(input, process.execPath, [
-          typescript.binPath,
+          typescript.value.binPath,
           '-p',
-          tsconfigPath,
+          tsconfigPath.value,
           '--listFilesOnly',
         ]),
       catch: (cause) => spawnFailure(process.execPath, cause),
     })
     if (listing.code !== 0) {
       writeLines(input.stderr, listing.stderr)
-      input.stderr(`eedsh: cannot list the project files with ${tsconfigPath}`)
+      input.stderr(`eedsh: cannot list the project files with ${tsconfigPath.value}`)
       return listing.code
     }
     if (!listedFiles(listing.stdout, input.configPath)) {
@@ -224,7 +224,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
     }
 
     const exitCode = yield* Effect.tryPromise({
-      try: () => runInherited(input, process.execPath, [typescript.binPath, ...args]),
+      try: () => runInherited(input, process.execPath, [typescript.value.binPath, ...args]),
       catch: (cause) => spawnFailure(process.execPath, cause),
     })
     if (exitCode === 0) input.stdout('eedsh: check passed')
