@@ -1,5 +1,5 @@
 import { bundle, generated, insert, layer } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { describe, expect, it } from 'vitest'
 import {
@@ -126,7 +126,7 @@ describe('doctor record checks', () => {
     expect(finding(result, 'record')).toMatchObject({
       severity: 'error',
       check: 'record',
-      path: RECORD_PATH,
+      path: Option.some(RECORD_PATH),
     })
     expect(result.errors).toBe(1)
     expect(doctorExitCode(result, false)).toBe(1)
@@ -338,7 +338,11 @@ describe('doctor lockfile checks', () => {
     const h = await published()
     h.fs.files.delete(LOCKFILE_PATH)
     const result = await diagnose(h.fs.fs)
-    expect(finding(result, 'lockfile')).toMatchObject({ severity: 'error', check: 'lockfile' })
+    expect(finding(result, 'lockfile')).toMatchObject({
+      severity: 'error',
+      check: 'lockfile',
+      path: Option.some(LOCKFILE_PATH),
+    })
     expect(finding(result, 'lockfile')?.message).toContain('cannot be verified')
     expect(doctorExitCode(result, false)).toBe(1)
   })
@@ -540,6 +544,22 @@ describe('doctor report and exit status', () => {
     expect(lines[1]?.startsWith('warning: plan:')).toBe(true)
     expect(lines[2]?.startsWith('warning: scaffolding:')).toBe(true)
     expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('omits the location for a finding with no path', () => {
+    const result: DoctorResult = {
+      findings: [
+        {
+          severity: 'error',
+          check: 'record',
+          message: 'boom',
+          path: Option.none(),
+        },
+      ],
+      errors: 1,
+      warnings: 0,
+    }
+    expect(formatDoctorReport(result)).toEqual(['error: record: boom', '1 error, 0 warnings'])
   })
 
   it('exits 0 with warnings unless strict is set', async () => {

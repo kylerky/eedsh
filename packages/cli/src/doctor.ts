@@ -58,7 +58,7 @@ export interface DoctorFinding {
   readonly check: string
   readonly message: string
   /** The affected path, when the finding names one. */
-  readonly path?: string
+  readonly path: Option.Option<string>
 }
 
 /** The complete result of one doctor run. */
@@ -90,21 +90,21 @@ function compareStrings(a: string, b: string): number {
 function compareFindings(a: DoctorFinding, b: DoctorFinding): number {
   if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1
   return compareStrings(
-    `${a.check}\u0000${a.message}\u0000${a.path ?? ''}`,
-    `${b.check}\u0000${b.message}\u0000${b.path ?? ''}`,
+    `${a.check}\u0000${a.message}\u0000${Option.getOrElse(a.path, () => '')}`,
+    `${b.check}\u0000${b.message}\u0000${Option.getOrElse(b.path, () => '')}`,
   )
 }
 
-function errorFinding(check: string, message: string, path?: string): DoctorFinding {
-  return path === undefined
-    ? { severity: 'error', check, message }
-    : { severity: 'error', check, message, path }
+function errorFinding(check: string, message: string, path: Option.Option<string>): DoctorFinding {
+  return { severity: 'error', check, message, path }
 }
 
-function warningFinding(check: string, message: string, path?: string): DoctorFinding {
-  return path === undefined
-    ? { severity: 'warning', check, message }
-    : { severity: 'warning', check, message, path }
+function warningFinding(
+  check: string,
+  message: string,
+  path: Option.Option<string>,
+): DoctorFinding {
+  return { severity: 'warning', check, message, path }
 }
 
 function summarize(findings: DoctorFinding[]): DoctorResult {
@@ -126,7 +126,7 @@ export function formatDoctorReport(result: DoctorResult): string[] {
   const summary = `${plural(result.errors, 'error')}, ${plural(result.warnings, 'warning')}`
   if (result.findings.length === 0) return [`clean: ${summary}`]
   const lines = result.findings.map((finding) => {
-    const location = finding.path === undefined ? '' : ` [${finding.path}]`
+    const location = Option.isNone(finding.path) ? '' : ` [${finding.path.value}]`
     return `${finding.severity}: ${finding.check}: ${finding.message}${location}`
   })
   return [...lines, summary]
@@ -169,7 +169,7 @@ function readRecord(
   fs: FileSystem.FileSystem,
   recordPath: string,
   findings: DoctorFinding[],
-): Effect.Effect<GenerationRecord | undefined> {
+): Effect.Effect<Option.Option<GenerationRecord>> {
   return Effect.gen(function* () {
     const lookup = yield* lookupGenerationRecord(recordPath, fs).pipe(Effect.result)
     if (Result.isFailure(lookup)) {
@@ -177,16 +177,16 @@ function readRecord(
         errorFinding(
           'record',
           `cannot read the generation record: ${messageOf(lookup.failure)}`,
-          recordPath,
+          Option.some(recordPath),
         ),
       )
-      return undefined
+      return Option.none()
     }
-    if (lookup.success._tag === 'valid') return lookup.success.record
+    if (lookup.success._tag === 'valid') return Option.some(lookup.success.record)
     const invalid =
       lookup.success._tag === 'invalid' ? lookup.success : missingGenerationRecord(recordPath)
-    findings.push(errorFinding('record', recordProblem(invalid), recordPath))
-    return undefined
+    findings.push(errorFinding('record', recordProblem(invalid), Option.some(recordPath)))
+    return Option.none()
   })
 }
 
@@ -196,7 +196,7 @@ function readPlan(
   profileDir: string,
   record: GenerationRecord,
   findings: DoctorFinding[],
-): Effect.Effect<ProfilePlan | undefined> {
+): Effect.Effect<Option.Option<ProfilePlan>> {
   return Effect.gen(function* () {
     const path = join(profileDir, GENERATED_DIRNAME, authoritativePlanPath(record.generationId))
     const read = yield* readOptional(fs, path).pipe(Effect.result)
@@ -205,47 +205,55 @@ function readPlan(
         errorFinding(
           'plan',
           `cannot read the authoritative plan: ${messageOf(read.failure)}`,
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     if (Option.isNone(read.success)) {
       findings.push(
         warningFinding(
           'plan',
           'the authoritative plan is missing; run "eedsh sync" to republish it',
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     if (sha256(read.success.value) !== record.planHash) {
       findings.push(
         errorFinding(
           'plan',
           'the authoritative plan does not hash to the recorded plan hash; run "eedsh sync" to republish it',
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     const parsed = parseJson(read.success.value)
     if (Result.isFailure(parsed)) {
       findings.push(
-        errorFinding('plan', `the authoritative plan is not valid JSON: ${parsed.failure}`, path),
+        errorFinding(
+          'plan',
+          `the authoritative plan is not valid JSON: ${parsed.failure}`,
+          Option.some(path),
+        ),
       )
-      return undefined
+      return Option.none()
     }
     const decoded = Schema.decodeUnknownResult(ProfilePlanSchema)(parsed.success)
     if (Result.isFailure(decoded)) {
       const detail = decoded.failure.message.split('\n')[0] ?? decoded.failure.message
       findings.push(
-        errorFinding('plan', `the authoritative plan is not a valid profile plan: ${detail}`, path),
+        errorFinding(
+          'plan',
+          `the authoritative plan is not a valid profile plan: ${detail}`,
+          Option.some(path),
+        ),
       )
-      return undefined
+      return Option.none()
     }
-    return decoded.success
+    return Option.some(decoded.success)
   })
 }
 
@@ -262,7 +270,7 @@ function checkConsistency(
       errorFinding(
         'consistency',
         `the record's managed bundle order does not match the plan (record: ${record.bundles.join(', ')}; plan: ${expectedBundles.join(', ')}); run "eedsh sync"`,
-        recordPath,
+        Option.some(recordPath),
       ),
     )
   }
@@ -275,7 +283,7 @@ function checkConsistency(
       errorFinding(
         'consistency',
         `the record's managed package specifications do not match the plan: ${specMismatches.join(', ')}; run "eedsh sync"`,
-        recordPath,
+        Option.some(recordPath),
       ),
     )
   }
@@ -297,7 +305,7 @@ function checkConsistency(
       errorFinding(
         'consistency',
         `the record's managed packages differ from the plan's (${parts.join('; ')}); run "eedsh sync"`,
-        recordPath,
+        Option.some(recordPath),
       ),
     )
   }
@@ -315,7 +323,11 @@ function checkMirror(
     const read = yield* readOptional(fs, path).pipe(Effect.result)
     if (Result.isFailure(read)) {
       findings.push(
-        warningFinding('mirror', `cannot read the plan mirror: ${messageOf(read.failure)}`, path),
+        warningFinding(
+          'mirror',
+          `cannot read the plan mirror: ${messageOf(read.failure)}`,
+          Option.some(path),
+        ),
       )
       return
     }
@@ -324,7 +336,7 @@ function checkMirror(
         warningFinding(
           'mirror',
           'the plan mirror is missing; run "eedsh sync" to rewrite it',
-          path,
+          Option.some(path),
         ),
       )
       return
@@ -335,7 +347,7 @@ function checkMirror(
         warningFinding(
           'mirror',
           'the plan mirror is not valid JSON; run "eedsh sync" to rewrite it',
-          path,
+          Option.some(path),
         ),
       )
       return
@@ -345,7 +357,7 @@ function checkMirror(
         warningFinding(
           'mirror',
           'the plan mirror does not match the authoritative plan; run "eedsh sync" to rewrite it',
-          path,
+          Option.some(path),
         ),
       )
     }
@@ -367,14 +379,18 @@ function checkManifest(
         errorFinding(
           'manifest',
           `cannot read the profile manifest: ${messageOf(read.failure)}`,
-          path,
+          Option.some(path),
         ),
       )
       return
     }
     if (Option.isNone(read.success)) {
       findings.push(
-        errorFinding('manifest', 'the profile manifest is missing; run "eedsh sync"', path),
+        errorFinding(
+          'manifest',
+          'the profile manifest is missing; run "eedsh sync"',
+          Option.some(path),
+        ),
       )
       return
     }
@@ -387,7 +403,7 @@ function checkManifest(
         errorFinding(
           'manifest',
           'the profile manifest is not a JSON object; run "eedsh sync"',
-          path,
+          Option.some(path),
         ),
       )
       return
@@ -403,7 +419,7 @@ function checkManifest(
         errorFinding(
           'manifest',
           `managed bundles must start with ${record.bundles.join(', ')} in recorded order; run "eedsh sync"`,
-          path,
+          Option.some(path),
         ),
       )
     }
@@ -416,7 +432,7 @@ function checkManifest(
         errorFinding(
           'manifest',
           `managed package ${name} must be declared as ${spec} in dependencies${found === undefined ? '' : ` (found ${found})`}; run "eedsh sync"`,
-          path,
+          Option.some(path),
         ),
       )
     }
@@ -430,7 +446,7 @@ function checkManifest(
         warningFinding(
           'dependencies',
           `${section} is not a record of package specifications; eedsh sync leaves it unchanged`,
-          path,
+          Option.some(path),
         ),
       )
     }
@@ -439,7 +455,7 @@ function checkManifest(
         conflict.field === 'devDependencies' || conflict.field === 'optionalDependencies'
           ? `managed package ${conflict.name} is also declared in ${conflict.field}; run "eedsh sync" to remove it`
           : `managed package ${conflict.name} is also declared in ${conflict.field}; the resolved version may differ`
-      findings.push(warningFinding('dependencies', message, path))
+      findings.push(warningFinding('dependencies', message, Option.some(path)))
     }
   })
 }
@@ -458,7 +474,7 @@ function checkScaffolding(
         warningFinding(
           'scaffolding',
           `the ${label} (${file}) is missing; run "eedsh sync" to recreate it`,
-          path,
+          Option.some(path),
         ),
       )
     }
@@ -480,15 +496,19 @@ function checkLockfile(
   profileDir: string,
   record: GenerationRecord,
   findings: DoctorFinding[],
-): Effect.Effect<LockfileDependencies | undefined> {
+): Effect.Effect<Option.Option<LockfileDependencies>> {
   return Effect.gen(function* () {
     const path = join(profileDir, 'pnpm-lock.yaml')
     const read = yield* readOptional(fs, path).pipe(Effect.result)
     if (Result.isFailure(read)) {
       findings.push(
-        errorFinding('lockfile', `cannot read pnpm-lock.yaml: ${messageOf(read.failure)}`, path),
+        errorFinding(
+          'lockfile',
+          `cannot read pnpm-lock.yaml: ${messageOf(read.failure)}`,
+          Option.some(path),
+        ),
       )
-      return undefined
+      return Option.none()
     }
     const text = read.success
     if (Option.isNone(text)) {
@@ -496,10 +516,10 @@ function checkLockfile(
         errorFinding(
           'lockfile',
           'there is no pnpm-lock.yaml, so the installed state cannot be verified; run "eedsh sync"',
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     const parsed = yield* Effect.try({
       try: () => yaml.load(text.value) as unknown,
@@ -507,14 +527,20 @@ function checkLockfile(
     }).pipe(Effect.result)
     if (Result.isFailure(parsed)) {
       findings.push(
-        errorFinding('lockfile', `cannot parse pnpm-lock.yaml: ${parsed.failure}`, path),
+        errorFinding(
+          'lockfile',
+          `cannot parse pnpm-lock.yaml: ${parsed.failure}`,
+          Option.some(path),
+        ),
       )
-      return undefined
+      return Option.none()
     }
     const decoded = Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
     if (Option.isNone(decoded)) {
-      findings.push(errorFinding('lockfile', 'the lockfile is not a YAML object', path))
-      return undefined
+      findings.push(
+        errorFinding('lockfile', 'the lockfile is not a YAML object', Option.some(path)),
+      )
+      return Option.none()
     }
     const lockfile = { ...decoded.value }
     const version = String(lockfile.lockfileVersion ?? '')
@@ -523,10 +549,10 @@ function checkLockfile(
         errorFinding(
           'lockfile',
           `unsupported lockfile version ${version === '' ? '(missing)' : version}; the installed state cannot be verified`,
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     const importers = readJsonRecord(lockfile.importers)
     const names = Object.keys(importers)
@@ -538,10 +564,10 @@ function checkLockfile(
         errorFinding(
           'lockfile',
           'the lockfile has no root importer, so the installed state cannot be verified; run "eedsh sync"',
-          path,
+          Option.some(path),
         ),
       )
-      return undefined
+      return Option.none()
     }
     const dependencies = readJsonRecord(importer.value.dependencies)
     const entries = new Map<string, LockfileEntry>()
@@ -556,7 +582,7 @@ function checkLockfile(
           errorFinding(
             'lockfile',
             `managed package ${name} is missing from the lockfile root importer; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
         continue
@@ -566,7 +592,7 @@ function checkLockfile(
           warningFinding(
             'lockfile',
             `the lockfile specifier "${entry.specifier.value}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
-            path,
+            Option.some(path),
           ),
         )
       }
@@ -577,7 +603,7 @@ function checkLockfile(
           errorFinding(
             'lockfile',
             `the lockfile has no resolved version for ${name}; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
         continue
@@ -588,7 +614,7 @@ function checkLockfile(
           errorFinding(
             'lockfile',
             `the resolved version ${resolved.value} of ${name} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
       } else if (matches === undefined) {
@@ -596,12 +622,12 @@ function checkLockfile(
           errorFinding(
             'lockfile',
             `the lockfile version ${resolved.value} of ${name} is not a semantic version; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
       }
     }
-    return entries
+    return Option.some(entries)
   })
 }
 
@@ -610,7 +636,7 @@ function checkInstalled(
   fs: FileSystem.FileSystem,
   profileDir: string,
   record: GenerationRecord,
-  lockfile: LockfileDependencies | undefined,
+  lockfile: Option.Option<LockfileDependencies>,
   findings: DoctorFinding[],
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
@@ -622,7 +648,7 @@ function checkInstalled(
           errorFinding(
             'installed',
             `cannot read the installed package ${name}: ${messageOf(read.failure)}`,
-            path,
+            Option.some(path),
           ),
         )
         continue
@@ -632,7 +658,7 @@ function checkInstalled(
           errorFinding(
             'installed',
             `managed package ${name} is not installed; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
         continue
@@ -646,21 +672,23 @@ function checkInstalled(
           errorFinding(
             'installed',
             `the installed package ${name} has no readable version; reinstall it`,
-            path,
+            Option.some(path),
           ),
         )
         continue
       }
       const installed = decoded.value.version
-      const lockVersion = Option.flatMap(Option.fromUndefinedOr(lockfile?.get(name)), (entry) =>
-        Option.flatMap(entry.version, resolvedVersion),
+      const lockVersion = Option.flatMap(lockfile, (dependencies) =>
+        Option.flatMap(Option.fromUndefinedOr(dependencies.get(name)), (entry) =>
+          Option.flatMap(entry.version, resolvedVersion),
+        ),
       )
       if (Option.isSome(lockVersion) && lockVersion.value !== installed) {
         findings.push(
           errorFinding(
             'installed',
             `installed ${name} version ${installed} differs from the lockfile version ${lockVersion.value}; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
       }
@@ -671,7 +699,7 @@ function checkInstalled(
           errorFinding(
             'installed',
             `installed ${name} version ${installed} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
-            path,
+            Option.some(path),
           ),
         )
       } else if (matches === undefined) {
@@ -679,7 +707,7 @@ function checkInstalled(
           errorFinding(
             'installed',
             `installed ${name} version ${installed} is not a semantic version; reinstall it`,
-            path,
+            Option.some(path),
           ),
         )
       }
@@ -705,7 +733,7 @@ function checkSnapshot(
       errorFinding(
         'snapshot',
         'the profile changed during diagnosis; rerun "eedsh doctor"',
-        recordPath,
+        Option.some(recordPath),
       ),
     )
   })
@@ -728,7 +756,7 @@ export function doctor(
         errorFinding(
           'profile',
           'the profile directory does not exist; run "eedsh sync" to create it',
-          options.profileDir,
+          Option.some(options.profileDir),
         ),
       )
       return summarize(findings)
@@ -736,18 +764,18 @@ export function doctor(
 
     const recordPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
     const record = yield* readRecord(fs, recordPath, findings)
-    if (record === undefined) return summarize(findings)
+    if (Option.isNone(record)) return summarize(findings)
 
-    const plan = yield* readPlan(fs, options.profileDir, record, findings)
-    if (plan !== undefined) {
-      checkConsistency(record, plan, recordPath, findings)
-      yield* checkMirror(fs, options.profileDir, plan, findings)
+    const plan = yield* readPlan(fs, options.profileDir, record.value, findings)
+    if (Option.isSome(plan)) {
+      checkConsistency(record.value, plan.value, recordPath, findings)
+      yield* checkMirror(fs, options.profileDir, plan.value, findings)
     }
-    yield* checkManifest(fs, options.profileDir, record, findings)
+    yield* checkManifest(fs, options.profileDir, record.value, findings)
     yield* checkScaffolding(fs, options.profileDir, findings)
-    const lockfile = yield* checkLockfile(fs, options.profileDir, record, findings)
-    yield* checkInstalled(fs, options.profileDir, record, lockfile, findings)
-    yield* checkSnapshot(fs, recordPath, record, findings)
+    const lockfile = yield* checkLockfile(fs, options.profileDir, record.value, findings)
+    yield* checkInstalled(fs, options.profileDir, record.value, lockfile, findings)
+    yield* checkSnapshot(fs, recordPath, record.value, findings)
     return summarize(findings)
   })
 }
