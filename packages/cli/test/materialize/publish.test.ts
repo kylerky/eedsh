@@ -1,5 +1,5 @@
 import { bundle, generated, insert, layer } from '@eedsh/config'
-import { Effect, Exit, Layer } from 'effect'
+import { Effect, Exit, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import { describe, expect, it } from 'vitest'
@@ -40,6 +40,8 @@ function fixture() {
   const reconciled = reconcileManifest({
     profileName: 'work',
     plan,
+    manifest: Option.none(),
+    previous: Option.none(),
     runtimeSpec: RUNTIME_SPEC,
     generatedSpec: GENERATED_SPEC,
   })
@@ -136,7 +138,7 @@ async function publish(options: PublishOptions = {}) {
       profileDir: PROFILE_DIR,
       manifest: reconciled.manifest,
       generated: bundleValue,
-      previousManifest: { name: 'initial', private: true },
+      previousManifest: Option.some({ name: 'initial', private: true }),
       strict: false,
       explain: false,
       notices: [],

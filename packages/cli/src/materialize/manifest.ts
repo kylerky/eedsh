@@ -19,9 +19,9 @@ export interface ReconcileManifestInput {
   profileName: string
   plan: ProfilePlan
   /** The existing profile manifest, when the profile already exists. */
-  manifest?: Record<string, unknown> | undefined
+  manifest: Option.Option<Record<string, unknown>>
   /** The previous generation's managed sets, when one was published. */
-  previous?: PreviousGeneration | undefined
+  previous: Option.Option<PreviousGeneration>
   /** Dependency specification for `@eedsh/runtime`. */
   runtimeSpec: string
   /** Dependency specification for `@eedsh/generated`. */
@@ -65,13 +65,19 @@ export function managedBundleOrder(plan: ProfilePlan): string[] {
   return order
 }
 
+/** Read one top-level manifest field, preserving the absent case. */
+function manifestField(manifest: Option.Option<Record<string, unknown>>, key: string): unknown {
+  if (Option.isNone(manifest)) return undefined
+  return manifest.value[key]
+}
+
 /**
  * Read the bundle list of an existing profile manifest.
  * @param manifest - the profile manifest, when one exists.
  * @returns the listed bundle names, ignoring malformed entries.
  */
-export function readProfileBundles(manifest: Record<string, unknown> | undefined): string[] {
-  const dsh = readRecord(manifest?.dsh)
+export function readProfileBundles(manifest: Option.Option<Record<string, unknown>>): string[] {
+  const dsh = readRecord(manifestField(manifest, 'dsh'))
   return readStringArray(readRecord(dsh.profile).bundles)
 }
 
@@ -88,12 +94,12 @@ export interface ProfileDependencies {
  * @returns the three install-relevant sections, omitting malformed entries.
  */
 export function readProfileDependencies(
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
 ): ProfileDependencies {
   return {
-    dependencies: readStringRecord(manifest?.dependencies),
-    devDependencies: readStringRecord(manifest?.devDependencies),
-    optionalDependencies: readStringRecord(manifest?.optionalDependencies),
+    dependencies: readStringRecord(manifestField(manifest, 'dependencies')),
+    devDependencies: readStringRecord(manifestField(manifest, 'devDependencies')),
+    optionalDependencies: readStringRecord(manifestField(manifest, 'optionalDependencies')),
   }
 }
 
@@ -102,7 +108,9 @@ export function readProfileDependencies(
  * @param manifest - the profile manifest, when one exists.
  * @returns the unique package names, in section order.
  */
-export function declaredDependencyNames(manifest: Record<string, unknown> | undefined): string[] {
+export function declaredDependencyNames(
+  manifest: Option.Option<Record<string, unknown>>,
+): string[] {
   const sections = readProfileDependencies(manifest)
   return [
     ...new Set([
@@ -120,7 +128,7 @@ export function declaredDependencyNames(manifest: Record<string, unknown> | unde
  * @param manifest - the existing profile manifest, when one exists.
  * @returns whether eedsh already owns part of the profile.
  */
-export function hasManagedBundles(manifest: Record<string, unknown> | undefined): boolean {
+export function hasManagedBundles(manifest: Option.Option<Record<string, unknown>>): boolean {
   return readProfileBundles(manifest).some(
     (name) => name === RUNTIME_PACKAGE_NAME || name === GENERATED_PACKAGE_NAME,
   )
@@ -128,23 +136,23 @@ export function hasManagedBundles(manifest: Record<string, unknown> | undefined)
 
 /** Sections reconciliation may rewrite in place. */
 export interface CleanedDependencySections {
-  devDependencies?: Record<string, string>
-  optionalDependencies?: Record<string, string>
+  devDependencies: Option.Option<Record<string, string>>
+  optionalDependencies: Option.Option<Record<string, string>>
 }
 
 function buildManifest(
-  existing: Record<string, unknown> | undefined,
+  existing: Option.Option<Record<string, unknown>>,
   profileName: string,
   bundles: string[],
   dependencies: Record<string, string>,
   sections: CleanedDependencySections,
 ): Record<string, unknown> {
-  const base: Record<string, unknown> = existing
-    ? structuredClone(existing)
-    : { name: `dsh-profile-${profileName}`, private: true }
-  if (sections.devDependencies !== undefined) base.devDependencies = sections.devDependencies
-  if (sections.optionalDependencies !== undefined) {
-    base.optionalDependencies = sections.optionalDependencies
+  const base: Record<string, unknown> = Option.isNone(existing)
+    ? { name: `dsh-profile-${profileName}`, private: true }
+    : structuredClone(existing.value)
+  if (Option.isSome(sections.devDependencies)) base.devDependencies = sections.devDependencies.value
+  if (Option.isSome(sections.optionalDependencies)) {
+    base.optionalDependencies = sections.optionalDependencies.value
   }
   const dsh = readRecord(base.dsh)
   return {
@@ -170,7 +178,7 @@ function reconcileBundles(input: ReconcileManifestInput): {
 } {
   const managedBundles = managedBundleOrder(input.plan)
   const seen = new Set(managedBundles)
-  const previousBundles = new Set(input.previous?.bundles ?? [])
+  const previousBundles = new Set(Option.isNone(input.previous) ? [] : input.previous.value.bundles)
   const userBundles: string[] = []
   for (const name of readProfileBundles(input.manifest)) {
     if (seen.has(name) || previousBundles.has(name)) continue
@@ -195,7 +203,9 @@ function reconcileDependencies(
   managedPackages: Record<string, string>,
 ): Record<string, string> {
   const managedNames = new Set(Object.keys(managedPackages))
-  const previousNames = new Set(Object.keys(input.previous?.packages ?? {}))
+  const previousNames = new Set(
+    Option.isNone(input.previous) ? [] : Object.keys(input.previous.value.packages),
+  )
   const userDependencies: Record<string, string> = {}
   for (const [name, spec] of Object.entries(readProfileDependencies(input.manifest).dependencies)) {
     if (managedNames.has(name) || previousNames.has(name)) continue
@@ -246,11 +256,11 @@ function readStrictSection(value: unknown): SectionRead {
 
 /** Read the value a conflict field resolves to, including `pnpm.overrides`. */
 function conflictValue(
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
   field: (typeof CONFLICT_FIELDS)[number],
 ): unknown {
-  if (field !== 'pnpm.overrides') return manifest?.[field]
-  const pnpm = readRecord(manifest?.pnpm)
+  if (field !== 'pnpm.overrides') return manifestField(manifest, field)
+  const pnpm = readRecord(manifestField(manifest, 'pnpm'))
   return pnpm.overrides
 }
 
@@ -263,13 +273,13 @@ function conflictValue(
  * @returns the conflicts and any owned sections that cannot be read.
  */
 export function scanDependencyConflicts(
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
   names: ReadonlySet<string>,
 ): DependencySectionScan {
   const conflicts: DependencyConflict[] = []
   const malformed: (typeof OWNED_SECTIONS)[number][] = []
   for (const section of OWNED_SECTIONS) {
-    const read = readStrictSection(manifest?.[section])
+    const read = readStrictSection(manifestField(manifest, section))
     if (read.kind === 'malformed') {
       malformed.push(section)
       continue
@@ -295,21 +305,24 @@ function reconcileDependencySections(
 ): CleanedDependencySections & { notices: Diagnostic[] } {
   const owned = new Set([
     ...Object.keys(managedPackages),
-    ...Object.keys(input.previous?.packages ?? {}),
+    ...(Option.isNone(input.previous) ? [] : Object.keys(input.previous.value.packages)),
   ])
   const scan = scanDependencyConflicts(input.manifest, owned)
   const entries: { key: string; diagnostic: Diagnostic }[] = []
-  const cleaned: CleanedDependencySections = {}
+  const cleaned: CleanedDependencySections = {
+    devDependencies: Option.none(),
+    optionalDependencies: Option.none(),
+  }
 
   for (const section of OWNED_SECTIONS) {
-    const read = readStrictSection(input.manifest?.[section])
+    const read = readStrictSection(manifestField(input.manifest, section))
     if (read.kind !== 'valid') continue
     const value = { ...read.value }
     for (const name of Object.keys(value)) {
       if (owned.has(name)) delete value[name]
     }
-    if (section === 'devDependencies') cleaned.devDependencies = value
-    else cleaned.optionalDependencies = value
+    if (section === 'devDependencies') cleaned.devDependencies = Option.some(value)
+    else cleaned.optionalDependencies = Option.some(value)
   }
 
   for (const section of scan.malformed) {

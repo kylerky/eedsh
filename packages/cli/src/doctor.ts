@@ -210,7 +210,7 @@ function readPlan(
       )
       return undefined
     }
-    if (read.success === undefined) {
+    if (Option.isNone(read.success)) {
       findings.push(
         warningFinding(
           'plan',
@@ -220,7 +220,7 @@ function readPlan(
       )
       return undefined
     }
-    if (sha256(read.success) !== record.planHash) {
+    if (sha256(read.success.value) !== record.planHash) {
       findings.push(
         errorFinding(
           'plan',
@@ -230,7 +230,7 @@ function readPlan(
       )
       return undefined
     }
-    const parsed = parseJson(read.success)
+    const parsed = parseJson(read.success.value)
     if (Result.isFailure(parsed)) {
       findings.push(
         errorFinding('plan', `the authoritative plan is not valid JSON: ${parsed.failure}`, path),
@@ -319,7 +319,7 @@ function checkMirror(
       )
       return
     }
-    if (read.success === undefined) {
+    if (Option.isNone(read.success)) {
       findings.push(
         warningFinding(
           'mirror',
@@ -329,7 +329,7 @@ function checkMirror(
       )
       return
     }
-    const parsed = parseJson(read.success)
+    const parsed = parseJson(read.success.value)
     if (Result.isFailure(parsed)) {
       findings.push(
         warningFinding(
@@ -372,13 +372,13 @@ function checkManifest(
       )
       return
     }
-    if (read.success === undefined) {
+    if (Option.isNone(read.success)) {
       findings.push(
         errorFinding('manifest', 'the profile manifest is missing; run "eedsh sync"', path),
       )
       return
     }
-    const parsed = parseJson(read.success)
+    const parsed = parseJson(read.success.value)
     const decoded = Result.isSuccess(parsed)
       ? Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
       : Option.none()
@@ -394,7 +394,7 @@ function checkManifest(
     }
     const manifest = { ...decoded.value }
 
-    const listed = readProfileBundles(manifest)
+    const listed = readProfileBundles(Option.some(manifest))
     const prefixIntact =
       listed.length >= record.bundles.length &&
       record.bundles.every((name, index) => listed[index] === name)
@@ -408,7 +408,7 @@ function checkManifest(
       )
     }
 
-    const dependencies = readProfileDependencies(manifest).dependencies
+    const dependencies = readProfileDependencies(Option.some(manifest)).dependencies
     for (const [name, spec] of Object.entries(record.packages)) {
       if (dependencies[name] === spec) continue
       const found = dependencies[name]
@@ -421,7 +421,10 @@ function checkManifest(
       )
     }
 
-    const scan = scanDependencyConflicts(manifest, new Set(Object.keys(record.packages)))
+    const scan = scanDependencyConflicts(
+      Option.some(manifest),
+      new Set(Object.keys(record.packages)),
+    )
     for (const section of scan.malformed) {
       findings.push(
         warningFinding(
@@ -488,7 +491,7 @@ function checkLockfile(
       return undefined
     }
     const text = read.success
-    if (text === undefined) {
+    if (Option.isNone(text)) {
       findings.push(
         errorFinding(
           'lockfile',
@@ -499,7 +502,7 @@ function checkLockfile(
       return undefined
     }
     const parsed = yield* Effect.try({
-      try: () => yaml.load(text) as unknown,
+      try: () => yaml.load(text.value) as unknown,
       catch: (cause) => messageOf(cause),
     }).pipe(Effect.result)
     if (Result.isFailure(parsed)) {
@@ -624,7 +627,7 @@ function checkInstalled(
         )
         continue
       }
-      if (read.success === undefined) {
+      if (Option.isNone(read.success)) {
         findings.push(
           errorFinding(
             'installed',
@@ -634,7 +637,7 @@ function checkInstalled(
         )
         continue
       }
-      const parsed = parseJson(read.success)
+      const parsed = parseJson(read.success.value)
       const decoded = Result.isSuccess(parsed)
         ? Schema.decodeUnknownOption(installedManifestSchema)(parsed.success)
         : Option.none()

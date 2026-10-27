@@ -82,9 +82,9 @@ const profileManifestSchema = Schema.Record(Schema.String, Schema.Unknown)
 function readJsonFile(
   fs: FileSystem.FileSystem,
   path: string,
-): Effect.Effect<Record<string, unknown> | undefined, PlatformError.PlatformError> {
+): Effect.Effect<Option.Option<Record<string, unknown>>, PlatformError.PlatformError> {
   return Effect.gen(function* () {
-    if (!(yield* fs.exists(path))) return undefined
+    if (!(yield* fs.exists(path))) return Option.none()
     const text = yield* fs.readFileString(path)
     const parsed = yield* Effect.try({
       try: () => JSON.parse(text) as unknown,
@@ -98,13 +98,13 @@ function readJsonFile(
         }),
     })
     const decoded = Schema.decodeUnknownOption(profileManifestSchema)(parsed)
-    return Option.isSome(decoded) ? { ...decoded.value } : undefined
+    return Option.map(decoded, (value) => ({ ...value }))
   })
 }
 
 /** The ownership baseline and diagnostics a materialization starts from. */
 interface GenerationBaseline {
-  previous: PreviousGeneration | undefined
+  previous: Option.Option<PreviousGeneration>
   notices: Diagnostic[]
 }
 
@@ -115,7 +115,7 @@ interface GenerationBaseline {
 function hasPublishedArtifacts(
   fs: FileSystem.FileSystem,
   profileDir: string,
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
 ): Effect.Effect<boolean, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     if (hasManagedBundles(manifest)) return true
@@ -125,8 +125,10 @@ function hasPublishedArtifacts(
 }
 
 /** Names the live manifest declares that the plan does not manage. */
-function adoptedNames(plan: ProfilePlan, manifest: Record<string, unknown> | undefined): string[] {
-  if (manifest === undefined) return []
+function adoptedNames(
+  plan: ProfilePlan,
+  manifest: Option.Option<Record<string, unknown>>,
+): string[] {
   const managedBundles = new Set(managedBundleOrder(plan))
   const managedPackages = new Set([
     ...Object.keys(plan.packages),
@@ -141,11 +143,11 @@ function adoptedNames(plan: ProfilePlan, manifest: Record<string, unknown> | und
 /** Re-baseline ownership from the current manifest and report what was adopted. */
 function adoptionBaseline(
   plan: ProfilePlan,
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
 ): GenerationBaseline {
   const names = adoptedNames(plan, manifest)
   return {
-    previous: undefined,
+    previous: Option.none(),
     notices: names.length === 0 ? [] : [notice(`adopted ownership of ${names.join(', ')}`)],
   }
 }
@@ -158,18 +160,18 @@ function adoptionBaseline(
 function resolveGenerationBaseline(
   lookup: GenerationLookup,
   options: MaterializeOptions,
-  manifest: Record<string, unknown> | undefined,
+  manifest: Option.Option<Record<string, unknown>>,
   fs: FileSystem.FileSystem,
 ): Effect.Effect<GenerationBaseline, PlatformError.PlatformError | OwnershipRecordInvalid> {
   return Effect.gen(function* () {
-    if (lookup._tag === 'valid') return { previous: lookup.previous, notices: [] }
+    if (lookup._tag === 'valid') return { previous: Option.some(lookup.previous), notices: [] }
     const invalid =
       lookup._tag === 'invalid'
         ? lookup
         : (yield* hasPublishedArtifacts(fs, options.profileDir, manifest))
           ? missingGenerationRecord(join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH))
           : undefined
-    if (invalid === undefined) return { previous: undefined, notices: [] }
+    if (invalid === undefined) return { previous: Option.none(), notices: [] }
     if (options.adoptOwnership === true && invalid.adoptable) {
       return adoptionBaseline(options.plan, manifest)
     }
@@ -243,15 +245,14 @@ export function materialize(
       const existingManifest = yield* readJsonFile(fs, manifestPath)
       const lookup = yield* lookupGenerationRecord(generatedManifestPath, fs)
       const baseline = yield* resolveGenerationBaseline(lookup, options, existingManifest, fs)
-      const previous = baseline.previous
 
       const reconcileInput = {
         profileName: options.plan.profile.name,
         plan: options.plan,
         runtimeSpec: options.runtimeSpec,
         generatedSpec: options.generatedSpec,
-        ...(existingManifest === undefined ? {} : { manifest: existingManifest }),
-        ...(previous === undefined ? {} : { previous }),
+        manifest: existingManifest,
+        previous: baseline.previous,
       }
       const reconciled = reconcileManifest(reconcileInput)
       const generated = buildGeneratedBundle({
@@ -263,10 +264,10 @@ export function materialize(
       })
 
       const unchanged =
-        existingManifest !== undefined &&
+        Option.isSome(existingManifest) &&
         lookup._tag === 'valid' &&
         lookup.record.generationId === generated.generationId &&
-        canonicalJson(existingManifest) === canonicalJson(reconciled.manifest) &&
+        canonicalJson(existingManifest.value) === canonicalJson(reconciled.manifest) &&
         (yield* authoritativePlanIntact(fs, options.profileDir, generated)) &&
         (yield* planMirrorIntact(fs, options.profileDir, generated))
 
@@ -296,7 +297,7 @@ export function materialize(
         changed: true,
         warnings: published.warnings,
         notices: [...baseline.notices, ...published.notices],
-        createdProfile: existingManifest === undefined,
+        createdProfile: Option.isNone(existingManifest),
       }
     }),
   )

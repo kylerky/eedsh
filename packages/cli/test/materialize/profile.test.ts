@@ -1,5 +1,5 @@
 import { bundle, canonicalJson, generated, type PlanBundle, type ProfilePlan } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   managedBundleOrder,
@@ -28,9 +28,10 @@ function reconcile(
   return reconcileManifest({
     profileName: 'work',
     plan: value,
+    manifest: Option.fromUndefinedOr(options.manifest),
+    previous: Option.fromUndefinedOr(options.previous),
     runtimeSpec,
     generatedSpec,
-    ...options,
   })
 }
 
@@ -67,40 +68,48 @@ describe('managed bundle order', () => {
 
 describe('tolerant profile readers', () => {
   it('reads no bundles when the dsh or profile section is missing or malformed', () => {
-    expect(readProfileBundles(undefined)).toEqual([])
-    expect(readProfileBundles({})).toEqual([])
-    expect(readProfileBundles({ dsh: null })).toEqual([])
-    expect(readProfileBundles({ dsh: { profile: 'not-a-record' } })).toEqual([])
-    expect(readProfileBundles({ dsh: { profile: { bundles: 'not-an-array' } } })).toEqual([])
+    expect(readProfileBundles(Option.none())).toEqual([])
+    expect(readProfileBundles(Option.some({}))).toEqual([])
+    expect(readProfileBundles(Option.some({ dsh: null }))).toEqual([])
+    expect(readProfileBundles(Option.some({ dsh: { profile: 'not-a-record' } }))).toEqual([])
+    expect(
+      readProfileBundles(Option.some({ dsh: { profile: { bundles: 'not-an-array' } } })),
+    ).toEqual([])
   })
 
   it('keeps string bundles and drops invalid siblings', () => {
     expect(
-      readProfileBundles({
-        dsh: { profile: { bundles: [BUNDLE, 1, null, '@edsh/adapted-ptc', ''] } },
-      }),
+      readProfileBundles(
+        Option.some({
+          dsh: { profile: { bundles: [BUNDLE, 1, null, '@edsh/adapted-ptc', ''] } },
+        }),
+      ),
     ).toEqual([BUNDLE, '@edsh/adapted-ptc', ''])
   })
 
   it('reads empty dependency sections from a missing or malformed manifest', () => {
     const empty = { dependencies: {}, devDependencies: {}, optionalDependencies: {} }
-    expect(readProfileDependencies(undefined)).toEqual(empty)
+    expect(readProfileDependencies(Option.none())).toEqual(empty)
     expect(
-      readProfileDependencies({
-        dependencies: null,
-        devDependencies: ['not-a-record'],
-        optionalDependencies: 'not-a-record',
-      }),
+      readProfileDependencies(
+        Option.some({
+          dependencies: null,
+          devDependencies: ['not-a-record'],
+          optionalDependencies: 'not-a-record',
+        }),
+      ),
     ).toEqual(empty)
   })
 
   it('keeps string dependencies and drops invalid siblings', () => {
     expect(
-      readProfileDependencies({
-        dependencies: { good: '1.0.0', bad: 1, nil: null, empty: '', nested: {} },
-        devDependencies: { tool: '^2.0.0', flag: false },
-        optionalDependencies: { optional: '3.0.0', list: [] },
-      }),
+      readProfileDependencies(
+        Option.some({
+          dependencies: { good: '1.0.0', bad: 1, nil: null, empty: '', nested: {} },
+          devDependencies: { tool: '^2.0.0', flag: false },
+          optionalDependencies: { optional: '3.0.0', list: [] },
+        }),
+      ),
     ).toEqual({
       dependencies: { good: '1.0.0', empty: '' },
       devDependencies: { tool: '^2.0.0' },
@@ -109,8 +118,8 @@ describe('tolerant profile readers', () => {
   })
 
   it('treats empty records as empty sections', () => {
-    expect(readProfileBundles({ dsh: { profile: { bundles: [] } } })).toEqual([])
-    expect(readProfileDependencies({ dependencies: {} })).toEqual({
+    expect(readProfileBundles(Option.some({ dsh: { profile: { bundles: [] } } }))).toEqual([])
+    expect(readProfileDependencies(Option.some({ dependencies: {} }))).toEqual({
       dependencies: {},
       devDependencies: {},
       optionalDependencies: {},

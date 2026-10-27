@@ -7,7 +7,7 @@
  */
 import { dirname, join } from 'node:path'
 import { canonicalJson, type ProfilePlan } from '@eedsh/config'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import { writeFileAtomic } from '../internal/atomic-write'
@@ -32,7 +32,7 @@ export interface PublishProfileInput {
   manifest: Record<string, unknown>
   generated: GeneratedBundle
   /** The profile manifest as it was before this run, when it existed. */
-  previousManifest: Record<string, unknown> | undefined
+  previousManifest: Option.Option<Record<string, unknown>>
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
@@ -53,9 +53,9 @@ interface ProfileSnapshot {
   manifestPath: string
   lockfilePath: string
   mirrorPath: string
-  manifestContent: string | undefined
-  lockfileContent: string | undefined
-  mirrorContent: string | undefined
+  manifestContent: Option.Option<string>
+  lockfileContent: Option.Option<string>
+  mirrorContent: Option.Option<string>
 }
 
 /** Write profile scaffolding, generated layers, and the authoritative plan. */
@@ -108,12 +108,12 @@ function snapshotProfileFiles(
 
 /** Whether publication changes any dependency specification. */
 function profileDependenciesChanged(
-  previousManifest: Record<string, unknown> | undefined,
+  previousManifest: Option.Option<Record<string, unknown>>,
   manifest: Record<string, unknown>,
 ): boolean {
   return (
     canonicalJson(readProfileDependencies(previousManifest)) !==
-    canonicalJson(readProfileDependencies(manifest))
+    canonicalJson(readProfileDependencies(Option.some(manifest)))
   )
 }
 
@@ -130,11 +130,10 @@ function writeProfileManifest(
 function restoreFile(
   fs: FileSystem.FileSystem,
   path: string,
-  content: string | undefined,
+  content: Option.Option<string>,
 ): Effect.Effect<void, PlatformError.PlatformError> {
-  return content === undefined
-    ? fs.remove(path, { force: true })
-    : writeFileAtomic(fs, path, content)
+  if (Option.isNone(content)) return fs.remove(path, { force: true })
+  return writeFileAtomic(fs, path, content.value)
 }
 
 /** Restore the manifest, lockfile, and mirror to their pre-publication state. */
