@@ -13,28 +13,36 @@ eedsh runs on Node.js >= 26; Node 24 and earlier are not supported. It also need
 `pnpm` on `PATH`, because `eedsh sync` runs pnpm's install command whenever a
 profile's dependencies change.
 
-Install the CLI globally and the typed authoring API in the project that holds
-`eedsh.config.ts`:
+Install the CLI globally and create the config project with `eedsh init`:
 
 ```sh
 npm install -g @eedsh/cli
-# in the project that holds eedsh.config.ts
-npm install --save-dev @eedsh/config
+eedsh init
 ```
 
-`eedsh check` runs the project's own compiler, so install TypeScript there too:
+`eedsh init` writes `config.ts`, `package.json`, and `tsconfig.json` under
+`$XDG_CONFIG_HOME/eedsh` (falling back to `~/.config/eedsh` when
+`XDG_CONFIG_HOME` is unset or not absolute) and installs the typed authoring API,
+its `effect` peer, and TypeScript with pnpm. Add `--no-install` to write the
+files and run `pnpm install` yourself.
 
-```sh
-npm install --save-dev typescript
-```
+You do not need a separate DSH install or a per-project `@eedsh/config`
+dependency: `@eedsh/cli` pins `@deepseek-ai/dsh@0.2.1-rc.2` and runs that
+launcher, and the config project declares its own dependencies.
 
-You do not need a separate DSH install: `@eedsh/cli` pins
-`@deepseek-ai/dsh@0.2.1-rc.2` and runs that launcher.
+> **Breaking change:** eedsh no longer reads `eedsh.config.ts`,
+> `eedsh.config.mts`, JavaScript configs, or a single-plan default export from the
+> working directory. Run `eedsh init`, move the profile into
+> `defineConfig({ dsh, profiles: { ... } })`, and remove the old file. There is no
+> automatic migration.
 
 ## Quick start
 
+The config lives at `$XDG_CONFIG_HOME/eedsh/config.ts`; `eedsh init` writes a
+starting point. eedsh never discovers a config in the working directory.
+
 ```ts
-// eedsh.config.ts
+// $XDG_CONFIG_HOME/eedsh/config.ts
 import {
   bundle,
   defineConfig,
@@ -74,28 +82,40 @@ eedsh doctor
 eedsh run -- --port 3080
 ```
 
-`eedsh sync` publishes the profile to `$DSH_HOME/profiles/work` (by default
-`~/.dsh/profiles/work`); `eedsh doctor` verifies it, and `eedsh run` boots the pinned
-DSH. The CLI installs the profile dependencies with pnpm during sync.
+`eedsh sync` publishes every profile in the config to `$DSH_HOME/profiles/<name>`
+(by default `~/.dsh/profiles/<name>`); `--profile work` narrows it to one.
+`eedsh doctor` and `eedsh run` select `--profile`, then `defaultProfile`, then the
+sole profile. The CLI installs each profile's dependencies with pnpm during sync.
 
 Working from a checkout? Build it first; see [Build from source](#build-from-source).
 
 ## CLI reference
 
 ```sh
-eedsh sync   [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh init   [--no-install]
+eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
 eedsh doctor [--profile <name> | --config <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
-eedsh run    [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
-- `--config` defaults to `eedsh.config.ts` in the working directory, falling back to
-  `eedsh.config.mts`. JavaScript configs (`.js`, `.mjs`) are rejected with
-  `config.unsupported_extension` before they are imported.
-- `--strict` turns unmatched patch targets into a failure and skips publication.
-- `--watch` re-evaluates the config when files in its directory change; a compile
-  failure keeps the last published generation.
+- `init` creates the XDG config project, never overwrites an existing
+  `config.ts`, `package.json`, or `tsconfig.json`, and creates no repository.
+  `--no-install` skips pnpm and prints the install command.
+- `--config` defaults to `$XDG_CONFIG_HOME/eedsh/config.ts`
+  (`~/.config/eedsh/config.ts` when unset or relative). The path is absolute after
+  resolution; the working directory is never searched. Only `.ts` is accepted, and
+  `.mts`, `.js`, and `.mjs` fail with `config.unsupported_extension` before import.
+- Bare `sync` publishes every profile in record order, each under its own profile
+  lock; `--profile` publishes exactly that profile. An invalid, locked, or failed
+  profile is reported and does not stop its valid siblings, and the command exits
+  `1` if any selected profile failed.
+- `--strict` turns unmatched patch targets into a failure for that profile and skips
+  its publication.
+- `--watch` re-evaluates the config and the same selection on every change; a
+  compile, validation, or profile failure is reported and the session stays active,
+  keeping the last published generation.
 - `--explain` attributes each preflight warning as `<layer>: <message>`. Without it,
   preflight warnings are raw DSH messages followed by a one-line hint pointing at
   `--explain`. It is sync-only; `run`, `check`, and `doctor` reject it as a usage
@@ -110,8 +130,10 @@ eedsh --help | --version
   conflicts, scaffolding, the lockfile, and installed package resolution. It takes no
   lock and never repairs; findings point at `eedsh sync` or
   `eedsh sync --adopt-ownership`. `--profile` selects a profile under `DSH_HOME`
-  without evaluating a config, `--config` uses the configured profile, and supplying
-  both is a usage error. Findings print errors first and end with
+  without evaluating a config; without it, doctor evaluates the config only to take
+  the default profile (or the sole profile) and inspects that published profile.
+  Supplying both `--profile` and `--config` is a usage error, as is a config with
+  several profiles and no default. Findings print errors first and end with
   `N errors, M warnings`. `doctor` exits `0` with no errors (warnings are fine
   unless `--strict` is set), `1` with an error or with `--strict` and a warning,
   and `2` on a usage error.
@@ -120,8 +142,10 @@ eedsh --help | --version
   command line, and runs `tsc --noEmit -p <tsconfig>`. It never evaluates the config
   or publishes a profile, and exits with the compiler's exit code. Arguments after
   `--` are forwarded to tsc, for example `eedsh check -- --pretty false`.
-- `run` syncs first (unless `--no-sync`) and then spawns the pinned DSH launcher with
-  `--profile <name>` and your arguments. It does not import the launcher, so argv,
+- `run` selects `--profile`, then `defaultProfile`, then the sole profile, syncs
+  that profile first (unless `--no-sync`), and then spawns the pinned DSH launcher
+  with `--profile <name>` and your arguments. An ambiguous selection is a usage
+  error listing the profile names. `run` does not import the launcher, so argv,
   signals, and shutdown stay exactly DSH's.
 - Exit codes: `0` success, `1` validation/materialization/launch/check failure, `2`
   usage error. Validation failures print Effect's native formatted schema message,
@@ -135,7 +159,7 @@ This reference keeps the same profile name and plan shape as the hash test; it a
 profile-local package and shows the annotation points for the main helpers.
 
 ```ts
-// eedsh.config.ts
+// $XDG_CONFIG_HOME/eedsh/config.ts
 import {
   bundle,
   defineConfig,
@@ -189,7 +213,8 @@ entry, including fields these helpers do not name.
 
 | Helper | Purpose |
 |---|---|
-| `defineProfile(input)` | Validate and return the plan, or Effect's native schema error. |
+| `defineConfig(input)` | Validate the config envelope and every profile; returns the config or Effect's native schema error. |
+| `defineProfile(input)` | Return one synchronous profile descriptor; the config key names it and the shared `dsh` pin is injected. |
 | `bundle(name, options?)` | Select a bundle; `options.source` overrides its package source. |
 | `generated()` | Position the generated bundle among the managed bundles. |
 | `layer(id, patches?)` | Declare an ordered generated patch layer. |
@@ -202,23 +227,39 @@ entry, including fields these helpers do not name.
 
 ## Configuration reference
 
-A config is a TypeScript module named `eedsh.config.ts` or `eedsh.config.mts` that
-must typecheck in its own project. eedsh evaluates it with `tsx` at runtime, so full
-TypeScript syntax — including enums, namespaces, and decorators — works without a
-build step, but eedsh never typechecks it while loading: type correctness is
-established by your editor, by your project's `tsc --noEmit`, or by `eedsh check`.
-Config imports resolve with tsx's own rules: relative specifiers, package names such
-as `@eedsh/config`, and the tsconfig `paths` mappings of the directory you run eedsh
-from.
+`eedsh init` creates one XDG config project: `config.ts`, `package.json`, and
+`tsconfig.json` under `$XDG_CONFIG_HOME/eedsh`. The config must default-export a
+`defineConfig(...)` value (or a config-valued `Result`); a plain profile plan and
+the old single-plan export are not configs. eedsh evaluates the module with `tsx`
+at runtime, so full TypeScript syntax — including enums, namespaces, and
+decorators — works without a build step, but eedsh never typechecks it while
+loading: type correctness is established by your editor, by the config project's
+`tsc --noEmit`, or by `eedsh check`. Config imports resolve against the nearest
+`tsconfig.json` at or above `config.ts`, so relative specifiers, package names
+such as `@eedsh/config`, and the config project's own `paths` mappings work. The
+caller's working-directory tsconfig is never used.
 
-Invalid plans fail before sync with Effect's native formatted schema error: the CLI
-prints every message line with its location annotation, for example
-`profile name "" is not usable as a profile directory` followed by
-`  at ["profile"]["name"]`. There are no `plan.*` error codes, no per-issue
-`path: message` rewrite, and no truncation. `defineProfile` returns the same
-`Schema.SchemaError` in a failure `Result`, with the structured issue tree on
-`error.issue`. A config may export a plain plan or a `Result`: the loader validates
-plain data and a successful Result, and reports a failed Result natively.
+`defineConfig` pins one exact DSH version, may name a default profile, and maps
+each profile key to `defineProfile(...)`. The key is the profile name, the shared
+pin is applied to every profile plan, and the profile record may be built
+dynamically (spreads, computed keys, loops). Config-level defects — a malformed
+pin, an empty profile record, an unsafe key, or an unknown default — fail the
+whole config with Effect's native formatted schema error. Each profile is
+validated independently: an invalid profile keeps its own native failure and does
+not block a valid sibling from being selected, published, or run.
+
+Bare `sync` selects every profile; `--profile` selects exactly the named profile.
+`run` and `doctor` select `--profile`, then `defaultProfile`, then the sole
+profile. Unknown or ambiguous one-profile selections are usage errors (exit 2)
+listing the available names. `check` takes no profile. Removing a profile from
+`config.ts` stops syncing it but does not delete its published DSH profile.
+
+Invalid configs and profiles print Effect's native multi-line schema message with
+location annotations, for example `profile key "a/b" is not usable as a profile
+directory` followed by `  at ["profiles"]["a/b"]`. There are no `plan.*` codes,
+no per-issue `path: message` rewrite, and no truncation. A profile failure is
+labelled with its name and printed once; every selected profile's failure is
+reported.
 
 For project typechecking with the config project's own compiler, see [`eedsh check`](#cli-reference).
 
@@ -307,8 +348,8 @@ TypeScript config alone reloads nothing; only a published generation does.
 
 | Package | Role |
 |---|---|
-| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, the Effect Schema plan contract, Effect-native validation, and canonical hashing. |
-| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
+| `@eedsh/config` | Public typed authoring API (`defineConfig`, `defineProfile`, and patch helpers), the multi-profile config shape, the versioned JSON plan, the Effect Schema contracts, Effect-native validation, and canonical hashing. |
+| `@eedsh/cli` | The `eedsh` command: XDG config resolution, `init`, tsx-based evaluation, profile selection, `check`, Effect-based materialization, preflight, atomic publication, all-profile `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
 | `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
 
 ### Effect boundaries
@@ -322,9 +363,11 @@ for Node services, and uses the same Effect runtime for materialization: tagged
 domain failures plus the core `FileSystem` and `ChildProcessSpawner` services, with
 `NodeServices.layer` supplying the live implementations. `@eedsh/runtime` remains a
 plain Cordis plugin because DSH's HMR service owns its lifecycle, and
-`defineProfile` remains synchronous because a config module must default-export
-data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
-that Result or a plain plan.
+`defineProfile` and `defineConfig` remain synchronous because a config module must
+default-export data. `defineProfile` returns a plain descriptor and `defineConfig`
+returns `Result<EedshConfig, Schema.SchemaError>` with one validation Result per
+profile; a config may export that Result, a plain config object, or a config-valued
+`Result`.
 
 Within `@eedsh/cli`, external data contracts and tolerant readers are decoded with
 `effect/Schema`, and each tolerant fallback is explicit at the reader. CLI domain
@@ -363,7 +406,8 @@ built CLI from the checkout:
 
 ```sh
 node packages/cli/lib/bin.js --help
-node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
+node packages/cli/lib/bin.js init --no-install
+node packages/cli/lib/bin.js sync
 ```
 
 ## Development

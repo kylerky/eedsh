@@ -131,7 +131,7 @@ describe('generated layer watcher reloads', () => {
       hmr: fake.hmr,
       logger: logs.logger,
     })
-    await writeFile(join(dir, 'eedsh.config.ts'), 'export default {}\n', 'utf8')
+    await writeFile(join(dir, 'config.ts'), 'export default {}\n', 'utf8')
     await fake.latest()!.refresh()
     expect(fake.reconciles()).toBe(0)
   })

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { watchConfigDirectory, type WatchSession } from '../src/watch'
+import { type WatchSession, watchConfigDirectory } from '../src/watch'
 import { delay, waitFor } from './support/async'
 
 const root = process.cwd()

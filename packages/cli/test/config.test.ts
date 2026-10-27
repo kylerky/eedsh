@@ -59,12 +59,12 @@ export default defineConfig({
 
 describe('config path validation', () => {
   it('accepts a supported TypeScript config path', () => {
-    const result = validateConfigPath('/work/eedsh.config.ts')
+    const result = validateConfigPath('/work/config.ts')
     expect(Result.isSuccess(result)).toBe(true)
   })
 
   it('returns a tagged failure for a JavaScript config path', () => {
-    const result = validateConfigPath('/work/eedsh.config.js')
+    const result = validateConfigPath('/work/config.js')
     expect(Result.isFailure(result)).toBe(true)
     if (Result.isFailure(result)) {
       expect(result.failure).toBeInstanceOf(Error)
@@ -85,7 +85,7 @@ describe('config path validation', () => {
   })
 
   it('builds tagged config failures', () => {
-    const error = unsupportedConfigExtensionError('/work/eedsh.config.js')
+    const error = unsupportedConfigExtensionError('/work/config.js')
     expect(error).toBeInstanceOf(ConfigError)
     expect(error._tag).toBe('ConfigError')
     expect(error.code).toBe('config.unsupported_extension')

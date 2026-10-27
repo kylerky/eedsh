@@ -1,8 +1,9 @@
 # @eedsh/cli
 
-The `eedsh` command. It evaluates a typed config with `tsx`, validates the plan,
-preflights the composition through DSH's own patch algorithm, publishes a normal
-DSH profile atomically, and can boot the pinned launcher.
+The `eedsh` command. It creates the XDG config project, evaluates `config.ts`
+with `tsx`, selects one or every named profile, preflights each composition through
+DSH's own patch algorithm, publishes normal DSH profiles atomically, and can boot
+the pinned launcher.
 
 The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build output,
 and there is no library export. For installation, Quick start, and config authoring,
@@ -15,44 +16,63 @@ help and usage errors are rendered through an injected Console with ANSI escapes
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
 `spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
 plan schema and validation, while `@eedsh/runtime` stays a plain Cordis plugin;
-`defineProfile` remains synchronous at the config boundary.
+`defineProfile` and `defineConfig` remain synchronous at the config boundary.
 
 ## Commands
 
 ```sh
-eedsh sync   [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh init   [--no-install]
+eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
 eedsh doctor [--profile <name> | --config <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
-eedsh run    [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
-- `--config` accepts an absolute or working-directory-relative path. Without it, the
-  CLI looks for `eedsh.config.ts` then `eedsh.config.mts` in the working directory;
-  JavaScript configs (`.js`, `.mjs`) are rejected with
-  `config.unsupported_extension` before they are imported.
+- `init` creates `$XDG_CONFIG_HOME/eedsh` (`~/.config/eedsh` when unset or not
+  absolute) with `config.ts`, `package.json`, and `tsconfig.json`. It links the
+  CLI's own `@eedsh/config` and `effect` in an unpublished workspace, declares the
+  single `TYPESCRIPT_SPEC` TypeScript version, never overwrites an existing file,
+  and creates no repository. It installs with pnpm unless `--no-install` is given.
+- `--config` accepts an absolute or working-directory-relative `.ts` path. Without
+  it, the CLI resolves `$XDG_CONFIG_HOME/eedsh/config.ts` and never searches the
+  working directory. `.mts`, `.js`, and `.mjs` fail with
+  `config.unsupported_extension` before import.
+- Bare `sync` publishes every profile in record order; `--profile` publishes only
+  that profile and never falls back to the default. Each profile has its own lock and
+  publication transaction. An invalid, locked, or failed profile is reported with its
+  name and does not stop its valid siblings; the command exits `1` if any selected
+  profile failed or was invalid.
 - Preflight warnings are raw DSH messages by default, without a source-layer prefix.
+  In a multi-profile run each profile gets a header before its warnings and results.
   Raw warnings are followed by a one-line hint pointing at `--explain`.
 - `--explain` attributes each preflight warning as `<layer>: <message>`. It is
   sync-only; `run`, `check`, and `doctor` reject it as a usage error.
-- `--strict` makes unmatched id-targeted patches a failure; strict failures stay raw
-  unless `--explain` is also supplied, and the generation record is not updated.
-- `--watch` re-evaluates the config when files under its directory change (debounced).
-  The watcher is ready before the initial sync; changes during a run coalesce into at
-  most one follow-up, and one service layer serves the whole session. A compile or
-  validation failure is reported and the previously published generation stays in
-  place. A stop signal interrupts an in-flight sync and releases its profile lock
-  before the command exits 0. Layer or watcher construction failure exits 1 before
-  any sync; a watcher-close failure is reported as a warning without changing the
-  exit status.
+- `--strict` makes unmatched id-targeted patches a failure for the affected profile;
+  strict failures stay raw unless `--explain` is also supplied, and that profile's
+  generation record is not updated.
+- `--watch` re-evaluates the config and the same all-or-one selection on every
+  change (debounced). The watcher is ready before the initial sync; changes during a
+  run coalesce into at most one follow-up, and one service layer serves the whole
+  session. A config, selection, validation, or profile failure is reported and the
+  session stays active; the previously published generation stays in place. Added
+  profiles are picked up and removed profiles are no longer synced, but their
+  published profiles remain. A stop signal interrupts an in-flight sync and releases
+  its profile lock before the command exits 0. Layer or watcher construction failure
+  exits 1 before any sync; a watcher-close failure is reported as a warning without
+  changing the exit status.
+- `run` selects `--profile`, then the declared default, then the sole profile. An
+  unknown or ambiguous one-profile selection is a usage error (exit 2) listing the
+  names, before publication or boot.
 - `--adopt-ownership` re-baselines ownership from the current manifest when the
   generation record cannot be read. Sync fails closed without it, and it is not a way
   to re-adopt a removal already published.
 - `check` typechecks the config's project with its own `tsc --noEmit -p <tsconfig>`,
   forwards arguments after `--`, never evaluates the config or publishes a profile,
-  and exits with the compiler's exit code.
-- `run` syncs first unless `--no-sync`, then spawns `node <pinned dsh>/lib/bin.js
-  --profile <name> <your args>` with inherited stdio and the invoking environment.
+  takes no `--profile` (it is a usage error), and exits with the compiler's exit code.
+- `run` syncs the selected profile first unless `--no-sync`, then spawns
+  `node <pinned dsh>/lib/bin.js --profile <name> <your args>` with inherited stdio
+  and the invoking environment.
 - `doctor` inspects a published profile without changing it; see [Doctor](#doctor).
 - Exit codes: `0` success; `1` config, validation, materialization, preflight, or
   launch failure; `2` usage error. Validation failures print Effect's native
@@ -60,6 +80,37 @@ eedsh --help | --version
   rewritten into a `path` prefix, and there are no stable `plan.*` codes. `check`
   forwards the compiler's exit code and `run` forwards DSH's exit code as the
   command outcome.
+
+## Config project
+
+The default config is `$XDG_CONFIG_HOME/eedsh/config.ts`, or
+`~/.config/eedsh/config.ts` when `XDG_CONFIG_HOME` is unset, empty, or not
+absolute. There is no working-directory discovery and `XDG_CONFIG_DIRS` is not
+consulted; `--config <path>` is the explicit `.ts` override. When the default path
+does not exist, the command exits `1` and names both `eedsh init` and
+`--config <path>`. Legacy `eedsh.config.ts`, `eedsh.config.mts`, and JavaScript
+configs are never read, renamed, or adopted.
+
+`eedsh init` creates the directory owner-only (where supported) and writes:
+
+```
+config.ts        defineConfig with one "default" profile (dsh-base + dsh-web-app + generated)
+package.json     private ESM manifest; links @eedsh/config and effect locally in a 0.0.0 workspace
+tsconfig.json    es2024 / preserve / bundler, strict, noEmit; include ["**/*.ts"]
+```
+
+Existing files are kept byte-for-byte and reported, so a partially created project
+is repaired by re-running init. Install failure leaves the files in place and exits
+`1`; `--no-install` writes the project and prints
+`cd <config dir> && pnpm install`. Init performs no git initialization and does not
+resolve DSH.
+
+Config evaluation registers tsx against the nearest `tsconfig.json` at or above
+`config.ts` (or no tsconfig when there is none), never against the caller's working
+directory. This makes the config's own `paths` mappings usable and keeps an
+unrelated project's mappings out. Registration is keyed by that tsconfig and the
+previous hooks are unregistered when a different config project is loaded in the
+same process; `TSX_TSCONFIG_PATH` is never set.
 
 ## Doctor
 
@@ -70,8 +121,12 @@ lock, writing files, or repairing anything.
   `plans/<generationId>.json`, the `.eedsh/plan.json` mirror, managed bundles and
   dependencies, dependency-section conflicts, profile scaffolding, the lockfile, and
   installed package resolution.
-- `--profile <name>` selects a profile under `DSH_HOME` without evaluating a config;
-  `--config <path>` uses the configured profile. Supplying both is a usage error.
+- `--profile <name>` selects a profile under `DSH_HOME` without evaluating a
+  config; without it, doctor evaluates the config only to take the declared default
+  or the sole profile, and a config with several profiles and no default is a usage
+  error listing the names. `--config <path>` supplies the config path explicitly,
+  and supplying both `--profile` and `--config` is a usage error. An invalid plan
+  does not prevent doctor from inspecting the published profile by name.
 - Findings print errors first and end with `N errors, M warnings`. `doctor` exits
   `0` when there are no errors (warnings are fine unless `--strict` is set), `1` with
   an error or with `--strict` and a warning, and `2` on a usage error.

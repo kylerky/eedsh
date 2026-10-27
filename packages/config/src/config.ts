@@ -10,12 +10,7 @@ import * as Schema from 'effect/Schema'
 import type { ProfileDefinition } from './api'
 import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants'
 import { isPlainObject } from './plan/plain-object'
-import {
-  DshPinSchema,
-  type ProfilePlan,
-  ProfileNameSchema,
-  isSafeProfileName,
-} from './plan/schema'
+import { DshPinSchema, isSafeProfileName, ProfileNameSchema, type ProfilePlan } from './plan/schema'
 import { validatePlan } from './plan/validate'
 
 /** A config-level validation failure that is not Effect's native schema error. */
@@ -71,9 +66,7 @@ function plain<S extends Schema.Constraint>(schema: S, message: string) {
 }
 
 /** Profile keys are the sole identity and must be safe directory names. */
-function profileRecordIssues(
-  profiles: Readonly<Record<string, unknown>>,
-): Schema.FilterIssue[] {
+function profileRecordIssues(profiles: Readonly<Record<string, unknown>>): Schema.FilterIssue[] {
   const issues: Schema.FilterIssue[] = []
   if (Object.keys(profiles).length === 0) {
     issues.push({ path: [], issue: 'config must declare at least one profile' })

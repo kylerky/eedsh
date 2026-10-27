@@ -30,7 +30,7 @@ import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
-const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'eedsh.config.ts')
+const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
 const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
 const unmatchedManifest = '/home/profiles/cli-unmatched/.eedsh/generated/package.json'
 

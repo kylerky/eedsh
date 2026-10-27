@@ -7,14 +7,14 @@ import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
 import { loadConfig } from '../src/config'
-import { PackageManager } from '../src/internal/effect/services'
 import {
-  TYPESCRIPT_SPEC,
   initConfigTemplate,
   initPackageManifest,
   initTsconfigTemplate,
   resolveInitDependencySpecs,
+  TYPESCRIPT_SPEC,
 } from '../src/init'
+import { PackageManager } from '../src/internal/effect/services'
 import { fakePackageManager, memoryFileSystem } from './support/fakes'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
@@ -145,7 +145,9 @@ describe('init behavior', () => {
   it('preserves existing package.json and tsconfig.json', async () => {
     const manifest = '{"name":"mine"}\n'
     const tsconfig = '{"compilerOptions":{}}\n'
-    const h = harness({ files: { [configPath]: '// mine\n', [packagePath]: manifest, [tsconfigPath]: tsconfig } })
+    const h = harness({
+      files: { [configPath]: '// mine\n', [packagePath]: manifest, [tsconfigPath]: tsconfig },
+    })
     expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
     expect(h.fs.files.get(packagePath)).toBe(manifest)
     expect(h.fs.files.get(tsconfigPath)).toBe(tsconfig)

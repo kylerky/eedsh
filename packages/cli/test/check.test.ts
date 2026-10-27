@@ -17,14 +17,14 @@ describe('tsconfig discovery', () => {
     await mkdir(nested, { recursive: true })
     const tsconfigPath = join(dir, 'tsconfig.json')
     await writeFile(tsconfigPath, '{}\n')
-    const configPath = join(nested, 'eedsh.config.ts')
+    const configPath = join(nested, 'config.ts')
     await writeFile(configPath, 'export default {}\n')
     expect(findTsconfigPath(configPath)).toEqual(Option.some(tsconfigPath))
   })
 
   it('returns none when no tsconfig is found', async () => {
     const dir = await tempProject()
-    const configPath = join(dir, 'eedsh.config.ts')
+    const configPath = join(dir, 'config.ts')
     await writeFile(configPath, 'export default {}\n')
     expect(findTsconfigPath(configPath)).toEqual(Option.none())
   })

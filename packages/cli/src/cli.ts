@@ -28,10 +28,10 @@ import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import {
-  INIT_PROFILE_NAME,
-  InitError,
-  type InitService,
   defaultInitServices,
+  INIT_PROFILE_NAME,
+  type InitError,
+  type InitService,
   resolveDshPin,
   resolveInitDependencySpecs,
   runInit,
@@ -57,12 +57,12 @@ import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
 import {
-  type ProfileSelectionError,
   AmbiguousProfile,
-  UnknownProfile,
   describeProfileSelection,
+  type ProfileSelectionError,
   selectProfile,
   selectSyncProfiles,
+  UnknownProfile,
 } from './selection'
 import { defaultSpawn, type SpawnLike } from './spawn'
 import { type WatchSession, watchConfigDirectory } from './watch'
@@ -446,10 +446,7 @@ function runWatchSelection(
 
 function watchFailure(configPath: string, cause: unknown): ConfigError {
   const message = messageOf(cause)
-  return new ConfigError(
-    'config.watch_failed',
-    `cannot watch ${dirname(configPath)}: ${message}`,
-  )
+  return new ConfigError('config.watch_failed', `cannot watch ${dirname(configPath)}: ${message}`)
 }
 
 /** One scoped watch session; the service layer is built once for the session. */
@@ -582,11 +579,7 @@ function selectionFailure(runtime: CommandRuntime, error: ProfileSelectionError)
 }
 
 /** Report one profile-labelled failure without stopping the run. */
-function reportProfileFailure(
-  stderr: (line: string) => void,
-  name: string,
-  error: unknown,
-): void {
+function reportProfileFailure(stderr: (line: string) => void, name: string, error: unknown): void {
   stderr(`eedsh: profile "${name}":`)
   for (const line of describeError(error)) stderr(`eedsh: ${line}`)
 }
@@ -853,9 +846,7 @@ export async function runEedsh(
   let exitCode: number = EXIT_OK
 
   const configFlag = Flag.String('config').pipe(
-    Flag.withDescription(
-      'config file to load (default: $XDG_CONFIG_HOME/eedsh/config.ts)',
-    ),
+    Flag.withDescription('config file to load (default: $XDG_CONFIG_HOME/eedsh/config.ts)'),
     Flag.optional,
   )
   const strictFlag = Flag.Boolean('strict').pipe(
@@ -903,13 +894,10 @@ export async function runEedsh(
     Flag.withDefault(false),
   )
 
-  const initCommandLine = Command.make(
-    'init',
-    { noInstall: noInstallFlag },
-    (parsed) =>
-      Effect.gen(function* () {
-        exitCode = yield* runInitCommand({ noInstall: parsed.noInstall }, runtime)
-      }),
+  const initCommandLine = Command.make('init', { noInstall: noInstallFlag }, (parsed) =>
+    Effect.gen(function* () {
+      exitCode = yield* runInitCommand({ noInstall: parsed.noInstall }, runtime)
+    }),
   ).pipe(Command.withDescription('create the XDG config project and install its dependencies'))
 
   const syncCommand = Command.make(

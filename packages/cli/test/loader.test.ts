@@ -12,10 +12,7 @@ async function project(prefix: string): Promise<string> {
   return mkdtemp(join(tempRoot, prefix))
 }
 
-async function writeMappedProject(
-  prefix: string,
-  profileName: string,
-): Promise<string> {
+async function writeMappedProject(prefix: string, profileName: string): Promise<string> {
   const dir = await project(prefix)
   await writeFile(
     join(dir, 'tsconfig.json'),
@@ -64,7 +61,10 @@ describe('config loader resolution', () => {
       }),
     )
     await mkdir(join(projectDir, 'src'), { recursive: true })
-    await writeFile(join(projectDir, 'src', 'helper.ts'), "export const profileName = 'config-project'\n")
+    await writeFile(
+      join(projectDir, 'src', 'helper.ts'),
+      "export const profileName = 'config-project'\n",
+    )
     const configPath = join(projectDir, 'config.ts')
     await writeFile(
       configPath,
@@ -103,7 +103,10 @@ export default defineConfig({
 
   it('does not inherit caller mappings without a config tsconfig', async () => {
     const projectDir = await project('loader-no-tsconfig-')
-    await writeFile(join(projectDir, 'helper.ts'), "export const profileName = 'relative-profile'\n")
+    await writeFile(
+      join(projectDir, 'helper.ts'),
+      "export const profileName = 'relative-profile'\n",
+    )
     const configPath = join(projectDir, 'config.ts')
     await writeFile(
       configPath,

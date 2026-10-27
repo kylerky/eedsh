@@ -1,4 +1,12 @@
-import { bundle, defineConfig, defineProfile, generated, insert, layer, override } from '@eedsh/config'
+import {
+  bundle,
+  defineConfig,
+  defineProfile,
+  generated,
+  insert,
+  layer,
+  override,
+} from '@eedsh/config'
 
 export default defineConfig({
   dsh: '0.2.1-rc.2',

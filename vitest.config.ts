@@ -12,6 +12,7 @@ export default defineConfig({
   },
   test: {
     root,
+    globalSetup: ['./test/global-setup.ts'],
     include: ['packages/*/test/**/*.test.ts', 'test/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/lib/**', '**/.tmp/**', '**/*.slow.test.ts'],
     testTimeout: 30_000,

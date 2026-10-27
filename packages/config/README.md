@@ -1,22 +1,25 @@
 # @eedsh/config
 
-The public typed authoring surface for eedsh profiles: `defineProfile` plus helpers
-that map one-to-one onto DSH Loader patch concepts, a versioned JSON plan, a public
-Effect Schema that is the plan's single validator and type source, Effect-native
-validation, and canonical hashing.
+The public typed authoring surface for eedsh: `defineConfig`, which validates a
+shared DSH pin and a keyed record of `defineProfile` descriptors, plus helpers that
+map one-to-one onto DSH Loader patch concepts, a versioned JSON plan, the public
+Effect Schemas that are the config and plan validators and type sources,
+Effect-native validation, and canonical hashing.
 
-There is no DSH runtime dependency. Effect is part of the public contract: the plan
-schema, the `Result` validation value, and the native `Schema.SchemaError` failure
-are Effect-native, and `effect` is a peer dependency (also a dev dependency here).
-`defineProfile` and `assertPlan` stay synchronous because a config module must
-default-export plain data before tsx and DSH can consume it; `validatePlan` is the
-Effect-native entry point.
+There is no DSH runtime dependency. Effect is part of the public contract: the
+config and plan schemas, the `Result` validation values, and the native
+`Schema.SchemaError` failures are Effect-native, and `effect` is a peer dependency
+(also a dev dependency here). `defineProfile` returns a synchronous descriptor and
+`defineConfig` returns a synchronous `Result`, because a config module must
+default-export data before tsx and DSH can consume it; `validatePlan` and
+`validateConfigValue` are the Effect-native entry points.
 
 ## Example
 
 ```ts
 import {
   bundle,
+  defineConfig,
   defineProfile,
   disable,
   generated,
@@ -26,30 +29,48 @@ import {
   override,
 } from '@eedsh/config'
 
-export default defineProfile({
-  name: 'work',
+export default defineConfig({
   dsh: '0.2.1-rc.2',
-  packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
-  bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-  layers: [
-    layer('plugins', [
-      insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
-      disable('repeat-tool-reminder'),
-      override('agent-default-model', { provider: 'deepseek', model: 'deepseek-chat' }),
-      insert({
-        id: 'plugin-manager',
-        name: '@deepseek-ai/dsh-plugin-manager',
-        disabled: js("!ctx.get('profileContext')"),
-      }),
-    ]),
-  ],
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({
+      packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [
+        layer('plugins', [
+          insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
+          disable('repeat-tool-reminder'),
+          override('agent-default-model', { provider: 'deepseek', model: 'deepseek-chat' }),
+          insert({
+            id: 'plugin-manager',
+            name: '@deepseek-ai/dsh-plugin-manager',
+            disabled: js("!ctx.get('profileContext')"),
+          }),
+        ]),
+      ],
+    }),
+    home: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+    }),
+  },
 })
 ```
 
 ## API
 
-- `defineProfile(input)` — validates synchronously and returns a `ProfilePlan`. It
-  throws Effect's native `Schema.SchemaError`; it does not execute anything.
+- `defineConfig(input)` — validate the config envelope (one exact DSH pin, safe
+  non-empty profile keys, and a declared default) and then validate each profile
+  plan independently. Returns `Result<EedshConfig, Schema.SchemaError>`; an envelope
+  defect fails the whole Result, while an invalid profile is stored as that
+  profile's failure. It does not throw.
+- `defineProfile(input)` — return a detached, synchronous profile descriptor. The
+  config record's key is the profile name and the config's shared `dsh` pin is
+  applied to the plan; `defineProfile` itself validates nothing and does not throw.
+- `validateConfigValue(value)` — normalize and validate a plain config value or a
+  config-valued `Result`. It unwraps a successful Result, revalidates every profile
+  (including a profile Result's success value), rejects a lone profile plan, and
+  reports a failed Result as its native schema failure. A non-schema Result failure
+  is a config-level `InvalidConfigValue`.
 - `bundle(name, { source? })` — one ordered bundle selection. `@eedsh/runtime` and
   `@eedsh/generated` are reserved.
 - `generated()` — the positional marker for the generated layer; at most one.
@@ -64,6 +85,28 @@ export default defineProfile({
   source is stored verbatim and emitted as a `!!js` scalar by the CLI; it is never
   evaluated here.
 - `raw(entry)` — preserve any Loader patch field the helpers do not name.
+
+## Config
+
+`defineConfig`/`validateConfigValue` produce one `EedshConfig`:
+
+```ts
+interface EedshConfig {
+  readonly dsh: string
+  readonly defaultProfile?: string
+  readonly profiles: Readonly<
+    Record<string, Result.Result<ProfilePlan, Schema.SchemaError>>
+  >
+}
+```
+
+The record key is the profile's sole identity. Records built dynamically from
+spreads, computed keys, loops, or environment values are accepted. Config-level
+defects fail the whole config: an absent or malformed `dsh` pin, an empty profile
+record, an unsafe profile key, or a `defaultProfile` that is not a key. Profile
+defects stay local: selecting, publishing, or running a valid sibling is unaffected.
+`EedshConfigSchema` is the public envelope schema; `ProfilePlanSchema` is the plan
+schema.
 
 ## Plan
 
@@ -105,6 +148,6 @@ Additional exports:
   decode (`errors: "all"`, `onExcessProperty: "error"`); the success value is a
   detached plan. Decoding `ProfilePlanSchema` directly is more lenient and strips
   undeclared fields.
-- `assertPlan(value)` — the validated plan, or it throws `Schema.SchemaError`.
 - `ProfilePlanSchema` — the public Effect Schema and the single plan definition.
+- `EedshConfigSchema` — the public config envelope schema.
 - `canonicalJson(value)` / `hashPlan(plan)` — sorted-key JSON and SHA-256.

@@ -42,16 +42,14 @@ import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
-const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'eedsh.config.ts')
+const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
 const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
 
 /** Wrap validated plans in a config for the injected loader seam. */
 function configWith(...plans: ProfilePlan[]): EedshConfig {
   return {
     dsh: '0.2.1-rc.2',
-    profiles: Object.fromEntries(
-      plans.map((plan) => [plan.profile.name, Result.succeed(plan)]),
-    ),
+    profiles: Object.fromEntries(plans.map((plan) => [plan.profile.name, Result.succeed(plan)])),
   }
 }
 
@@ -224,7 +222,7 @@ describe('eedsh sync', () => {
 
   it('reports a missing config file with exit 1', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', join(root, 'nope/eedsh.config.ts')], h.options)
+    const code = await runEedsh(['sync', '--config', join(root, 'nope/config.ts')], h.options)
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('eedsh:')
   })
@@ -232,8 +230,8 @@ describe('eedsh sync', () => {
 
 describe('explicit config paths', () => {
   const rejected = [
-    { dir: 'javascript-mjs', name: 'eedsh.config.mjs' },
-    { dir: 'javascript-js', name: 'eedsh.config.js' },
+    { dir: 'javascript-mjs', name: 'config.mjs' },
+    { dir: 'javascript-js', name: 'config.js' },
   ] as const
 
   for (const { dir, name } of rejected) {
@@ -378,7 +376,7 @@ describe('config evaluation', () => {
 
   it('reports a syntax error as config.import_failed', async () => {
     const dir = await tempDir('syntax-')
-    const configPath = join(dir, 'eedsh.config.ts')
+    const configPath = join(dir, 'config.ts')
     await writeFile(configPath, 'export default {\n')
 
     const h = harness()
@@ -390,7 +388,7 @@ describe('config evaluation', () => {
 
   it('applies an edited config in watch mode', async () => {
     const dir = await tempDir('watch-')
-    const configPath = join(dir, 'eedsh.config.ts')
+    const configPath = join(dir, 'config.ts')
     await writeFile(configPath, watchConfigSource('row-a'))
 
     const h = harness()
@@ -426,7 +424,7 @@ describe('config evaluation', () => {
 describe('config export forms', () => {
   async function writeConfig(source: string): Promise<string> {
     const dir = await tempDir('config-export-')
-    const configPath = join(dir, 'eedsh.config.ts')
+    const configPath = join(dir, 'config.ts')
     await writeFile(configPath, source)
     return configPath
   }
@@ -1484,8 +1482,7 @@ describe('eedsh sync --watch', () => {
 })
 
 describe('multi-profile sync --watch', () => {
-  const manifestPath = (name: string) =>
-    `/home/profiles/${name}/.eedsh/generated/package.json`
+  const manifestPath = (name: string) => `/home/profiles/${name}/.eedsh/generated/package.json`
 
   function watchControl() {
     let onChange: (() => void) | undefined
@@ -1608,9 +1605,9 @@ export default defineConfig({
 
     await writeFile(configPath, twoProfiles('work-b', 'home-b'))
     control.notify()
-    expect(
-      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
-    ).toBe(true)
+    expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
+      true,
+    )
 
     controller.abort()
     expect(await running).toBe(0)
@@ -1682,9 +1679,9 @@ export default defineConfig({
 
     await writeFile(configPath, singleProfile('work-b'))
     control.notify()
-    expect(
-      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b'))),
-    ).toBe(true)
+    expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b')))).toBe(
+      true,
+    )
     expect(h.fs.files.get(manifestPath('home'))).toBe(homeManifest)
 
     controller.abort()
@@ -1733,16 +1730,17 @@ export default defineConfig({
     control.notify()
     expect(
       await waitFor(
-        () => h.err.join('\n').includes('"home" is not declared') && h.err.join('\n').includes('work'),
+        () =>
+          h.err.join('\n').includes('"home" is not declared') && h.err.join('\n').includes('work'),
       ),
     ).toBe(true)
 
     await delay(20)
     await writeFile(configPath, twoProfiles('work-a', 'home-b'))
     control.notify()
-    expect(
-      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
-    ).toBe(true)
+    expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
+      true,
+    )
 
     controller.abort()
     expect(await running).toBe(0)
@@ -1771,16 +1769,16 @@ export default defineConfig({
     control.notify()
     expect(await waitFor(() => h.err.join('\n').includes('missing-row'))).toBe(true)
     expect(h.err.join('\n')).toContain('work')
-    expect(
-      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
-    ).toBe(true)
+    expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
+      true,
+    )
 
     await delay(20)
     await writeFile(configPath, twoProfiles('work-b', 'home-b'))
     control.notify()
-    expect(
-      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b'))),
-    ).toBe(true)
+    expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b')))).toBe(
+      true,
+    )
 
     controller.abort()
     expect(await running).toBe(0)
@@ -1848,7 +1846,7 @@ describe('eedsh check', () => {
 describe('eedsh check failures', () => {
   async function externalProject(configSource: string, tsconfig?: string): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), 'eedsh-check-'))
-    const configPath = join(dir, 'eedsh.config.ts')
+    const configPath = join(dir, 'config.ts')
     await writeFile(configPath, configSource)
     if (tsconfig !== undefined) await writeFile(join(dir, 'tsconfig.json'), tsconfig)
     return configPath
@@ -1857,7 +1855,7 @@ describe('eedsh check failures', () => {
   it('fails with config.not_found for a missing config', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['check', '--config', join(root, 'nope/eedsh.config.ts')], {
+    const code = await runEedsh(['check', '--config', join(root, 'nope/config.ts')], {
       ...h.options,
       spawn,
     })

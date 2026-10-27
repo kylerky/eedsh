@@ -27,9 +27,6 @@ export const TYPESCRIPT_SPEC = '7.1.0-beta'
 /** The profile key the scaffold writes. */
 export const INIT_PROFILE_NAME = 'default'
 
-/** The three files init creates. */
-export const INIT_FILENAMES = ['config.ts', 'package.json', 'tsconfig.json'] as const
-
 /** Dependency specifications the generated manifest declares. */
 export interface InitDependencySpecs {
   /** `@eedsh/config` version, or a workspace link. */
@@ -48,9 +45,6 @@ export class InitError extends Data.TaggedError('InitError')<{
 
 /** The services init needs: file access and package installation. */
 export type InitService = FileSystem.FileSystem | PackageManagerShape
-
-/** Environment variables init reads. */
-export type InitEnvironment = Readonly<Record<string, string | undefined>>
 
 function readManifest(path: string): Result.Result<Record<string, unknown>, InitError> {
   return Result.try({
@@ -237,11 +231,7 @@ export interface InitResult {
  */
 export function runInit(
   input: InitInput,
-): Effect.Effect<
-  InitResult,
-  PackageInstallFailure | PlatformError.PlatformError,
-  InitService
-> {
+): Effect.Effect<InitResult, PackageInstallFailure | PlatformError.PlatformError, InitService> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const packages = yield* PackageManager
