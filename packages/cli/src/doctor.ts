@@ -576,8 +576,8 @@ function checkLockfile(
     }
 
     for (const [name, spec] of Object.entries(record.packages)) {
-      const entry = entries.get(name)
-      if (entry === undefined) {
+      const entry = Option.fromUndefinedOr(entries.get(name))
+      if (Option.isNone(entry)) {
         findings.push(
           errorFinding(
             'lockfile',
@@ -587,17 +587,17 @@ function checkLockfile(
         )
         continue
       }
-      if (Option.isSome(entry.specifier) && entry.specifier.value !== spec) {
+      if (Option.isSome(entry.value.specifier) && entry.value.specifier.value !== spec) {
         findings.push(
           warningFinding(
             'lockfile',
-            `the lockfile specifier "${entry.specifier.value}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
+            `the lockfile specifier "${entry.value.specifier.value}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
             Option.some(path),
           ),
         )
       }
       if (!isSemverRange(spec)) continue
-      const resolved = Option.flatMap(entry.version, resolvedVersion)
+      const resolved = Option.flatMap(entry.value.version, resolvedVersion)
       if (Option.isNone(resolved)) {
         findings.push(
           errorFinding(

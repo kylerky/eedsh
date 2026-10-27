@@ -163,11 +163,15 @@ function commitGeneratedManifest(
   generated: GeneratedBundle,
 ): Effect.Effect<void, PlatformError.PlatformError> {
   return Effect.gen(function* () {
-    const manifestFile = generated.files.at(-1)
-    if (manifestFile === undefined || manifestFile.path !== 'package.json') {
+    const manifestFile = Option.fromUndefinedOr(generated.files.at(-1))
+    if (Option.isNone(manifestFile) || manifestFile.value.path !== 'package.json') {
       return yield* Effect.die(new Error('generated bundle is missing its package manifest'))
     }
-    yield* writeFileAtomic(fs, join(generatedDir, manifestFile.path), manifestFile.content)
+    yield* writeFileAtomic(
+      fs,
+      join(generatedDir, manifestFile.value.path),
+      manifestFile.value.content,
+    )
   })
 }
 

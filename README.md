@@ -37,8 +37,13 @@ data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
 that Result or a plain plan.
 
 Within `@eedsh/cli`, external data contracts and tolerant readers are decoded with
-`effect/Schema`, and each tolerant fallback is explicit at the reader. The config
-package's JSON/cycle walker and the Effect-free `@eedsh/runtime` remain exceptions.
+`effect/Schema`, and each tolerant fallback is explicit at the reader. CLI domain
+absence is `Option`: readers, command inputs, findings, and reconciliation or
+publication inputs carry `Option` rather than `undefined`, so callers choose a
+fallback where absence matters. `undefined` remains at JavaScript and JSON
+boundaries, in `process.env` values, in third-party option bags and callbacks, and
+in internal mutable state. The config package's JSON/cycle walker and the
+Effect-free `@eedsh/runtime` remain exceptions.
 
 Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
 The resulting `Exit` is rendered once into a diagnostic and an exit code. Expected
