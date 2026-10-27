@@ -466,10 +466,9 @@ function checkScaffolding(
 type LockfileDependencies = ReadonlyMap<string, LockfileEntry>
 
 /** Strip a trailing pnpm peer suffix such as `(peer@1.0.0)`. */
-function resolvedVersion(version: string | undefined): string | undefined {
-  if (version === undefined) return undefined
+function resolvedVersion(version: string): Option.Option<string> {
   const base = version.split('(')[0]?.trim()
-  return base === undefined || base === '' ? undefined : base
+  return base === undefined || base === '' ? Option.none() : Option.some(base)
 }
 
 /** Read the lockfile and verify every managed entry and resolved range. */
@@ -559,18 +558,18 @@ function checkLockfile(
         )
         continue
       }
-      if (entry.specifier !== undefined && entry.specifier !== spec) {
+      if (Option.isSome(entry.specifier) && entry.specifier.value !== spec) {
         findings.push(
           warningFinding(
             'lockfile',
-            `the lockfile specifier "${entry.specifier}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
+            `the lockfile specifier "${entry.specifier.value}" for ${name} differs from the recorded specification "${spec}"; pnpm may normalize it`,
             path,
           ),
         )
       }
       if (!isSemverRange(spec)) continue
-      const resolved = resolvedVersion(entry.version)
-      if (resolved === undefined) {
+      const resolved = Option.flatMap(entry.version, resolvedVersion)
+      if (Option.isNone(resolved)) {
         findings.push(
           errorFinding(
             'lockfile',
@@ -580,12 +579,12 @@ function checkLockfile(
         )
         continue
       }
-      const matches = versionSatisfies(spec, resolved)
+      const matches = versionSatisfies(spec, resolved.value)
       if (matches === false) {
         findings.push(
           errorFinding(
             'lockfile',
-            `the resolved version ${resolved} of ${name} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
+            `the resolved version ${resolved.value} of ${name} does not satisfy the recorded range ${spec}; run "eedsh sync"`,
             path,
           ),
         )
@@ -593,7 +592,7 @@ function checkLockfile(
         findings.push(
           errorFinding(
             'lockfile',
-            `the lockfile version ${resolved} of ${name} is not a semantic version; run "eedsh sync"`,
+            `the lockfile version ${resolved.value} of ${name} is not a semantic version; run "eedsh sync"`,
             path,
           ),
         )
@@ -650,12 +649,14 @@ function checkInstalled(
         continue
       }
       const installed = decoded.value.version
-      const lockVersion = resolvedVersion(lockfile?.get(name)?.version)
-      if (lockVersion !== undefined && lockVersion !== installed) {
+      const lockVersion = Option.flatMap(Option.fromUndefinedOr(lockfile?.get(name)), (entry) =>
+        Option.flatMap(entry.version, resolvedVersion),
+      )
+      if (Option.isSome(lockVersion) && lockVersion.value !== installed) {
         findings.push(
           errorFinding(
             'installed',
-            `installed ${name} version ${installed} differs from the lockfile version ${lockVersion}; run "eedsh sync"`,
+            `installed ${name} version ${installed} differs from the lockfile version ${lockVersion.value}; run "eedsh sync"`,
             path,
           ),
         )

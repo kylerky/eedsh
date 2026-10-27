@@ -85,7 +85,7 @@ export function resolveTypeScript(configDir: string): TypeScriptInstallation | u
   const relative = readPackageBin(manifest.bin)
   if (relative === undefined) return undefined
   return {
-    version: readVersion(manifest.version, 'unknown'),
+    version: Option.getOrElse(readVersion(manifest.version), () => 'unknown'),
     binPath: resolve(dirname(manifestPath), relative),
   }
 }

@@ -1,3 +1,4 @@
+import { Option } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   readLockfileEntry,
@@ -98,9 +99,9 @@ describe('readRecord', () => {
 })
 
 describe('readOptionalString', () => {
-  it('returns a string, including an empty one', () => {
-    expect(readOptionalString('1.2.3')).toBe('1.2.3')
-    expect(readOptionalString('')).toBe('')
+  it('returns a present string, including an empty one', () => {
+    expect(readOptionalString('1.2.3')).toEqual(Option.some('1.2.3'))
+    expect(readOptionalString('')).toEqual(Option.some(''))
   })
 
   it.each([
@@ -109,15 +110,15 @@ describe('readOptionalString', () => {
     ['a number', 42],
     ['an array', ['a']],
     ['an object', { value: 'a' }],
-  ])('returns undefined for %s', (_label, value) => {
-    expect(readOptionalString(value)).toBeUndefined()
+  ])('returns none for %s', (_label, value) => {
+    expect(readOptionalString(value)).toEqual(Option.none())
   })
 })
 
 describe('readVersion', () => {
-  it('returns a string version, including an empty one', () => {
-    expect(readVersion('1.2.3', 'unknown')).toBe('1.2.3')
-    expect(readVersion('', 'unknown')).toBe('')
+  it('returns a present version, including an empty one', () => {
+    expect(readVersion('1.2.3')).toEqual(Option.some('1.2.3'))
+    expect(readVersion('')).toEqual(Option.some(''))
   })
 
   it.each([
@@ -127,9 +128,8 @@ describe('readVersion', () => {
     ['a boolean', false],
     ['an object', { version: '1.2.3' }],
     ['an array', ['1.2.3']],
-  ])('uses the caller fallback for %s', (_label, value) => {
-    expect(readVersion(value, 'unknown')).toBe('unknown')
-    expect(readVersion(value, '0.0.0')).toBe('0.0.0')
+  ])('returns none for %s', (_label, value) => {
+    expect(readVersion(value)).toEqual(Option.none())
   })
 })
 
@@ -140,29 +140,39 @@ describe('readLockfileEntry', () => {
     ['a string', 'not-an-entry'],
     ['an array', ['1.0.0']],
     ['a number', 1],
-  ])('falls back to an empty entry for %s', (_label, value) => {
-    expect(readLockfileEntry(value)).toEqual({})
+  ])('falls back to an absent entry for %s', (_label, value) => {
+    expect(readLockfileEntry(value)).toEqual({ specifier: Option.none(), version: Option.none() })
   })
 
   it('reads both optional fields and ignores extra fields', () => {
     expect(
       readLockfileEntry({ specifier: '^1.0.0', version: '1.2.3(peer@2.0.0)', extra: true }),
-    ).toEqual({ specifier: '^1.0.0', version: '1.2.3(peer@2.0.0)' })
+    ).toEqual({
+      specifier: Option.some('^1.0.0'),
+      version: Option.some('1.2.3(peer@2.0.0)'),
+    })
   })
 
   it('keeps a valid version when the specifier is malformed', () => {
-    expect(readLockfileEntry({ specifier: 42, version: '1.2.3' })).toEqual({ version: '1.2.3' })
+    expect(readLockfileEntry({ specifier: 42, version: '1.2.3' })).toEqual({
+      specifier: Option.none(),
+      version: Option.some('1.2.3'),
+    })
   })
 
   it('keeps a valid specifier when the version is malformed', () => {
     expect(readLockfileEntry({ specifier: '^1.0.0', version: null })).toEqual({
-      specifier: '^1.0.0',
+      specifier: Option.some('^1.0.0'),
+      version: Option.none(),
     })
   })
 
   it('accepts a partial entry and an empty entry', () => {
-    expect(readLockfileEntry({ specifier: '^1.0.0' })).toEqual({ specifier: '^1.0.0' })
-    expect(readLockfileEntry({})).toEqual({})
+    expect(readLockfileEntry({ specifier: '^1.0.0' })).toEqual({
+      specifier: Option.some('^1.0.0'),
+      version: Option.none(),
+    })
+    expect(readLockfileEntry({})).toEqual({ specifier: Option.none(), version: Option.none() })
   })
 })
 
@@ -191,7 +201,7 @@ describe('tolerant reader boundaries', () => {
       expect(() => readStringRecord(value)).not.toThrow()
       expect(() => readRecord(value)).not.toThrow()
       expect(() => readOptionalString(value)).not.toThrow()
-      expect(() => readVersion(value, 'unknown')).not.toThrow()
+      expect(() => readVersion(value)).not.toThrow()
       expect(() => readLockfileEntry(value)).not.toThrow()
     }
   })

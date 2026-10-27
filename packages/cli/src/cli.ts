@@ -175,7 +175,9 @@ function cliVersion(): string {
       },
     catch: () => undefined,
   })
-  return Result.isSuccess(parsed) ? readVersion(parsed.success.version, '0.0.0') : '0.0.0'
+  return Result.isSuccess(parsed)
+    ? Option.getOrElse(readVersion(parsed.success.version), () => '0.0.0')
+    : '0.0.0'
 }
 
 function describeError(error: unknown): string[] {

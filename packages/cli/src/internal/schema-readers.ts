@@ -8,8 +8,8 @@ import { Effect, Option, Schema } from 'effect'
 
 /** One dependency entry in a pnpm lockfile importer. */
 export interface LockfileEntry {
-  readonly specifier?: string
-  readonly version?: string
+  readonly specifier: Option.Option<string>
+  readonly version: Option.Option<string>
 }
 
 /**
@@ -26,7 +26,6 @@ const lenientString = tolerant(Schema.UndefinedOr(Schema.String), undefined)
 const stringArraySchema = tolerant(Schema.Array(lenientString), [])
 const stringRecordSchema = tolerant(Schema.Record(Schema.String, lenientString), {})
 const recordSchema = tolerant(Schema.Record(Schema.String, Schema.Unknown), {})
-const optionalStringSchema = tolerant(Schema.optional(Schema.String), undefined)
 
 function decodeOption<A>(schema: Schema.Codec<A>, value: unknown): Option.Option<A> {
   return Schema.decodeUnknownOption(schema)(value)
@@ -72,35 +71,30 @@ export function readRecord(value: unknown): Record<string, unknown> {
 /**
  * Read a string that may be absent.
  * @param value - the value to read.
- * @returns the string, or undefined when it is missing or not a string.
+ * @returns the string, or None when it is missing or not a string.
  */
-export function readOptionalString(value: unknown): string | undefined {
-  const decoded = decodeOption(optionalStringSchema, value)
-  return Option.isSome(decoded) ? decoded.value : undefined
+export function readOptionalString(value: unknown): Option.Option<string> {
+  return decodeOption(Schema.String, value)
 }
 
 /**
- * Read a package version with the caller's fallback.
+ * Read a package version that may be absent.
  * @param value - the value to read.
- * @param fallback - the version to use when the value is missing or not a string.
- * @returns the version, or the fallback.
+ * @returns the version, or None when it is missing or not a string.
  */
-export function readVersion(value: unknown, fallback: string): string {
-  const decoded = decodeOption(tolerant(Schema.String, fallback), value)
-  return Option.isSome(decoded) ? decoded.value : fallback
+export function readVersion(value: unknown): Option.Option<string> {
+  return readOptionalString(value)
 }
 
 /**
  * Read one lockfile entry, keeping each valid field independently.
  * @param value - the value to read.
- * @returns the entry fields that decoded, or an empty entry for a non-object.
+ * @returns the entry fields that decoded, with absent fields as None.
  */
 export function readLockfileEntry(value: unknown): LockfileEntry {
   const record = readRecord(value)
-  const specifier = readOptionalString(record.specifier)
-  const version = readOptionalString(record.version)
   return {
-    ...(specifier === undefined ? {} : { specifier }),
-    ...(version === undefined ? {} : { version }),
+    specifier: readOptionalString(record.specifier),
+    version: readOptionalString(record.version),
   }
 }

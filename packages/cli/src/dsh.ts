@@ -12,6 +12,7 @@ import {
   readProfileManifest,
   resolveBundleDir,
 } from '@deepseek-ai/dsh-app-boot'
+import { Option } from 'effect'
 import * as Result from 'effect/Result'
 import { DshResolveFailure } from './internal/effect/errors'
 import { readVersion } from './internal/schema-readers'
@@ -39,7 +40,7 @@ export function resolveDshInstallation(): Result.Result<DshInstallationInfo, Dsh
       const installAnchor = require.resolve('@deepseek-ai/dsh/package.json')
       const manifest = JSON.parse(readFileSync(installAnchor, 'utf8')) as { version?: unknown }
       return {
-        version: readVersion(manifest.version, 'unknown'),
+        version: Option.getOrElse(readVersion(manifest.version), () => 'unknown'),
         installAnchor,
         binPath: require.resolve('@deepseek-ai/dsh/lib/bin.js'),
       }
