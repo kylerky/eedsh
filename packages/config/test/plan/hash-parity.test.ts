@@ -1,11 +1,10 @@
-import { canonicalJson, hashPlan, validatePlan } from '@eedsh/config'
-import * as Result from 'effect/Result'
+import { canonicalJson, hashPlan } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
-import readme from '../../../cli/test/fixtures/readme/eedsh.config'
+import { readmePlan } from '../../../../test/support/readme'
 
 /**
  * Canonical JSON and SHA-256 recorded with the pre-Effect validator for the
- * plan the README fixture produces. Valid plans must keep the same
+ * plan the README example produces. Valid plans must keep the same
  * generation digest across the schema migration.
  */
 const CANONICAL_JSON =
@@ -14,10 +13,8 @@ const CANONICAL_JSON =
 const PLAN_HASH = '2522100ca927c6a7e299b2b954a41e1dc937305feb917ace96e2cfe279a564e0'
 
 describe('plan hash parity', () => {
-  it('keeps the canonical JSON and hash of the README fixture plan', () => {
-    const plan = Result.isResult(readme)
-      ? Result.getOrThrow(readme)
-      : Result.getOrThrow(validatePlan(readme))
+  it('keeps the canonical JSON and hash of the README example plan', async () => {
+    const plan = await readmePlan('Example configuration')
     expect(canonicalJson(plan)).toBe(CANONICAL_JSON)
     expect(hashPlan(plan)).toBe(PLAN_HASH)
   })

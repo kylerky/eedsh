@@ -127,7 +127,70 @@ eedsh --help | --version
 
 ## Example configuration
 
-A full annotated reference configuration and patch-helper table appear here.
+This reference keeps the same profile name and plan shape as the hash test; it adds a
+profile-local package and shows the annotation points for the main helpers.
+
+```ts
+// eedsh.config.ts
+import {
+  bundle,
+  defineProfile,
+  disable,
+  generated,
+  insert,
+  js,
+  layer,
+  override,
+} from '@eedsh/config'
+
+export default defineProfile({
+  name: 'work',
+  dsh: '0.2.1-rc.2',
+  packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
+  bundles: [
+    bundle('@deepseek-ai/dsh-base'),
+    bundle('@deepseek-ai/dsh-web-app'),
+    generated(), // generated layers sit here: after web-app, before nothing else
+  ],
+  layers: [
+    layer('plugins', [
+      // `insert` adds new rows; `disable` targets an existing row by id.
+      insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
+      disable('repeat-tool-reminder'),
+    ]),
+    layer('overrides', [
+      // `override` replaces the row's whole config, exactly like a DSH Loader patch.
+      override('agent-default-model', {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+      }),
+      insert({
+        id: 'plugin-manager',
+        name: '@deepseek-ai/dsh-plugin-manager',
+        // `js` emits a runtime expression that DSH evaluates at activation.
+        disabled: js("!ctx.get('profileContext')"),
+      }),
+    ]),
+  ],
+})
+```
+
+The helpers map one-to-one onto Loader patch concepts. `override` replaces an
+existing row's whole config; it does not merge. `raw` preserves a raw Loader patch
+entry, including fields these helpers do not name.
+
+| Helper | Purpose |
+|---|---|
+| `defineProfile(input)` | Validate and return the plan, or Effect's native schema error. |
+| `bundle(name, options?)` | Select a bundle; `options.source` overrides its package source. |
+| `generated()` | Position the generated bundle among the managed bundles. |
+| `layer(id, patches?)` | Declare an ordered generated patch layer. |
+| `insert(entries)` | Insert one Loader entry or an array of entries. |
+| `override(id, config)` | Replace an existing row's whole config; no merge. |
+| `disable(id)` / `enable(id)` | Disable or enable an existing row. |
+| `group(id, fields, children)` | Build a group entry for `insert`, with fields, an optional isolate map, and ordered children. |
+| `js(source)` | Emit a `!!js` runtime expression evaluated at activation. |
+| `raw(entry)` | Preserve a raw Loader patch entry, including fields the helpers do not name. |
 
 ## Configuration reference
 

@@ -1274,6 +1274,18 @@ describe('documentation', () => {
     ])
     expect(plan.layers.map((item) => item.id)).toEqual(['overrides'])
   })
+
+  it('keeps the Example configuration a full valid plan', async () => {
+    const plan = await readmePlan('Example configuration')
+    expect(plan.profile.name).toBe('work')
+    expect(plan.packages).toEqual({ '@scope/my-plugin': 'link:../packages/my-plugin' })
+    expect(plan.bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
+      { kind: 'generated' },
+    ])
+    expect(plan.layers.map((item) => item.id)).toEqual(['plugins', 'overrides'])
+  })
 })
 
 describe('eedsh run', () => {
