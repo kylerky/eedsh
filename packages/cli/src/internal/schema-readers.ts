@@ -21,9 +21,7 @@ function tolerant<A>(schema: Schema.Codec<A>, fallback: A): Schema.Codec<A> {
 }
 
 /** A string element whose wrong or absent value is dropped by its container. */
-const lenientString = Schema.UndefinedOr(Schema.String).pipe(
-  Schema.catchDecoding(() => Effect.succeed(Option.some(undefined))),
-)
+const lenientString = tolerant(Schema.UndefinedOr(Schema.String), undefined)
 
 const stringArraySchema = tolerant(Schema.Array(lenientString), [])
 const stringRecordSchema = tolerant(Schema.Record(Schema.String, lenientString), {})
