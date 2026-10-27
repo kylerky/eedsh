@@ -5,12 +5,13 @@ preflights the composition through DSH's own patch algorithm, publishes a normal
 DSH profile atomically, and can boot the pinned launcher.
 
 The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build output,
-and there is no library export.
+and there is no library export. For installation, Quick start, and config authoring,
+see the [root README](../README.md).
 
 Effect is the default here: tagged failures, `Context.Tag` services for file access,
 package installation, DSH resolution, preflight, and sync locking, plus one scoped
-service layer per watch session. `@effect/cli` parses the command surface; its generated help and usage
-errors are rendered through an injected Console with ANSI escapes stripped, and the
+service layer per watch session. `effect/cli` parses the command surface; its generated
+help and usage errors are rendered through an injected Console with ANSI escapes stripped, and the
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
 `spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
 plan schema and validation, while `@eedsh/runtime` stays a plain Cordis plugin;
@@ -19,9 +20,10 @@ plan schema and validation, while `@eedsh/runtime` stays a plain Cordis plugin;
 ## Commands
 
 ```sh
-eedsh sync  [--config <path>] [--strict] [--watch] [--explain]
-eedsh check [--config <path>] [-- <tsc args>]
-eedsh run   [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh sync   [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh doctor [--profile <name> | --config <path>] [--strict]
+eedsh check  [--config <path>] [-- <tsc args>]
+eedsh run    [--config <path>] [--no-sync] [-- <dsh args>]
 eedsh --help | --version
 ```
 
@@ -32,7 +34,7 @@ eedsh --help | --version
 - Preflight warnings are raw DSH messages by default, without a source-layer prefix.
   Raw warnings are followed by a one-line hint pointing at `--explain`.
 - `--explain` attributes each preflight warning as `<layer>: <message>`. It is
-  sync-only; `run` and `check` reject it as a usage error.
+  sync-only; `run`, `check`, and `doctor` reject it as a usage error.
 - `--strict` makes unmatched id-targeted patches a failure; strict failures stay raw
   unless `--explain` is also supplied, and the generation record is not updated.
 - `--watch` re-evaluates the config when files under its directory change (debounced).
@@ -43,47 +45,87 @@ eedsh --help | --version
   before the command exits 0. Layer or watcher construction failure exits 1 before
   any sync; a watcher-close failure is reported as a warning without changing the
   exit status.
+- `--adopt-ownership` re-baselines ownership from the current manifest when the
+  generation record cannot be read. Sync fails closed without it, and it is not a way
+  to re-adopt a removal already published.
 - `check` typechecks the config's project with its own `tsc --noEmit -p <tsconfig>`,
   forwards arguments after `--`, never evaluates the config or publishes a profile,
   and exits with the compiler's exit code.
 - `run` syncs first unless `--no-sync`, then spawns `node <pinned dsh>/lib/bin.js
   --profile <name> <your args>` with inherited stdio and the invoking environment.
-- Exit codes: `0` success, `1` config/validation/materialization/preflight/launch
-  failure, `2` usage error. Validation failures print `path: message` locations
-  (`plan` for a root failure) from Effect's native issue formatter; there are no
-  stable `plan.*` codes.
+- `doctor` inspects a published profile without changing it; see [Doctor](#doctor).
+- Exit codes: `0` success; `1` config, validation, materialization, preflight, or
+  launch failure; `2` usage error. Validation failures print Effect's native
+  formatted schema message, including its location annotations. Locations are not
+  rewritten into a `path` prefix, and there are no stable `plan.*` codes. `check`
+  forwards the compiler's exit code and `run` forwards DSH's exit code as the
+  command outcome.
+
+## Doctor
+
+`eedsh doctor` inspects one published profile and reports findings without taking a
+lock, writing files, or repairing anything.
+
+- It verifies the generation record, the authoritative
+  `plans/<generationId>.json`, the `.eedsh/plan.json` mirror, managed bundles and
+  dependencies, dependency-section conflicts, profile scaffolding, the lockfile, and
+  installed package resolution.
+- `--profile <name>` selects a profile under `DSH_HOME` without evaluating a config;
+  `--config <path>` uses the configured profile. Supplying both is a usage error.
+- Findings print errors first and end with `N errors, M warnings`. `doctor` exits
+  `0` when there are no errors (warnings are fine unless `--strict` is set), `1` with
+  an error or with `--strict` and a warning, and `2` on a usage error.
+- Findings point at `eedsh sync` or `eedsh sync --adopt-ownership`. When the
+  generation record cannot be read, sync fails closed; `--adopt-ownership`
+  re-baselines ownership from the current manifest. That is not a way to re-adopt a
+  removal already published.
 
 ## Profile layout
 
 `sync` writes into `$DSH_HOME/profiles/<name>` (or `~/.dsh/profiles/<name>`):
 
 ```
-package.json                     dsh.profile.bundles + dependencies
-cordis.yml                       empty root config
-cordis.patch.yml                 user layer; created empty only when missing, never rewritten
-pnpm-workspace.yaml              pnpm settings out-of-tree plugins need
-.eedsh/plan.json                 the validated plan (canonical JSON)
-.eedsh/generated/package.json    generation record + dsh.bundle.patch; written last
+package.json                                dsh.profile.bundles + dependencies
+cordis.yml                                  empty root config
+cordis.patch.yml                            user layer; created empty only when missing, never rewritten
+pnpm-workspace.yaml                         pnpm settings out-of-tree plugins need
+.eedsh/plan.json                            inspectable plan mirror
+.eedsh/generated/plans/<generationId>.json  authoritative validated plan (canonical JSON)
 .eedsh/generated/patches/<generationId>/<layerId>.yml
+.eedsh/generated/package.json               generation record + dsh.bundle.patch; the commit point
 ```
+
+`.eedsh/plan.json` is a mirror for inspection. The authoritative plan is
+`.eedsh/generated/plans/<generationId>.json`, which the generation record locates
+and verifies.
 
 The manifest lists managed bundles in plan order with `@eedsh/runtime` immediately
 before `@eedsh/generated` at the authored marker (or last among managed bundles).
 User-added bundles follow managed bundles; bundles eedsh managed before and no
 longer manages are removed. Dependencies are reconciled the same way, and a managed
-specification wins on collision.
+specification wins on collision. Managed entries are removed from `dependencies`,
+`devDependencies`, and `optionalDependencies`; a managed name declared in
+`peerDependencies`, `pnpm.overrides`, `overrides`, or `resolutions` is reported as
+a conflict because it may change the resolved version.
 
 ## Publication guarantees
 
 - Every profile file is replaced atomically: a failed write or rename leaves the
   target with its previous content and no temporary file behind.
-- Patch files and `plan.json` are written before the generated package manifest,
-  which is the commit point. A reader never sees a partial generation.
+- Patch files, the authoritative `plans/<generationId>.json`, and the profile
+  manifest are written first. The `.eedsh/plan.json` mirror is written immediately
+  before the generated package manifest, which is the commit point; a reader never
+  sees a partial generation.
 - The generation id covers the canonical plan and every emitted layer hash, so an
-  unchanged plan is a no-op and an emitter change produces a new generation.
-- The profile `package.json` and `pnpm-lock.yaml` are snapshotted before installation
-  and restored if installation or preflight fails. Extra packages left in
-  `node_modules` are harmless because the restored manifest does not select them.
+  unchanged plan with intact artifacts is a no-op, while an emitter change produces
+  a new generation.
+- A stale plan mirror, or a missing or mismatched authoritative plan, is repaired by
+  the next successful sync with the same generation id, without reinstalling.
+- The profile manifest, `pnpm-lock.yaml`, and plan mirror are snapshotted before
+  publication. A failed install, preflight, mirror write, or commit restores them,
+  so the previous generation stays published and no partial dependency set or stale
+  mirror remains. Extra packages left in `node_modules` are harmless because the
+  restored manifest does not select them.
 - A kernel-held profile lock serializes concurrent syncs; see [Sync locking](#sync-locking).
 
 ## Sync locking
@@ -134,6 +176,6 @@ files, and evaluates nothing (plugin config schemas run only at Loader activatio
 ## Limitations
 
 - `--watch` watches the config directory, not transitive imports outside it.
-- Local `link:` dependencies are machine-specific; published packaging is deferred.
+- Local `link:` dependencies are machine-specific.
 - Package and bundle-set changes that DSH classifies as restart-required are not
   hot-reloaded; see `@eedsh/runtime`.
