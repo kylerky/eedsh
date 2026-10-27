@@ -18,18 +18,29 @@ import * as Console from 'effect/Console'
 import { CliError, Command, Flag } from 'effect/cli'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
+import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import { ConfigError, loadConfig, validateConfigPath } from './config'
-import { defaultConfigPath } from './config-path'
+import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import {
+  INIT_PROFILE_NAME,
+  InitError,
+  type InitService,
+  defaultInitServices,
+  resolveDshPin,
+  resolveInitDependencySpecs,
+  runInit,
+} from './init'
+import {
   type CheckFailure,
   type DshResolveFailure,
   type MaterializeError,
+  type PackageInstallFailure,
   SpawnFailure,
 } from './internal/effect/errors'
 import { liveServiceLayer } from './internal/effect/layer'
@@ -88,6 +99,8 @@ export interface CliRunOptions {
   watch?: WatchFactory
   /** Stop watch mode when aborted. */
   signal?: AbortSignal
+  /** Replace the narrow services `init` needs. */
+  initServices?: () => Layer.Layer<InitService>
 }
 
 interface ParsedArgv {
@@ -215,6 +228,8 @@ function describeError(error: unknown): string[] {
         ]
       case 'DshResolveFailure':
         return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
+      case 'InitError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
       default:
         break
     }
@@ -761,6 +776,45 @@ function runDoctorCommand(
   })
 }
 
+interface InitCommandInput {
+  noInstall: boolean
+}
+
+/** Create the XDG config project and print what to do next. */
+function runInitCommand(
+  input: InitCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<number, InitError | PackageInstallFailure | PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext(undefined)
+    const specs = resolveInitDependencySpecs()
+    if (Result.isFailure(specs)) return yield* Effect.fail(specs.failure)
+    const dsh = resolveDshPin()
+    if (Result.isFailure(dsh)) return yield* Effect.fail(dsh.failure)
+
+    const configDir = configDirectory(runtime.env)
+    const result = yield* runInit({
+      configDir,
+      dsh: dsh.success,
+      specs: specs.success,
+      install: !input.noInstall,
+      stdout: runtime.stdout,
+    }).pipe(Effect.provide((runtime.options.initServices ?? defaultInitServices)()))
+
+    runtime.stdout(`eedsh: initialized ${configDir}`)
+    runtime.stdout(`eedsh: profiles: ${INIT_PROFILE_NAME}`)
+    if (result.kept.length > 0) {
+      runtime.stdout(`eedsh: kept existing files: ${result.kept.join(', ')}`)
+    }
+    if (input.noInstall) runtime.stdout(`eedsh: ${result.installCommand}`)
+    else runtime.stdout('eedsh: installed dependencies with pnpm')
+    runtime.stdout('eedsh: next: eedsh check')
+    runtime.stdout('eedsh: next: eedsh sync')
+    runtime.stdout('eedsh: next: eedsh run')
+    return EXIT_OK
+  })
+}
+
 /**
  * Run the CLI with an explicit argument vector.
  * @param argv - arguments after the executable and script.
@@ -820,6 +874,10 @@ export async function runEedsh(
     Flag.withDescription('skip publication and boot the last published generation'),
     Flag.withDefault(false),
   )
+  const noInstallFlag = Flag.Boolean('no-install').pipe(
+    Flag.withDescription('write the config project without running pnpm install'),
+    Flag.withDefault(false),
+  )
   const adoptOwnershipFlag = Flag.Boolean('adopt-ownership').pipe(
     Flag.withDescription(
       're-baseline ownership from the current manifest when the generation record is unreadable',
@@ -844,6 +902,15 @@ export async function runEedsh(
     Flag.withDescription('exit 1 when there is at least one warning'),
     Flag.withDefault(false),
   )
+
+  const initCommandLine = Command.make(
+    'init',
+    { noInstall: noInstallFlag },
+    (parsed) =>
+      Effect.gen(function* () {
+        exitCode = yield* runInitCommand({ noInstall: parsed.noInstall }, runtime)
+      }),
+  ).pipe(Command.withDescription('create the XDG config project and install its dependencies'))
 
   const syncCommand = Command.make(
     'sync',
@@ -922,7 +989,13 @@ export async function runEedsh(
 
   const rootCommand = Command.make('eedsh').pipe(
     Command.withDescription('typed configuration for DeepSeek Harness profiles'),
-    Command.withSubcommands([syncCommand, runCommandLine, checkCommandLine, doctorCommandLine]),
+    Command.withSubcommands([
+      initCommandLine,
+      syncCommand,
+      runCommandLine,
+      checkCommandLine,
+      doctorCommandLine,
+    ]),
   )
 
   const parsedArgs = split.args.length === 0 ? ['--help'] : split.args

@@ -820,6 +820,7 @@ describe('eedsh arguments', () => {
     expect(await runEedsh([], noArgs.options)).toBe(0)
     const noArgsText = noArgs.out.join('\n')
     expect(noArgsText).toContain('eedsh')
+    expect(noArgsText).toContain('init')
     expect(noArgsText).toContain('sync')
     expect(noArgsText).toContain('run')
     expect(noArgsText).toContain('check')

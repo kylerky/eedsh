@@ -149,12 +149,12 @@ describe('command surface characterization', () => {
     const noArgs = harness()
     expect(await runEedsh([], noArgs.options)).toBe(0)
     const noArgsText = noArgs.out.join('\n')
-    for (const command of ['sync', 'run', 'check']) expect(noArgsText).toContain(command)
+    for (const command of ['init', 'sync', 'run', 'check']) expect(noArgsText).toContain(command)
 
     const help = harness()
     expect(await runEedsh(['--help'], help.options)).toBe(0)
     const helpText = help.out.join('\n')
-    for (const command of ['sync', 'run', 'check']) expect(helpText).toContain(command)
+    for (const command of ['init', 'sync', 'run', 'check']) expect(helpText).toContain(command)
 
     const syncHelp = harness()
     expect(await runEedsh(['sync', '--help'], syncHelp.options)).toBe(0)
