@@ -7,57 +7,11 @@ generated patch layer at the position you choose, reconciled dependencies, and a
 generation record that `dsh` boots like any other profile. DSH itself is untouched;
 its own patch precedence, plugin manager, and HMR keep working.
 
-## Requirements
+## Install
 
 - Node.js >= 26 (the only supported runtime line; Node 24 and earlier are not supported)
 - pnpm 12.14.0
 - DSH `0.2.1-rc.2` (pinned by `@eedsh/cli` and declared as the runtime bundle engine)
-
-## Packages
-
-| Package | Role |
-|---|---|
-| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, the Effect Schema plan contract, Effect-native validation, and canonical hashing. |
-| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
-| `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
-
-### Effect boundaries
-
-Effect is the default in `@eedsh/config` and `@eedsh/cli`, and both pin
-`effect@4.0.6`. `@eedsh/config` uses an Effect Schema as the plan's single validator
-and type source, and its validation API is `Result<ProfilePlan, Schema.SchemaError>`:
-failures are Effect's native, multi-line, path-stamped schema errors. `@eedsh/cli`
-takes the command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`
-for Node services, and uses the same Effect runtime for materialization: tagged
-domain failures plus the core `FileSystem` and `ChildProcessSpawner` services, with
-`NodeServices.layer` supplying the live implementations. `@eedsh/runtime` remains a
-plain Cordis plugin because DSH's HMR service owns its lifecycle, and
-`defineProfile` remains synchronous because a config module must default-export
-data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
-that Result or a plain plan.
-
-Within `@eedsh/cli`, external data contracts and tolerant readers are decoded with
-`effect/Schema`, and each tolerant fallback is explicit at the reader. CLI domain
-absence is `Option`: readers, command inputs, findings, and reconciliation or
-publication inputs carry `Option` rather than `undefined`, so callers choose a
-fallback where absence matters. `undefined` remains at JavaScript and JSON
-boundaries, in `process.env` values, in third-party option bags and callbacks, and
-in internal mutable state. The config package's JSON/cycle walker and the
-Effect-free `@eedsh/runtime` remain exceptions.
-
-Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
-The resulting `Exit` is rendered once into a diagnostic and an exit code. Expected
-failures are `Result` values or Effect failures; only the external API adapters and
-the Effect-free runtime use exception handling. `test/architecture.test.ts` rejects
-new JavaScript `throw`, `try`, and `.catch` sites in production config and CLI
-source outside the one allowlisted impossible-state branch in the generated YAML
-emitter.
-
-`test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
-`effect/Schema` and `effect/Result`, may not depend on DSH, and must use the same
-Effect version as `@eedsh/cli`; the workspace declares no separate `@effect/cli`,
-`@effect/platform`, or `@effect/printer*` packages and no source imports one;
-`@eedsh/runtime` may not depend on or import Effect or the TypeScript toolchain.
 
 ## Quick start
 
@@ -121,107 +75,10 @@ node packages/cli/lib/bin.js check --config ./eedsh.config.ts
 `eedsh` is the package bin of `@eedsh/cli`; use `node packages/cli/lib/bin.js` from a
 checkout, or the linked `eedsh` bin once the package is installed.
 
-## Config authoring
-
-A config is a TypeScript module named `eedsh.config.ts` or `eedsh.config.mts` that
-must typecheck in its own project. eedsh evaluates it with `tsx` at runtime, so full
-TypeScript syntax — including enums, namespaces, and decorators — works without a
-build step, but eedsh never typechecks it while loading: type correctness is
-established by your editor, by your project's `tsc --noEmit`, or by `eedsh check`.
-Config imports resolve with tsx's own rules: relative specifiers, package names such
-as `@eedsh/config`, and the tsconfig `paths` mappings of the directory you run eedsh
-from.
-
-Invalid plans fail before sync with Effect's native formatted schema error: the CLI
-prints every message line with its location annotation, for example
-`profile name "" is not usable as a profile directory` followed by
-`  at ["profile"]["name"]`. There are no `plan.*` error codes, no per-issue
-`path: message` rewrite, and no truncation. `defineProfile` returns the same
-`Schema.SchemaError` in a failure `Result`, with the structured issue tree on
-`error.issue`. A config may export a plain plan or a `Result`: the loader validates
-plain data and a successful Result, and reports a failed Result natively.
+## CLI reference
 
 ```sh
-eedsh check [--config <path>] [-- <tsc args>]
-```
-
-`eedsh check` finds the nearest `tsconfig.json` at or above the config, resolves
-`typescript` from the config's directory, prints the resolved version, the selected
-tsconfig, and the exact command line, then runs `tsc --noEmit -p <tsconfig>`. It
-forwards everything after `--` to tsc and exits with the compiler's exit code.
-Missing TypeScript or a missing tsconfig fails with a stable `check.*` code rather
-than passing silently, and a config outside the tsconfig's file set fails with
-`check.config_not_in_project` instead of reporting a check that never looked at it.
-
-## The layer model
-
-A DSH profile is an ordered stack of bundle patch layers followed by the profile's
-own `cordis.patch.yml`, the harness-home patch, and invocation overlays. eedsh adds
-one thing: a **generated bundle** whose patch files are your `layer(...)` lists.
-
-- `bundles` keeps your authored order.
-- `generated()` is a single positional marker. Bundles listed after it override
-  generated defaults; the profile patch still has the final word.
-- Without a marker the generated bundle follows every managed bundle.
-- `@eedsh/runtime` is inserted immediately before `@eedsh/generated`. Both names are
-  reserved.
-
-Patch helpers mirror Loader semantics one-to-one: `insert`, `override` (whole-config
-replacement, no merge), `disable`, `enable`, `group` (group flag, isolate map,
-ordered children), `js` (a `!!js` runtime expression), and `raw` (any additional
-Loader patch field). No module, fragment, preset-extension, or feature concept
-exists in the plan; a preset is an ordinary inserted row.
-
-## What `eedsh sync` writes
-
-```
-$DSH_HOME/profiles/<name>/
-  package.json                                   bundles + reconciled dependencies
-  cordis.yml                                     empty root config (DSH mounts the stack over it)
-  cordis.patch.yml                               your layer; created empty only when missing
-  pnpm-workspace.yaml                            pnpm settings DSH expects
-  .eedsh/plan.json                               plan mirror, written at the commit point
-  .eedsh/generated/package.json                  generation record — the publication commit point
-  .eedsh/generated/plans/<generationId>.json     authoritative validated plan (canonical JSON)
-  .eedsh/generated/patches/<generationId>/<layerId>.yml
-```
-
-Publication is atomic and idempotent:
-
-- patch files, the authoritative `plans/<generationId>.json`, and the profile manifest
-  are written first; the plan mirror and then the generated package manifest are last;
-- an unchanged plan with intact plan artifacts changes nothing (same generation id,
-  same bytes);
-- the generation id covers the plan hash and every emitted layer hash, so the record's
-  `planHash` locates and verifies `plans/<generationId>.json`;
-- a stale `.eedsh/plan.json` or a missing/mismatched authoritative plan is repaired by
-  the next successful sync with the same generation id, without reinstalling;
-- a failed install, preflight, mirror write, or commit leaves the previous generation
-  published and restores the profile manifest, lockfile, and plan mirror.
-
-## Coexist contract
-
-The generated bundle is a normal bundle layer **beneath** the profile patch. Web GUI
-edits, Settings writes, and machine-local overrides keep winning, and `eedsh sync`
-never rewrites `cordis.patch.yml`, the harness-home patch, or `--patch` overlays.
-It only creates an empty `cordis.patch.yml` when none exists.
-
-Ownership is **last-applied**. The generation record of the last successful
-publication is the whole ownership baseline: bundles and dependencies eedsh managed
-before and no longer manages are removed when the removal is published, and entries
-the plan does not manage are preserved. So a bundle or dependency that a published
-generation removed and you then add back by hand is user-owned and survives every
-later sync. Re-adding one while its removal is still unpublished does not save it,
-because the previous record still marks it managed.
-
-`--adopt-ownership` is only for a profile whose generation record cannot be read
-(missing, malformed, or foreign). It re-baselines ownership from the current
-manifest; it is not a way to re-adopt a removal you already published.
-
-## CLI
-
-```sh
-eedsh sync   [--config <path>] [--strict] [--watch] [--adopt-ownership]
+eedsh sync   [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
 eedsh doctor [--profile <name> | --config <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
 eedsh run    [--config <path>] [--no-sync] [-- <dsh args>]
@@ -234,6 +91,10 @@ eedsh --help | --version
 - `--strict` turns unmatched patch targets into a failure and skips publication.
 - `--watch` re-evaluates the config when files in its directory change; a compile
   failure keeps the last published generation.
+- `--explain` attributes each preflight warning as `<layer>: <message>`. Without it,
+  preflight warnings are raw DSH messages followed by a one-line hint pointing at
+  `--explain`. It is sync-only; `run`, `check`, and `doctor` reject it as a usage
+  error.
 - `--adopt-ownership` re-baselines ownership from the current manifest when the
   generation record cannot be read. Without it, sync fails closed on an eedsh-managed
   profile instead of silently treating managed entries as user-owned. It is not for
@@ -263,7 +124,100 @@ eedsh --help | --version
   failure is printed once. `check` and `run` forward the compiler's or DSH's own
   exit code as a successful command outcome.
 
-## Hot reload
+## Example configuration
+
+A full annotated reference configuration and patch-helper table appear here.
+
+## Configuration reference
+
+A config is a TypeScript module named `eedsh.config.ts` or `eedsh.config.mts` that
+must typecheck in its own project. eedsh evaluates it with `tsx` at runtime, so full
+TypeScript syntax — including enums, namespaces, and decorators — works without a
+build step, but eedsh never typechecks it while loading: type correctness is
+established by your editor, by your project's `tsc --noEmit`, or by `eedsh check`.
+Config imports resolve with tsx's own rules: relative specifiers, package names such
+as `@eedsh/config`, and the tsconfig `paths` mappings of the directory you run eedsh
+from.
+
+Invalid plans fail before sync with Effect's native formatted schema error: the CLI
+prints every message line with its location annotation, for example
+`profile name "" is not usable as a profile directory` followed by
+`  at ["profile"]["name"]`. There are no `plan.*` error codes, no per-issue
+`path: message` rewrite, and no truncation. `defineProfile` returns the same
+`Schema.SchemaError` in a failure `Result`, with the structured issue tree on
+`error.issue`. A config may export a plain plan or a `Result`: the loader validates
+plain data and a successful Result, and reports a failed Result natively.
+
+For project typechecking with the config project's own compiler, see [`eedsh check`](#cli-reference).
+
+## How it works
+
+### The layer model
+
+A DSH profile is an ordered stack of bundle patch layers followed by the profile's
+own `cordis.patch.yml`, the harness-home patch, and invocation overlays. eedsh adds
+one thing: a **generated bundle** whose patch files are your `layer(...)` lists.
+
+- `bundles` keeps your authored order.
+- `generated()` is a single positional marker. Bundles listed after it override
+  generated defaults; the profile patch still has the final word.
+- Without a marker the generated bundle follows every managed bundle.
+- `@eedsh/runtime` is inserted immediately before `@eedsh/generated`. Both names are
+  reserved.
+
+Patch helpers mirror Loader semantics one-to-one: `insert`, `override` (whole-config
+replacement, no merge), `disable`, `enable`, `group` (group flag, isolate map,
+ordered children), `js` (a `!!js` runtime expression), and `raw` (any additional
+Loader patch field). No module, fragment, preset-extension, or feature concept
+exists in the plan; a preset is an ordinary inserted row.
+
+### What `eedsh sync` writes
+
+```
+$DSH_HOME/profiles/<name>/
+  package.json                                   bundles + reconciled dependencies
+  cordis.yml                                     empty root config (DSH mounts the stack over it)
+  cordis.patch.yml                               your layer; created empty only when missing
+  pnpm-workspace.yaml                            pnpm settings DSH expects
+  .eedsh/plan.json                               plan mirror, written at the commit point
+  .eedsh/generated/package.json                  generation record — the publication commit point
+  .eedsh/generated/plans/<generationId>.json     authoritative validated plan (canonical JSON)
+  .eedsh/generated/patches/<generationId>/<layerId>.yml
+```
+
+Publication is atomic and idempotent:
+
+- patch files, the authoritative `plans/<generationId>.json`, and the profile manifest
+  are written first; the plan mirror and then the generated package manifest are last;
+- an unchanged plan with intact plan artifacts changes nothing (same generation id,
+  same bytes);
+- the generation id covers the plan hash and every emitted layer hash, so the record's
+  `planHash` locates and verifies `plans/<generationId>.json`;
+- a stale `.eedsh/plan.json` or a missing/mismatched authoritative plan is repaired by
+  the next successful sync with the same generation id, without reinstalling;
+- a failed install, preflight, mirror write, or commit leaves the previous generation
+  published and restores the profile manifest, lockfile, and plan mirror.
+
+### Coexist contract
+
+The generated bundle is a normal bundle layer **beneath** the profile patch. Web GUI
+edits, Settings writes, and machine-local overrides keep winning, and `eedsh sync`
+never rewrites `cordis.patch.yml`, the harness-home patch, or `--patch` overlays.
+It only creates an empty `cordis.patch.yml` when none exists.
+
+Ownership is **last-applied**. The generation record of the last successful
+publication is the whole ownership baseline: bundles and dependencies eedsh managed
+before and no longer manages are removed when the removal is published, and entries
+the plan does not manage are preserved. So a bundle or dependency that a published
+generation removed and you then add back by hand is user-owned and survives every
+later sync. Re-adding one while its removal is still unpublished does not save it,
+because the previous record still marks it managed.
+
+`--adopt-ownership` is only for a profile whose generation record cannot be read
+(missing, malformed, or foreign). It re-baselines ownership from the current
+manifest; it is not a way to re-adopt a removal you already published.
+
+### Hot reload
 
 `@eedsh/runtime` registers only when the composition has a profile context and an
 active HMR service. It watches `.eedsh/generated/package.json`, skips a generation it
@@ -276,6 +230,56 @@ DSH classifies as requiring a restart (pending modules or a moved package) logs 
 restart diagnostic and takes effect on the next start. Without HMR the watcher does
 not register and the current composition keeps running until restart. Editing the
 TypeScript config alone reloads nothing; only a published generation does.
+
+## Architecture
+
+| Package | Role |
+|---|---|
+| `@eedsh/config` | Public typed authoring API (`defineProfile` and patch helpers), the versioned JSON plan, the Effect Schema plan contract, Effect-native validation, and canonical hashing. |
+| `@eedsh/cli` | The `eedsh` command: config discovery and tsx-based evaluation, the `check` command, Effect-based materialization, preflight, atomic publication, `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
+| `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
+
+### Effect boundaries
+
+Effect is the default in `@eedsh/config` and `@eedsh/cli`, and both pin
+`effect@4.0.6`. `@eedsh/config` uses an Effect Schema as the plan's single validator
+and type source, and its validation API is `Result<ProfilePlan, Schema.SchemaError>`:
+failures are Effect's native, multi-line, path-stamped schema errors. `@eedsh/cli`
+takes the command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`
+for Node services, and uses the same Effect runtime for materialization: tagged
+domain failures plus the core `FileSystem` and `ChildProcessSpawner` services, with
+`NodeServices.layer` supplying the live implementations. `@eedsh/runtime` remains a
+plain Cordis plugin because DSH's HMR service owns its lifecycle, and
+`defineProfile` remains synchronous because a config module must default-export
+data. It returns `Result<ProfilePlan, Schema.SchemaError>`; a config may export
+that Result or a plain plan.
+
+Within `@eedsh/cli`, external data contracts and tolerant readers are decoded with
+`effect/Schema`, and each tolerant fallback is explicit at the reader. CLI domain
+absence is `Option`: readers, command inputs, findings, and reconciliation or
+publication inputs carry `Option` rather than `undefined`, so callers choose a
+fallback where absence matters. `undefined` remains at JavaScript and JSON
+boundaries, in `process.env` values, in third-party option bags and callbacks, and
+in internal mutable state. The config package's JSON/cycle walker and the
+Effect-free `@eedsh/runtime` remain exceptions.
+
+Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
+The resulting `Exit` is rendered once into a diagnostic and an exit code. Expected
+failures are `Result` values or Effect failures; only the external API adapters and
+the Effect-free runtime use exception handling. `test/architecture.test.ts` rejects
+new JavaScript `throw`, `try`, and `.catch` sites in production config and CLI
+source outside the one allowlisted impossible-state branch in the generated YAML
+emitter.
+
+`test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
+`effect/Schema` and `effect/Result`, may not depend on DSH, and must use the same
+Effect version as `@eedsh/cli`; the workspace declares no separate `@effect/cli`,
+`@effect/platform`, or `@effect/printer*` packages and no source imports one;
+`@eedsh/runtime` may not depend on or import Effect or the TypeScript toolchain.
+
+## Build from source
+
+Instructions for building from a checkout appear here.
 
 ## Development
 
