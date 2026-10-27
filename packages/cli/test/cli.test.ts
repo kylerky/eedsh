@@ -13,13 +13,13 @@ import {
   PLAN_VERSION,
   type ProfilePlan,
   ProfilePlanSchema,
-  validatePlan,
 } from '@eedsh/config'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { readmePlan } from '../../../test/support/readme'
 import { runEedsh } from '../src/cli'
 import { ConfigError } from '../src/config'
 import { DshResolveFailure } from '../src/internal/effect/errors'
@@ -1264,14 +1264,15 @@ describe('eedsh check failures', () => {
 })
 
 describe('documentation', () => {
-  it('keeps the README example a valid plan', async () => {
-    const example = './fixtures/readme/eedsh.config.ts'
-    const module = (await import(example)) as { default: unknown }
-    const exported = Result.isResult(module.default)
-      ? Result.getOrThrow(module.default)
-      : module.default
-    const result = validatePlan(exported)
-    expect(Result.isSuccess(result)).toBe(true)
+  it('keeps the Quick start example a minimal valid plan', async () => {
+    const plan = await readmePlan('Quick start')
+    expect(plan.profile.name).toBe('work')
+    expect(plan.bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
+      { kind: 'generated' },
+    ])
+    expect(plan.layers.map((item) => item.id)).toEqual(['overrides'])
   })
 })
 

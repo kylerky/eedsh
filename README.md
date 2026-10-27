@@ -9,9 +9,27 @@ its own patch precedence, plugin manager, and HMR keep working.
 
 ## Install
 
-- Node.js >= 26 (the only supported runtime line; Node 24 and earlier are not supported)
-- pnpm 12.14.0
-- DSH `0.2.1-rc.2` (pinned by `@eedsh/cli` and declared as the runtime bundle engine)
+eedsh runs on Node.js >= 26; Node 24 and earlier are not supported. It also needs
+`pnpm` on `PATH`, because `eedsh sync` runs pnpm's install command whenever a
+profile's dependencies change.
+
+Install the CLI globally and the typed authoring API in the project that holds
+`eedsh.config.ts`:
+
+```sh
+npm install -g @eedsh/cli
+# in the project that holds eedsh.config.ts
+npm install --save-dev @eedsh/config
+```
+
+`eedsh check` runs the project's own compiler, so install TypeScript there too:
+
+```sh
+npm install --save-dev typescript
+```
+
+You do not need a separate DSH install: `@eedsh/cli` pins
+`@deepseek-ai/dsh@0.2.1-rc.2` and runs that launcher.
 
 ## Quick start
 
@@ -22,8 +40,6 @@ import {
   defineProfile,
   disable,
   generated,
-  insert,
-  js,
   layer,
   override,
 } from '@eedsh/config'
@@ -31,49 +47,34 @@ import {
 export default defineProfile({
   name: 'work',
   dsh: '0.2.1-rc.2',
-  packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
   bundles: [
     bundle('@deepseek-ai/dsh-base'),
     bundle('@deepseek-ai/dsh-web-app'),
-    generated(), // the generated layers sit here: after web-app, before nothing else
+    generated(),
   ],
   layers: [
-    layer('plugins', [
-      insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
-      disable('repeat-tool-reminder'),
-    ]),
     layer('overrides', [
-      // Whole-config replacement, exactly like a DSH Loader patch.
       override('agent-default-model', {
         provider: 'deepseek',
         model: 'deepseek-chat',
       }),
-      insert({
-        id: 'plugin-manager',
-        name: '@deepseek-ai/dsh-plugin-manager',
-        disabled: js("!ctx.get('profileContext')"),
-      }),
+      disable('repeat-tool-reminder'),
     ]),
   ],
 })
 ```
 
 ```sh
-pnpm install
-pnpm build
-
-# Publish into $DSH_HOME/profiles/work
-node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
-
-# Boot the pinned DSH against the published profile
-node packages/cli/lib/bin.js run --config ./eedsh.config.ts -- --port 3080
-
-# Typecheck the config project without syncing
-node packages/cli/lib/bin.js check --config ./eedsh.config.ts
+eedsh sync
+eedsh doctor
+eedsh run -- --port 3080
 ```
 
-`eedsh` is the package bin of `@eedsh/cli`; use `node packages/cli/lib/bin.js` from a
-checkout, or the linked `eedsh` bin once the package is installed.
+`eedsh sync` publishes the profile to `$DSH_HOME/profiles/work` (by default
+`~/.dsh/profiles/work`); `eedsh doctor` verifies it, and `eedsh run` boots the pinned
+DSH. The CLI installs the profile dependencies with pnpm during sync.
+
+Working from a checkout? Build it first; see [Build from source](#build-from-source).
 
 ## CLI reference
 
