@@ -39,11 +39,11 @@ If writing the temporary file or renaming it over the target fails, the operatio
 
 ### Requirement: Replacement failures are typed
 
-A failed replacement SHALL fail with a `FileSystemFailure` whose operation identifies the atomic write and whose path is the target path.
+A failed replacement SHALL fail with the platform's file-system error whose operation identifies the atomic write and whose path is the target path. The replacement SHALL NOT introduce a project-defined file-system failure type.
 
 #### Scenario: Failure diagnostic
 
 - **WHEN** a replacement fails
-- **THEN** the failure is a `FileSystemFailure`
+- **THEN** the failure is the platform's file-system error
 - **AND** its operation identifies the atomic write
 - **AND** its path is the target path
