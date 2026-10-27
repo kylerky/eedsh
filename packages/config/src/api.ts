@@ -1,14 +1,12 @@
 /**
- * The typed authoring surface: `defineProfile` plus small helpers that map
- * one-to-one onto Loader patch concepts. The helpers return plain plan data and
- * `defineProfile` returns a validation Result; nothing here executes
- * configuration or hides patch semantics.
+ * The typed authoring surface: `defineProfile`, `defineConfig`, and small
+ * helpers that map one-to-one onto Loader patch concepts. `defineProfile`
+ * returns a plain descriptor and `defineConfig` validates the config envelope
+ * and each profile plan; nothing here executes configuration or hides patch
+ * semantics.
  * @module @eedsh/config/api
  */
 
-import type * as Result from 'effect/Result'
-import type * as Schema from 'effect/Schema'
-import { PLAN_FORMAT, PLAN_VERSION } from './plan/constants'
 import type {
   ExpressionNode,
   GeneratedBundle,
@@ -16,26 +14,33 @@ import type {
   PlanBundle,
   PlanLayer,
   PlanPatch,
-  ProfilePlan,
 } from './plan/schema'
 import type { JsonObject, JsonValue } from './plan/types'
-import { validatePlan } from './plan/validate'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject
 
 /** Input accepted by {@link defineProfile}. */
 export interface DefineProfileInput {
-  /** Profile name; also the profile directory under `$DSH_HOME/profiles`. */
-  name: string
-  /** Exact DSH runtime pin the profile is authored against. */
-  dsh: string
   /** Ordered bundle selections, optionally containing the generated marker. */
   bundles?: readonly PlanBundle[]
   /** Ordered generated patch layers. */
   layers?: readonly PlanLayer[]
   /** Profile-local package dependencies. */
   packages?: Readonly<Record<string, string>>
+}
+
+/**
+ * A detached profile descriptor. The config supplies its name, and the shared
+ * config-level DSH pin is applied to every profile.
+ */
+export interface ProfileDefinition {
+  /** Ordered bundle selections, optionally containing the generated marker. */
+  readonly bundles: readonly PlanBundle[]
+  /** Ordered generated patch layers. */
+  readonly layers: readonly PlanLayer[]
+  /** Profile-local package dependencies. */
+  readonly packages: Readonly<Record<string, string>>
 }
 
 /** Options for {@link bundle}. */
@@ -148,24 +153,17 @@ export function raw(entry: PlanPatch): PlanPatch {
 }
 
 /**
- * Build and validate a profile plan. Validation rejects non-JSON values,
- * malformed expression nodes, duplicate markers or layer ids, reserved names,
- * and invalid identity before anything is written.
- * @param input - profile identity, bundles, layers, and packages.
- * @returns the validated, detached plan in a success Result, or Effect's
- * native schema error in a failure Result.
+ * Build a detached profile descriptor. The descriptor is returned
+ * synchronously and is not validated here; `defineConfig` validates each
+ * profile with the plan contract, and `validatePlan` remains available for
+ * callers that want a plan Result directly.
+ * @param input - bundles, layers, and package dependencies.
+ * @returns the copied profile descriptor.
  */
-export function defineProfile(
-  input: DefineProfileInput,
-): Result.Result<ProfilePlan, Schema.SchemaError> {
-  const candidate = {
-    format: PLAN_FORMAT,
-    version: PLAN_VERSION,
-    profile: { name: input.name },
-    dsh: input.dsh,
-    bundles: input.bundles === undefined ? [] : [...input.bundles],
+export function defineProfile(input: DefineProfileInput = {}): ProfileDefinition {
+  return {
+    bundles: [...(input.bundles ?? [])],
     layers: (input.layers ?? []).map((item) => ({ id: item.id, patches: [...item.patches] })),
     packages: { ...(input.packages ?? {}) },
   }
-  return validatePlan(candidate)
 }

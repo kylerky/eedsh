@@ -1,11 +1,12 @@
-const { bundle, defineProfile, generated, layer } =
+const { bundle, defineConfig, defineProfile, generated, layer } =
   require('@eedsh/config') as typeof import('@eedsh/config')
 
-const plan = defineProfile({
-  name: 'cli-cjs',
+module.exports = defineConfig({
   dsh: '0.2.1-rc.2',
-  bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-  layers: [layer('cli', [])],
+  profiles: {
+    'cli-cjs': defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [])],
+    }),
+  },
 })
-
-module.exports = plan

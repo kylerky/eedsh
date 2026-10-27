@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { isSafeProfileName, type ProfilePlan } from '@eedsh/config'
+import { type EedshConfig, isSafeProfileName, type ProfilePlan } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
@@ -52,6 +52,14 @@ import { readVersion } from './internal/schema-readers'
 import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
+import {
+  type ProfileSelectionError,
+  type SelectedProfile,
+  AmbiguousProfile,
+  UnknownProfile,
+  describeProfileSelection,
+  selectProfile,
+} from './selection'
 import { defaultSpawn, type SpawnLike } from './spawn'
 import { type WatchSession, watchConfigDirectory } from './watch'
 
@@ -76,7 +84,7 @@ export interface CliRunOptions {
   stdout?: (line: string) => void
   stderr?: (line: string) => void
   /** Replace config evaluation. */
-  loadConfig?: (configPath: string) => Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError>
+  loadConfig?: (configPath: string) => Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace the file system `doctor` inspects. */
@@ -182,6 +190,9 @@ function cliVersion(): string {
 
 function describeError(error: unknown): string[] {
   if (Schema.isSchemaError(error)) return error.message.split('\n')
+  if (error instanceof UnknownProfile || error instanceof AmbiguousProfile) {
+    return [describeProfileSelection(error)]
+  }
   const tagged = asRecord(error)
   if (tagged !== undefined && '_tag' in tagged) {
     switch (tagged._tag) {
@@ -436,7 +447,7 @@ function syncWatch(
       const loop = Effect.gen(function* () {
         while (true) {
           yield* Queue.take(changes)
-          const planExit = yield* Effect.exit(loadPlan(context.configPath, context))
+          const planExit = yield* Effect.exit(loadWatchedPlan(context.configPath, context))
           if (Exit.isFailure(planExit)) {
             if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
             yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
@@ -517,11 +528,41 @@ function resolveConfigPath(
   return Option.none()
 }
 
-function loadPlan(
+function loadConfigValue(
   configPath: string,
   runtime: CommandRuntime,
-): Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError> {
+): Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError> {
   return (runtime.options.loadConfig ?? loadConfig)(configPath)
+}
+
+/** The selected profile's plan, or that profile's native schema failure. */
+function planOfSelection(
+  selection: SelectedProfile,
+): Effect.Effect<ProfilePlan, Schema.SchemaError> {
+  return Result.isFailure(selection.plan)
+    ? Effect.fail(selection.plan.failure)
+    : Effect.succeed(selection.plan.success)
+}
+
+/** Load the config, choose one profile, and resolve its plan. */
+function loadWatchedPlan(
+  configPath: string,
+  runtime: CommandRuntime,
+): Effect.Effect<
+  ProfilePlan,
+  ConfigError | Schema.SchemaError | ProfileSelectionError
+> {
+  return Effect.gen(function* () {
+    const config = yield* loadConfigValue(configPath, runtime)
+    const selection = selectProfile(config, Option.none())
+    if (Result.isFailure(selection)) return yield* Effect.fail(selection.failure)
+    return yield* planOfSelection(selection.success)
+  })
+}
+
+function selectionFailure(runtime: CommandRuntime, error: ProfileSelectionError): number {
+  for (const line of describeError(error)) runtime.stderr(`eedsh: ${line}`)
+  return EXIT_USAGE
 }
 
 interface SyncCommandInput {
@@ -540,7 +581,10 @@ function runSyncCommand(
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const plan = yield* loadPlan(configPath.value, runtime)
+    const config = yield* loadConfigValue(configPath.value, runtime)
+    const selection = selectProfile(config, Option.none())
+    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+    const plan = yield* planOfSelection(selection.success)
     const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
     if (input.watch) {
       yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
@@ -571,7 +615,10 @@ function runRunCommand(
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const plan = yield* loadPlan(configPath.value, runtime)
+    const config = yield* loadConfigValue(configPath.value, runtime)
+    const selection = selectProfile(config, Option.none())
+    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+    const plan = yield* planOfSelection(selection.success)
     const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
     if (!input.noSync) {
       const result = yield* syncOnce(context, false, false, false)
@@ -635,8 +682,10 @@ function runDoctorCommand(
     } else {
       const configPath = resolveConfigPath(input.configPath, runtime)
       if (Option.isNone(configPath)) return EXIT_FAILURE
-      const plan = yield* loadPlan(configPath.value, runtime)
-      profileName = plan.profile.name
+      const config = yield* loadConfigValue(configPath.value, runtime)
+      const selection = selectProfile(config, Option.none())
+      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+      profileName = selection.success.name
     }
     const result = yield* doctor({ profileDir: profileDirForName(profileName, runtime.env) })
     yield* Effect.sync(() => {

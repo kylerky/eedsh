@@ -1,4 +1,5 @@
 export * from './api'
+export * from './config'
 export * from './plan/constants'
 export * from './plan/hash'
 export * from './plan/schema'

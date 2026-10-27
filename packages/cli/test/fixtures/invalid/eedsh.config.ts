@@ -1,9 +1,10 @@
-export default {
-  format: 'eedsh/profile-plan',
-  version: 1,
-  profile: { name: '' },
+import { bundle, defineConfig, defineProfile } from '@eedsh/config'
+
+export default defineConfig({
   dsh: '0.2.1-rc.2',
-  bundles: [],
-  layers: [],
-  packages: {},
-}
+  profiles: {
+    invalid: defineProfile({
+      bundles: [bundle('@eedsh/runtime')],
+    }),
+  },
+})

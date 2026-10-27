@@ -8,8 +8,16 @@ const require = createRequire(import.meta.url)
 describe('workspace', () => {
   it('exposes the @eedsh/config public entry', () => {
     expect(typeof config.defineProfile).toBe('function')
+    expect(typeof config.defineConfig).toBe('function')
+    expect(typeof config.validateConfigValue).toBe('function')
     expect(config.PLAN_VERSION).toBe(1)
     expect('assertPlan' in config).toBe(false)
+  })
+
+  it('returns a profile descriptor from defineProfile', () => {
+    const definition = config.defineProfile({})
+    expect(definition).toEqual({ bundles: [], layers: [], packages: {} })
+    expect(definition).not.toBeInstanceOf(Promise)
   })
 
   it('exposes the @eedsh/runtime public entry', () => {

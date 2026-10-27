@@ -2,6 +2,7 @@ import {
   type DefineProfileInput,
   defineProfile,
   type PlanPatch,
+  type ProfileDefinition,
   type ProfilePlan,
   validatePlan,
 } from '@eedsh/config'
@@ -35,10 +36,8 @@ const validateSignature: (value: unknown) => Result.Result<ProfilePlan, Schema.S
   validatePlan
 void validateSignature
 
-/** Authoring returns the same native Result shape synchronously. */
-const defineSignature: (
-  input: DefineProfileInput,
-) => Result.Result<ProfilePlan, Schema.SchemaError> = defineProfile
+/** Authoring returns a detached descriptor synchronously. */
+const defineSignature: (input: DefineProfileInput) => ProfileDefinition = defineProfile
 void defineSignature
 
 describe('derived plan types', () => {

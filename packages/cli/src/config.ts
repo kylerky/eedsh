@@ -8,7 +8,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { type ProfilePlan, validatePlan } from '@eedsh/config'
+import { type EedshConfig, validateConfigValue } from '@eedsh/config'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -44,22 +44,17 @@ function errorMessage(error: unknown): string {
   return String(error)
 }
 
-/** Read a config's default export as a validated plan. */
-function exportedPlan(
+/** Read a config's default export as a validated multi-profile config. */
+function exportedConfig(
   exported: unknown,
-): Result.Result<ProfilePlan, ConfigError | Schema.SchemaError> {
-  if (!Result.isResult(exported)) return validatePlan(exported)
-  if (Result.isFailure(exported)) {
-    return Schema.isSchemaError(exported.failure)
-      ? Result.fail(exported.failure)
-      : Result.fail(
-          new ConfigError(
-            'config.invalid_export',
-            `config exported an invalid failure: ${errorMessage(exported.failure)}`,
-          ),
-        )
+): Result.Result<EedshConfig, ConfigError | Schema.SchemaError> {
+  const result = validateConfigValue(exported)
+  if (Result.isFailure(result)) {
+    return Schema.isSchemaError(result.failure)
+      ? Result.fail(result.failure)
+      : Result.fail(new ConfigError(result.failure.code, result.failure.message))
   }
-  return validatePlan(exported.success)
+  return Result.succeed(result.success)
 }
 
 /**
@@ -145,16 +140,16 @@ export function validateConfigPath(configPath: string): Result.Result<void, Conf
 }
 
 /**
- * Import a config module and validate its default export as a profile plan.
+ * Import a config module and validate its default export as an eedsh config.
  * The module URL carries the file's modification time so a watch rerun
  * re-evaluates an edited config instead of reusing the module cache.
  * @param configPath - absolute config path.
- * @returns an Effect carrying the validated plan, a config failure, or the
- * native schema error for an invalid export.
+ * @returns an Effect carrying the validated config, a config failure, or the
+ * native schema error for an invalid envelope or export.
  */
 export function loadConfig(
   configPath: string,
-): Effect.Effect<ProfilePlan, ConfigError | Schema.SchemaError> {
+): Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError> {
   return Effect.gen(function* () {
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
@@ -194,11 +189,11 @@ export function loadConfig(
       return yield* Effect.fail(
         new ConfigError(
           'config.missing_default_export',
-          `${configPath} must default-export a profile plan`,
+          `${configPath} must default-export an eedsh config`,
         ),
       )
     }
-    const result = exportedPlan(exported)
+    const result = exportedConfig(exported)
     if (Result.isFailure(result)) return yield* Effect.fail(result.failure)
     return result.success
   })

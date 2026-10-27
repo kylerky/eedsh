@@ -6,20 +6,19 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   bundle,
+  type EedshConfig,
   generated,
   insert,
   layer,
-  PLAN_FORMAT,
-  PLAN_VERSION,
   type ProfilePlan,
-  ProfilePlanSchema,
+  validateConfigValue,
 } from '@eedsh/config'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { readmePlan } from '../../../test/support/readme'
+import { readmeExample } from '../../../test/support/readme'
 import { runEedsh } from '../src/cli'
 import { ConfigError } from '../src/config'
 import { DshResolveFailure } from '../src/internal/effect/errors'
@@ -46,6 +45,16 @@ const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'eedsh.config.ts')
 const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
 
+/** Wrap validated plans in a config for the injected loader seam. */
+function configWith(...plans: ProfilePlan[]): EedshConfig {
+  return {
+    dsh: '0.2.1-rc.2',
+    profiles: Object.fromEntries(
+      plans.map((plan) => [plan.profile.name, Result.succeed(plan)]),
+    ),
+  }
+}
+
 function hasAnsi(text: string): boolean {
   return new RegExp(`${String.fromCharCode(27)}[[][0-9;]*m`).test(text)
 }
@@ -58,13 +67,16 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 function watchConfigSource(row: string): string {
-  return `import { bundle, defineProfile, generated, insert, layer } from '@eedsh/config'
+  return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
 
-export default defineProfile({
-  name: 'cli-watch',
+export default defineConfig({
   dsh: '0.2.1-rc.2',
-  bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-  layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
+  profiles: {
+    'cli-watch': defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
+    }),
+  },
 })
 `
 }
@@ -182,8 +194,8 @@ describe('eedsh sync', () => {
     const code = await runEedsh(['sync', '--config', fixture('invalid')], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('profile name "" is not usable as a profile directory')
-    expect(errors).toMatch(/at \["profile"\]/)
+    expect(errors).toContain('"@eedsh/runtime" is owned by the materializer')
+    expect(errors).toMatch(/at \["bundles"\]\[0\]\["name"\]/)
     expect(errors).not.toContain('profile.name:')
     expect(errors).not.toMatch(/\(\d+ more\)/)
     expect(h.fs.files.size).toBe(0)
@@ -191,30 +203,24 @@ describe('eedsh sync', () => {
 
   it('prints every native schema error line without reformatting', async () => {
     const h = harness()
-    const decoded = Schema.decodeUnknownResult(ProfilePlanSchema, {
-      errors: 'all',
-      onExcessProperty: 'error',
-    })({
-      format: PLAN_FORMAT,
-      version: PLAN_VERSION,
-      profile: { name: '' },
+    const decoded = validateConfigValue({
       dsh: 'latest',
-      bundles: [],
-      layers: [],
-      packages: {},
+      profiles: { 'bad/name': { bundles: [] } },
     })
-    if (Result.isSuccess(decoded)) expect.unreachable('expected an invalid plan')
+    if (Result.isSuccess(decoded)) throw new Error('expected an invalid config')
+    const failure = decoded.failure
+    if (!Schema.isSchemaError(failure)) throw new Error('expected a schema error')
     const loadConfig = (): Effect.Effect<never, Schema.SchemaError> =>
-      Effect.fail(new Schema.SchemaError(decoded.failure.issue))
+      Effect.fail(new Schema.SchemaError(failure.issue))
     const code = await runEedsh(['sync', '--config', fixture('basic')], {
       ...h.options,
       loadConfig,
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('eedsh: profile name "" is not usable as a profile directory')
+    expect(errors).toContain('eedsh: profile key "bad/name" is not usable as a profile directory')
     expect(errors).toContain('eedsh: "latest" is not an exact version')
-    expect(errors).toMatch(/eedsh: {3}at \["profile"\]/)
+    expect(errors).toMatch(/eedsh: {3}at \["profiles"\]\["bad\/name"\]/)
     expect(errors).toMatch(/eedsh: {3}at \["dsh"\]/)
     expect(errors).not.toContain('profile.name:')
     expect(errors).not.toMatch(/\(\d+ more\)/)
@@ -359,21 +365,47 @@ describe('config export forms', () => {
   const successResult = `
 import * as Result from 'effect/Result'
 export default Result.succeed({
-  format: 'eedsh/profile-plan',
-  version: 1,
-  profile: { name: 'result-export' },
   dsh: '0.2.1-rc.2',
-  bundles: [],
-  layers: [],
-  packages: {},
+  profiles: {
+    'result-export': { bundles: [] },
+  },
 })
 `
 
-  const plainPlan = `
+  const plainConfig = `
+export default {
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    'plain-export': { bundles: [] },
+  },
+}
+`
+
+  const failureResult = `
+import { defineConfig, defineProfile } from '@eedsh/config'
+export default defineConfig({
+  dsh: 'latest',
+  profiles: {
+    work: defineProfile({ bundles: [] }),
+  },
+})
+`
+
+  const forgedSuccess = `
+import * as Result from 'effect/Result'
+export default Result.succeed({
+  dsh: 'latest',
+  profiles: {
+    'forged-export': { bundles: [] },
+  },
+})
+`
+
+  const lonePlan = `
 export default {
   format: 'eedsh/profile-plan',
   version: 1,
-  profile: { name: 'plain-export' },
+  profile: { name: 'legacy-plan' },
   dsh: '0.2.1-rc.2',
   bundles: [],
   layers: [],
@@ -381,45 +413,18 @@ export default {
 }
 `
 
-  const failureResult = `
-import { defineProfile } from '@eedsh/config'
-export default defineProfile({
-  name: '',
-  dsh: 'latest',
-  bundles: [],
-})
-`
-
-  const forgedSuccess = `
-import * as Result from 'effect/Result'
-export default Result.succeed({
-  format: 'eedsh/profile-plan',
-  version: 1,
-  profile: { name: 'forged-export' },
-  dsh: 'latest',
-  bundles: [],
-  layers: [],
-  packages: {},
-})
-`
-
   const authoringThrow = `
-import { validatePlan } from '@eedsh/config'
+import { validateConfigValue } from '@eedsh/config'
 import * as Result from 'effect/Result'
-const result = validatePlan({
-  format: 'eedsh/profile-plan',
-  version: 1,
-  profile: { name: 'thrown-export' },
+const result = validateConfigValue({
   dsh: 'latest',
-  bundles: [],
-  layers: [],
-  packages: {},
+  profiles: { 'thrown-export': { bundles: [] } },
 })
 if (Result.isFailure(result)) throw result.failure
 export default {}
 `
 
-  it('unwraps a successful Result export', async () => {
+  it('unwraps a successful config Result export', async () => {
     const h = harness()
     const configPath = await writeConfig(successResult)
     const code = await runEedsh(['sync', '--config', configPath], h.options)
@@ -428,9 +433,9 @@ export default {}
     expect(h.fs.files.has('/home/profiles/result-export/.eedsh/generated/package.json')).toBe(true)
   })
 
-  it('accepts a plain plan export', async () => {
+  it('accepts a plain config export', async () => {
     const h = harness()
-    const configPath = await writeConfig(plainPlan)
+    const configPath = await writeConfig(plainConfig)
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile plain-export')
@@ -443,9 +448,18 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('profile name "" is not usable as a profile directory')
     expect(errors).toContain('"latest" is not an exact version')
     expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('rejects a lone plan export', async () => {
+    const h = harness()
+    const configPath = await writeConfig(lonePlan)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('at ["profiles"]')
     expect(h.fs.files.size).toBe(0)
   })
 
@@ -469,6 +483,78 @@ export default {}
     expect(errors).toContain('"latest" is not an exact version')
     expect(errors).not.toContain('config.import_failed')
     expect(h.fs.files.size).toBe(0)
+  })
+})
+
+describe('multi-profile configs', () => {
+  async function writeConfig(source: string): Promise<string> {
+    const dir = await tempDir('multi-profile-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(configPath, source)
+    return configPath
+  }
+
+  const defaultsSource = `
+import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'home',
+  profiles: {
+    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
+  },
+})
+`
+
+  const soleSource = `
+import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    solo: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+  },
+})
+`
+
+  const invalidSiblingSource = `
+import { bundle, defineConfig, defineProfile } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
+    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
+  },
+})
+`
+
+  it('syncs the declared default profile', async () => {
+    const h = harness()
+    const configPath = await writeConfig(defaultsSource)
+    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
+    expect(h.out.join('\n')).toContain('profile home')
+    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+  })
+
+  it('syncs the sole profile when no default is declared', async () => {
+    const h = harness()
+    const configPath = await writeConfig(soleSource)
+    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
+    expect(h.out.join('\n')).toContain('profile solo')
+    expect(h.fs.files.has('/home/profiles/solo/.eedsh/generated/package.json')).toBe(true)
+  })
+
+  it('syncs a valid profile when a sibling profile is invalid', async () => {
+    const h = harness()
+    const configPath = await writeConfig(invalidSiblingSource)
+    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
+    expect(h.out.join('\n')).toContain('profile work')
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
+    expect(h.err.join('\n')).not.toContain('owned by the materializer')
   })
 })
 
@@ -896,12 +982,12 @@ describe('eedsh sync --watch', () => {
       }
     }
     let call = 0
-    const loadConfig = (): Effect.Effect<ProfilePlan, ConfigError> => {
+    const loadConfig = (): Effect.Effect<EedshConfig, ConfigError> => {
       call += 1
       if (call === 2) {
         return Effect.fail(new ConfigError('config.import_failed', 'config compile failed'))
       }
-      return Effect.succeed(call === 1 ? planA : planB)
+      return Effect.succeed(configWith(call === 1 ? planA : planB))
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
@@ -1093,9 +1179,9 @@ describe('eedsh sync --watch', () => {
       }
     }
     let calls = 0
-    const loadConfig = (): Effect.Effect<ProfilePlan> => {
+    const loadConfig = (): Effect.Effect<EedshConfig> => {
       calls += 1
-      return Effect.succeed(calls === 1 ? planA : planB)
+      return Effect.succeed(configWith(calls === 1 ? planA : planB))
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
@@ -1265,7 +1351,8 @@ describe('eedsh check failures', () => {
 
 describe('documentation', () => {
   it('keeps the Quick start example a minimal valid plan', async () => {
-    const plan = await readmePlan('Quick start')
+    const example = await readmeExample('Quick start')
+    const plan = example.plan('work')
     expect(plan.profile.name).toBe('work')
     expect(plan.bundles).toEqual([
       { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
@@ -1276,7 +1363,8 @@ describe('documentation', () => {
   })
 
   it('keeps the Example configuration a full valid plan', async () => {
-    const plan = await readmePlan('Example configuration')
+    const example = await readmeExample('Example configuration')
+    const plan = example.plan('work')
     expect(plan.profile.name).toBe('work')
     expect(plan.packages).toEqual({ '@scope/my-plugin': 'link:../packages/my-plugin' })
     expect(plan.bundles).toEqual([

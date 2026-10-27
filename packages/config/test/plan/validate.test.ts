@@ -1,4 +1,6 @@
 import {
+  bundle,
+  defineConfig,
   defineProfile,
   PLAN_FORMAT,
   PLAN_VERSION,
@@ -115,26 +117,37 @@ describe('validatePlan', () => {
   })
 })
 
-describe('defineProfile authoring boundary', () => {
-  it('returns the native failure Result synchronously', () => {
-    const result = defineProfile({ name: '', dsh: '0.2.1-rc.2', bundles: [] })
-    expect(Result.isFailure(result)).toBe(true)
-    if (Result.isFailure(result)) {
-      expect(Schema.isSchemaError(result.failure)).toBe(true)
-      expect(result.failure).toBeInstanceOf(Error)
-      expect(result.failure._tag).toBe('SchemaError')
-      expect(SchemaIssue.isIssue(result.failure.issue)).toBe(true)
-    }
+describe('defineConfig profile boundary', () => {
+  it('stores the native failure Result synchronously', () => {
+    const result = defineConfig({
+      dsh: '0.2.1-rc.2',
+      profiles: { work: defineProfile({ bundles: [bundle('@eedsh/runtime')] }) },
+    })
+    expect(Result.isSuccess(result)).toBe(true)
     expect(result).not.toBeInstanceOf(Promise)
+    if (Result.isFailure(result)) return
+    const profile = result.success.profiles.work
+    expect(profile !== undefined && Result.isFailure(profile)).toBe(true)
+    if (profile !== undefined && Result.isFailure(profile)) {
+      expect(Schema.isSchemaError(profile.failure)).toBe(true)
+      expect(profile.failure).toBeInstanceOf(Error)
+      expect(profile.failure._tag).toBe('SchemaError')
+      expect(SchemaIssue.isIssue(profile.failure.issue)).toBe(true)
+    }
   })
 
-  it('returns plain data synchronously for a valid plan', () => {
-    const result = defineProfile({ name: 'work', dsh: '0.2.1-rc.2', bundles: [] })
+  it('returns one plain plan per profile synchronously', () => {
+    const result = defineConfig({
+      dsh: '0.2.1-rc.2',
+      profiles: { work: defineProfile({ bundles: [] }) },
+    })
     expect(Result.isSuccess(result)).toBe(true)
-    if (Result.isSuccess(result)) {
-      expect(result.success.format).toBe(PLAN_FORMAT)
-      expect(result.success.profile.name).toBe('work')
+    if (Result.isFailure(result)) return
+    const profile = result.success.profiles.work
+    expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
+    if (profile !== undefined && Result.isSuccess(profile)) {
+      expect(profile.success.format).toBe(PLAN_FORMAT)
+      expect(profile.success.profile.name).toBe('work')
     }
-    expect(result).not.toBeInstanceOf(Promise)
   })
 })

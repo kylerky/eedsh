@@ -1,6 +1,6 @@
 import { canonicalJson, hashPlan } from '@eedsh/config'
 import { describe, expect, it } from 'vitest'
-import { readmePlan } from '../../../../test/support/readme'
+import { readmeExample } from '../../../../test/support/readme'
 
 /**
  * Canonical JSON and SHA-256 recorded with the pre-Effect validator for the
@@ -14,7 +14,8 @@ const PLAN_HASH = '2522100ca927c6a7e299b2b954a41e1dc937305feb917ace96e2cfe279a56
 
 describe('plan hash parity', () => {
   it('keeps the canonical JSON and hash of the README example plan', async () => {
-    const plan = await readmePlan('Example configuration')
+    const example = await readmeExample('Example configuration')
+    const plan = example.plan('work')
     expect(canonicalJson(plan)).toBe(CANONICAL_JSON)
     expect(hashPlan(plan)).toBe(PLAN_HASH)
   })

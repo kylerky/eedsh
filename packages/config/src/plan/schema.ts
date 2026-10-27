@@ -59,14 +59,14 @@ function refine<S extends Schema.Top>(
 }
 
 /** A profile name that is safe to use as a profile directory. */
-const ProfileNameSchema = refine(
+export const ProfileNameSchema = refine(
   Schema.NonEmptyString,
   (name) =>
     isSafeProfileName(name) || `profile name "${name}" is not usable as a profile directory`,
 )
 
 /** An exact DSH runtime pin. */
-const DshPinSchema = refine(
+export const DshPinSchema = refine(
   Schema.NonEmptyString,
   (dsh) => DSH_PIN.test(dsh) || `"${dsh}" is not an exact version`,
 )
