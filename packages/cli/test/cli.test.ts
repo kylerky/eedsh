@@ -1482,6 +1482,310 @@ describe('eedsh sync --watch', () => {
   })
 })
 
+describe('multi-profile sync --watch', () => {
+  const manifestPath = (name: string) =>
+    `/home/profiles/${name}/.eedsh/generated/package.json`
+
+  function watchControl() {
+    let onChange: (() => void) | undefined
+    let closes = 0
+    const watch = async (_dir: string, callback: () => void) => {
+      onChange = callback
+      return {
+        close: async () => {
+          closes += 1
+        },
+      }
+    }
+    return {
+      watch,
+      notify: () => onChange?.(),
+      closes: () => closes,
+    }
+  }
+
+  function twoProfiles(workRow: string, homeRow: string): string {
+    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${workRow}', name: '@scope/${workRow}' })])],
+    }),
+    home: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${homeRow}', name: '@scope/${homeRow}' })])],
+    }),
+  },
+})
+`
+  }
+
+  function singleProfile(row: string): string {
+    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    work: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
+    }),
+  },
+})
+`
+  }
+
+  function invalidHome(workRow: string): string {
+    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${workRow}', name: '@scope/${workRow}' })])],
+    }),
+    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
+  },
+})
+`
+  }
+
+  function strictWorkSource(homeRow: string): string {
+    return `import { bundle, defineConfig, defineProfile, generated, insert, layer, override } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [override('missing-row', { interval: 1 })])],
+    }),
+    home: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('cli', [insert({ id: '${homeRow}', name: '@scope/${homeRow}' })])],
+    }),
+  },
+})
+`
+  }
+
+  async function watchConfig(source: string): Promise<string> {
+    const dir = await tempDir('multi-watch-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(configPath, source)
+    return configPath
+  }
+
+  const generatedPatches = (h: ReturnType<typeof harness>) =>
+    [...h.fs.files.entries()]
+      .filter(([path]) => path.includes('/.eedsh/generated/patches/'))
+      .map(([, content]) => content)
+
+  it('publishes every profile on a bare watch and on reruns', async () => {
+    const h = harness()
+    const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(
+      await waitFor(
+        () => h.fs.files.has(manifestPath('work')) && h.fs.files.has(manifestPath('home')),
+      ),
+    ).toBe(true)
+
+    await writeFile(configPath, twoProfiles('work-b', 'home-b'))
+    control.notify()
+    expect(
+      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
+    ).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('narrows watch to --profile', async () => {
+    const h = harness()
+    const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
+    await delay(100)
+    expect(h.fs.files.has(manifestPath('work'))).toBe(false)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('picks up a profile added while watching', async () => {
+    const h = harness()
+    const configPath = await watchConfig(singleProfile('work-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
+
+    await writeFile(configPath, twoProfiles('work-a', 'home-added'))
+    control.notify()
+    expect(
+      await waitFor(
+        () =>
+          h.fs.files.has(manifestPath('home')) &&
+          generatedPatches(h).some((patch) => patch.includes('home-added')),
+      ),
+    ).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('stops syncing a profile removed from the config and keeps its state', async () => {
+    const h = harness()
+    const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(
+      await waitFor(
+        () => h.fs.files.has(manifestPath('work')) && h.fs.files.has(manifestPath('home')),
+      ),
+    ).toBe(true)
+    const homeManifest = h.fs.files.get(manifestPath('home'))
+
+    await writeFile(configPath, singleProfile('work-b'))
+    control.notify()
+    expect(
+      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b'))),
+    ).toBe(true)
+    expect(h.fs.files.get(manifestPath('home'))).toBe(homeManifest)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('reports an invalid profile and still syncs its valid siblings', async () => {
+    const h = harness()
+    const configPath = await watchConfig(invalidHome('work-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
+    expect(await waitFor(() => h.err.join('\n').includes('owned by the materializer'))).toBe(true)
+    expect(h.err.join('\n')).toContain('home')
+    expect(h.fs.files.has(manifestPath('home'))).toBe(false)
+
+    await writeFile(configPath, twoProfiles('work-a', 'home-b'))
+    control.notify()
+    expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('continues after the selected profile disappears', async () => {
+    const h = harness()
+    const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
+
+    await delay(20)
+    await writeFile(configPath, singleProfile('work-b'))
+    control.notify()
+    expect(
+      await waitFor(
+        () => h.err.join('\n').includes('"home" is not declared') && h.err.join('\n').includes('work'),
+      ),
+    ).toBe(true)
+
+    await delay(20)
+    await writeFile(configPath, twoProfiles('work-a', 'home-b'))
+    control.notify()
+    expect(
+      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
+    ).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+
+  it('keeps the session active after a materialization failure', async () => {
+    const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
+    const h = harness({ basePatches, realPreflight: true })
+    const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
+    const control = watchControl()
+    const controller = new AbortController()
+    const running = runEedsh(['sync', '--strict', '--config', configPath, '--watch'], {
+      ...h.options,
+      watch: control.watch,
+      signal: controller.signal,
+    })
+
+    expect(
+      await waitFor(
+        () => h.fs.files.has(manifestPath('work')) && h.fs.files.has(manifestPath('home')),
+      ),
+    ).toBe(true)
+
+    await delay(20)
+    await writeFile(configPath, strictWorkSource('home-b'))
+    control.notify()
+    expect(await waitFor(() => h.err.join('\n').includes('missing-row'))).toBe(true)
+    expect(h.err.join('\n')).toContain('work')
+    expect(
+      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b'))),
+    ).toBe(true)
+
+    await delay(20)
+    await writeFile(configPath, twoProfiles('work-b', 'home-b'))
+    control.notify()
+    expect(
+      await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b'))),
+    ).toBe(true)
+
+    controller.abort()
+    expect(await running).toBe(0)
+  })
+})
+
 describe('eedsh check', () => {
   const configPath = fixture('basic')
 

@@ -82,6 +82,24 @@ export function selectAllProfiles(config: EedshConfig): SelectedProfile[] {
 }
 
 /**
+ * Select the profiles a sync run should publish: every profile when no
+ * `--profile` is supplied, or exactly the named profile.
+ * @param config - the loaded config.
+ * @param requested - the `--profile` value, when one was supplied.
+ * @returns the selected entries, or a tagged usage failure.
+ */
+export function selectSyncProfiles(
+  config: EedshConfig,
+  requested: Option.Option<string>,
+): Result.Result<readonly SelectedProfile[], ProfileSelectionError> {
+  if (Option.isNone(requested)) return Result.succeed(selectAllProfiles(config))
+  const selection = selectProfile(config, requested)
+  return Result.isFailure(selection)
+    ? Result.fail(selection.failure)
+    : Result.succeed([selection.success])
+}
+
+/**
  * Render a selection failure as one diagnostic line.
  * @param error - the tagged selection failure.
  * @returns the message naming the available profiles.

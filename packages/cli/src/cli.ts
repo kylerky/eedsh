@@ -47,12 +47,11 @@ import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
 import {
   type ProfileSelectionError,
-  type SelectedProfile,
   AmbiguousProfile,
   UnknownProfile,
   describeProfileSelection,
-  selectAllProfiles,
   selectProfile,
+  selectSyncProfiles,
 } from './selection'
 import { defaultSpawn, type SpawnLike } from './spawn'
 import { type WatchSession, watchConfigDirectory } from './watch'
@@ -321,13 +320,13 @@ function serviceLayerFor(options: CliRunOptions): CliServiceLayer {
 
 /** The materialization program before its service layer is provided. */
 function syncProgram(
-  context: CommandContext,
+  env: Record<string, string | undefined>,
   plan: ProfilePlan,
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
-  return programFor(context.env, plan, strict, explain, adoptOwnership)
+  return programFor(env, plan, strict, explain, adoptOwnership)
 }
 
 /** Run one one-shot materialization with its own service layer. */
@@ -338,7 +337,7 @@ function syncOnce(
   adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshResolveFailure> {
   return Effect.suspend(() =>
-    syncProgram(context, context.plan, strict, explain, adoptOwnership).pipe(
+    syncProgram(context.env, context.plan, strict, explain, adoptOwnership).pipe(
       Effect.provide(serviceLayerFor(context.options)),
     ),
   )
@@ -366,40 +365,81 @@ function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
   })
 }
 
-/** Run one watch-mode sync, reporting failures and stopping on interruption. */
-function runWatch(
-  context: CommandContext,
-  plan: ProfilePlan,
+/** The context one watch session runs against. */
+interface WatchContext extends CommandRuntime {
+  configPath: string
+  /** The `--profile` value, or none to watch every profile. */
+  profile: Option.Option<string>
+}
+
+/** Run one watch pass over the currently selected profile set. */
+function runWatchSelection(
+  context: WatchContext,
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
 ): Effect.Effect<void, never, CliService> {
   return Effect.gen(function* () {
-    const runExit = yield* Effect.exit(syncProgram(context, plan, strict, explain, adoptOwnership))
-    if (Exit.isFailure(runExit)) {
-      if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
-      yield* Effect.sync(() =>
-        reportSyncError(context.stderr, Cause.squash(runExit.cause), explain),
-      )
+    const loaded = yield* Effect.exit(loadConfigValue(context.configPath, context))
+    if (Exit.isFailure(loaded)) {
+      if (Cause.hasInterruptsOnly(loaded.cause)) return yield* Effect.interrupt
+      yield* Effect.sync(() => report(context.stderr, Cause.squash(loaded.cause)))
       return
     }
-    yield* Effect.sync(() =>
-      printResult(context.stdout, context.stderr, plan, runExit.value, explain),
-    )
+
+    const selection = selectSyncProfiles(loaded.value, context.profile)
+    if (Result.isFailure(selection)) {
+      yield* Effect.sync(() => {
+        for (const line of describeError(selection.failure)) context.stderr(`eedsh: ${line}`)
+      })
+      return
+    }
+
+    const entries = selection.success
+    const multiple = entries.length > 1
+    for (const entry of entries) {
+      if (Result.isFailure(entry.plan)) {
+        const failure = entry.plan.failure
+        yield* Effect.sync(() => reportProfileFailure(context.stderr, entry.name, failure))
+        continue
+      }
+      const plan = entry.plan.success
+      yield* Effect.sync(() => {
+        if (multiple) context.stdout(`eedsh: profile "${entry.name}"`)
+      })
+      const runExit = yield* Effect.exit(
+        syncProgram(context.env, plan, strict, explain, adoptOwnership),
+      )
+      if (Exit.isFailure(runExit)) {
+        if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
+        yield* Effect.sync(() =>
+          reportProfileSyncFailure(
+            context.stderr,
+            entry.name,
+            Cause.squash(runExit.cause),
+            explain,
+          ),
+        )
+        continue
+      }
+      yield* Effect.sync(() =>
+        printResult(context.stdout, context.stderr, plan, runExit.value, explain),
+      )
+    }
   })
 }
 
-function watchFailure(context: CommandContext, cause: unknown): ConfigError {
+function watchFailure(configPath: string, cause: unknown): ConfigError {
   const message = messageOf(cause)
   return new ConfigError(
     'config.watch_failed',
-    `cannot watch ${dirname(context.configPath)}: ${message}`,
+    `cannot watch ${dirname(configPath)}: ${message}`,
   )
 }
 
 /** One scoped watch session; the service layer is built once for the session. */
 function syncWatch(
-  context: CommandContext,
+  context: WatchContext,
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
@@ -423,7 +463,7 @@ function syncWatch(
               : context.options.watch(dir, () => {
                   Queue.offerUnsafe(changes, undefined)
                 }),
-          catch: (cause) => watchFailure(context, cause),
+          catch: (cause) => watchFailure(context.configPath, cause),
         }),
         (session) =>
           Effect.tryPromise({
@@ -443,20 +483,12 @@ function syncWatch(
       const loop = Effect.gen(function* () {
         while (true) {
           yield* Queue.take(changes)
-          const planExit = yield* Effect.exit(
-            loadWatchedPlan(context.configPath, context.profile, context),
-          )
-          if (Exit.isFailure(planExit)) {
-            if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
-            yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
-            continue
-          }
-          yield* runWatch(context, planExit.value, strict, explain, adoptOwnership)
+          yield* runWatchSelection(context, strict, explain, adoptOwnership)
         }
       })
 
       yield* Effect.race(
-        runWatch(context, context.plan, strict, explain, adoptOwnership).pipe(Effect.andThen(loop)),
+        runWatchSelection(context, strict, explain, adoptOwnership).pipe(Effect.andThen(loop)),
         stopSignal(context.options.signal),
       )
     })
@@ -529,32 +561,6 @@ function loadConfigValue(
   return (runtime.options.loadConfig ?? loadConfig)(configPath)
 }
 
-/** The selected profile's plan, or that profile's native schema failure. */
-function planOfSelection(
-  selection: SelectedProfile,
-): Effect.Effect<ProfilePlan, Schema.SchemaError> {
-  return Result.isFailure(selection.plan)
-    ? Effect.fail(selection.plan.failure)
-    : Effect.succeed(selection.plan.success)
-}
-
-/** Load the config, choose one profile, and resolve its plan. */
-function loadWatchedPlan(
-  configPath: string,
-  profile: Option.Option<string>,
-  runtime: CommandRuntime,
-): Effect.Effect<
-  ProfilePlan,
-  ConfigError | Schema.SchemaError | ProfileSelectionError
-> {
-  return Effect.gen(function* () {
-    const config = yield* loadConfigValue(configPath, runtime)
-    const selection = selectProfile(config, profile)
-    if (Result.isFailure(selection)) return yield* Effect.fail(selection.failure)
-    return yield* planOfSelection(selection.success)
-  })
-}
-
 function selectionFailure(runtime: CommandRuntime, error: ProfileSelectionError): number {
   for (const line of describeError(error)) runtime.stderr(`eedsh: ${line}`)
   return EXIT_USAGE
@@ -599,34 +605,17 @@ function runSyncCommand(
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
-    const config = yield* loadConfigValue(path, runtime)
 
     if (input.watch) {
-      const selection = selectProfile(config, input.profile)
-      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
-      const entry = selection.success
-      if (Result.isFailure(entry.plan)) {
-        reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
-        return EXIT_FAILURE
-      }
-      const context: CommandContext = {
-        ...runtime,
-        configPath: path,
-        plan: entry.plan.success,
-        profile: input.profile,
-      }
+      const context: WatchContext = { ...runtime, configPath: path, profile: input.profile }
       yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
       return EXIT_OK
     }
 
-    let entries: readonly SelectedProfile[]
-    if (Option.isSome(input.profile)) {
-      const selection = selectProfile(config, input.profile)
-      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
-      entries = [selection.success]
-    } else {
-      entries = selectAllProfiles(config)
-    }
+    const config = yield* loadConfigValue(path, runtime)
+    const selection = selectSyncProfiles(config, input.profile)
+    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+    const entries = selection.success
 
     const multiple = entries.length > 1
     let failed = false
