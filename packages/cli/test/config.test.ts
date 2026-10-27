@@ -1,16 +1,15 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Effect, Option } from 'effect'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
   ConfigError,
-  findConfigPath,
-  findUnsupportedConfigPath,
   loadConfig,
   unsupportedConfigExtensionError,
   validateConfigPath,
 } from '../src/config'
+import { CONFIG_FILENAME, configHome, defaultConfigPath } from '../src/config-path'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 
@@ -74,12 +73,23 @@ describe('config path validation', () => {
     }
   })
 
+  it('rejects .mts and .mjs config paths', () => {
+    for (const path of ['/work/config.mts', '/work/config.mjs']) {
+      const result = validateConfigPath(path)
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure.code).toBe('config.unsupported_extension')
+        expect(result.failure.message).toContain('config.ts')
+      }
+    }
+  })
+
   it('builds tagged config failures', () => {
     const error = unsupportedConfigExtensionError('/work/eedsh.config.js')
     expect(error).toBeInstanceOf(ConfigError)
     expect(error._tag).toBe('ConfigError')
     expect(error.code).toBe('config.unsupported_extension')
-    expect(error.message).toContain('eedsh.config.ts')
+    expect(error.message).toContain('config.ts')
   })
 })
 
@@ -116,34 +126,26 @@ describe('config loading', () => {
   })
 })
 
-describe('config discovery', () => {
-  it('finds the first supported TypeScript config in a directory', async () => {
-    await mkdir(tempRoot, { recursive: true })
-    const dir = await mkdtemp(join(tempRoot, 'config-discovery-'))
-    const path = join(dir, 'eedsh.config.ts')
-    await writeFile(path, 'export default {}\n')
-    expect(findConfigPath(dir)).toEqual(Option.some(path))
+describe('XDG config path', () => {
+  it('uses an absolute XDG_CONFIG_HOME', () => {
+    const env = { XDG_CONFIG_HOME: join('/xdg', 'home'), HOME: '/home/user' }
+    expect(configHome(env)).toBe(join('/xdg', 'home'))
+    expect(defaultConfigPath(env)).toBe(join('/xdg', 'home', 'eedsh', CONFIG_FILENAME))
   })
 
-  it('returns none when the directory has no supported config', async () => {
-    await mkdir(tempRoot, { recursive: true })
-    const dir = await mkdtemp(join(tempRoot, 'config-discovery-'))
-    await writeFile(join(dir, 'eedsh.config.js'), 'export default {}\n')
-    expect(findConfigPath(dir)).toEqual(Option.none())
+  it('falls back to ~/.config when XDG_CONFIG_HOME is unset, empty, or relative', () => {
+    for (const value of [undefined, '', 'relative/dir']) {
+      const env = { XDG_CONFIG_HOME: value, HOME: '/home/user' }
+      expect(configHome(env)).toBe(join('/home/user', '.config'))
+      expect(defaultConfigPath(env)).toBe(join('/home/user', '.config', 'eedsh', CONFIG_FILENAME))
+    }
   })
 
-  it('finds a JavaScript config that discovery rejects', async () => {
-    await mkdir(tempRoot, { recursive: true })
-    const dir = await mkdtemp(join(tempRoot, 'config-discovery-'))
-    const path = join(dir, 'eedsh.config.js')
-    await writeFile(path, 'export default {}\n')
-    expect(findUnsupportedConfigPath(dir)).toEqual(Option.some(path))
+  it('uses USERPROFILE when HOME is absent', () => {
+    expect(configHome({ USERPROFILE: '/users/me' })).toBe(join('/users/me', '.config'))
   })
 
-  it('returns none when only supported configs exist', async () => {
-    await mkdir(tempRoot, { recursive: true })
-    const dir = await mkdtemp(join(tempRoot, 'config-discovery-'))
-    await writeFile(join(dir, 'eedsh.config.ts'), 'export default {}\n')
-    expect(findUnsupportedConfigPath(dir)).toEqual(Option.none())
+  it('exposes the config filename', () => {
+    expect(CONFIG_FILENAME).toBe('config.ts')
   })
 })

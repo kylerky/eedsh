@@ -13,9 +13,8 @@ import { EXIT_FAILURE } from './exit'
 import { CheckFailure } from './internal/effect/errors'
 import { messageOf } from './internal/error-message'
 import { readVersion } from './internal/schema-readers'
+import { findTsconfigPath } from './internal/tsconfig'
 import type { SpawnLike, SpawnOptionsLike } from './spawn'
-
-const TSCONFIG_FILENAME = 'tsconfig.json'
 
 const packageBinSchema = Schema.Union([Schema.String, Schema.Struct({ tsc: Schema.String })])
 
@@ -44,22 +43,6 @@ export interface CheckInput {
   env: Record<string, string | undefined>
   cwd: string
   spawn: SpawnLike
-}
-
-/**
- * Find the nearest tsconfig.json at or above the config file.
- * @param configPath - absolute config path.
- * @returns the absolute tsconfig path, or None when there is none.
- */
-export function findTsconfigPath(configPath: string): Option.Option<string> {
-  let dir = dirname(configPath)
-  for (;;) {
-    const candidate = join(dir, TSCONFIG_FILENAME)
-    if (existsSync(candidate)) return Option.some(candidate)
-    const parent = dirname(dir)
-    if (parent === dir) return Option.none()
-    dir = parent
-  }
 }
 
 /**
@@ -166,7 +149,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
       return yield* Effect.fail(
         checkFailure(
           'config.not_found',
-          `cannot read ${input.configPath}; create eedsh.config.ts or pass --config <path>`,
+          `cannot read ${input.configPath}; run "eedsh init" to create the config project or pass --config <path>`,
         ),
       )
     }

@@ -88,6 +88,7 @@ interface HarnessOptions {
   packages?: { fail?: boolean; beforeInstall?: (count: number) => Effect.Effect<void> }
   realPreflight?: boolean
   lockHeld?: boolean
+  lockContendedPaths?: readonly string[]
   failLayer?: boolean
 }
 
@@ -96,7 +97,11 @@ function harness(options: HarnessOptions = {}) {
   const packages = fakePackageManager(options.packages)
   const dsh = fakeDsh({ patches: options.basePatches ?? [] })
   const preflight = fakePreflight(options.preflight)
-  const lock = fakeSyncLock({ held: options.lockHeld ?? false })
+  const lock = fakeSyncLock(
+    options.lockContendedPaths === undefined
+      ? { held: options.lockHeld ?? false }
+      : { held: options.lockHeld ?? false, contendedPaths: options.lockContendedPaths },
+  )
   const dshLayer = options.failLayer
     ? Layer.effect(
         DshInstallation,
@@ -142,7 +147,7 @@ function harness(options: HarnessOptions = {}) {
   const out: string[] = []
   const err: string[] = []
   const runOptions = {
-    env: { DSH_HOME: '/home' },
+    env: { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg' },
     stdout: (line: string) => out.push(line),
     stderr: (line: string) => err.push(line),
     services,
@@ -177,16 +182,6 @@ describe('eedsh sync', () => {
     expect(h.packages.installs).toEqual(['/home/profiles/cli-fixture'])
     expect(h.out.join('\n')).toContain('cli-fixture')
     expect(h.err.join('\n')).not.toContain('eedsh:')
-  })
-
-  it('discovers eedsh.config.ts in the working directory', async () => {
-    const h = harness()
-    const code = await runEedsh(['sync'], {
-      ...h.options,
-      cwd: join(root, 'packages/cli/test/fixtures/basic'),
-    })
-    expect(code).toBe(0)
-    expect(h.fs.files.has(generatedManifest)).toBe(true)
   })
 
   it('reports the native validation message for an invalid config and exits 1', async () => {
@@ -235,47 +230,13 @@ describe('eedsh sync', () => {
   })
 })
 
-describe('config discovery', () => {
+describe('explicit config paths', () => {
   const rejected = [
     { dir: 'javascript-mjs', name: 'eedsh.config.mjs' },
     { dir: 'javascript-js', name: 'eedsh.config.js' },
   ] as const
 
-  it('selects eedsh.config.ts ahead of eedsh.config.mts', async () => {
-    const h = harness()
-    const code = await runEedsh(['sync'], {
-      ...h.options,
-      cwd: join(root, 'packages/cli/test/fixtures/discovery'),
-    })
-    expect(code).toBe(0)
-    expect(h.out.join('\n')).toContain('profile discovery-ts')
-    expect(h.fs.files.has('/home/profiles/discovery-ts/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/discovery-mts/.eedsh/generated/package.json')).toBe(false)
-  })
-
-  it('loads an explicit eedsh.config.mts path', async () => {
-    const h = harness()
-    const path = join(root, 'packages/cli/test/fixtures/mts/eedsh.config.mts')
-    const code = await runEedsh(['sync', '--config', path], h.options)
-    expect(code).toBe(0)
-    expect(h.out.join('\n')).toContain('profile cli-mts')
-  })
-
   for (const { dir, name } of rejected) {
-    it(`rejects a discovered ${name} config with a stable code`, async () => {
-      const h = harness()
-      const code = await runEedsh(['sync'], {
-        ...h.options,
-        cwd: join(root, 'packages/cli/test/fixtures', dir),
-      })
-      expect(code).toBe(1)
-      const errors = h.err.join('\n')
-      expect(errors).toContain('config.unsupported_extension')
-      expect(errors).toContain('eedsh.config.ts')
-      expect(errors).toContain('eedsh.config.mts')
-      expect(h.fs.files.size).toBe(0)
-    })
-
     it(`rejects an explicit ${name} config before evaluation`, async () => {
       const h = harness()
       const path = join(root, 'packages/cli/test/fixtures', dir, name)
@@ -283,11 +244,119 @@ describe('config discovery', () => {
       expect(code).toBe(1)
       const errors = h.err.join('\n')
       expect(errors).toContain('config.unsupported_extension')
-      expect(errors).toContain('eedsh.config.ts')
-      expect(errors).toContain('eedsh.config.mts')
+      expect(errors).toContain('config.ts')
       expect(h.fs.files.size).toBe(0)
     })
   }
+})
+
+describe('XDG config resolution', () => {
+  const source = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    'xdg-profile': defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+    }),
+  },
+})
+`
+
+  async function xdgHome(): Promise<string> {
+    const home = await tempDir('xdg-home-')
+    await mkdir(join(home, 'eedsh'), { recursive: true })
+    return home
+  }
+
+  async function writeXdgConfig(home: string): Promise<string> {
+    const path = join(home, 'eedsh', 'config.ts')
+    await writeFile(path, source)
+    return path
+  }
+
+  it('loads config.ts from XDG_CONFIG_HOME instead of the working directory', async () => {
+    const h = harness()
+    const home = await xdgHome()
+    const configPath = await writeXdgConfig(home)
+    const cwd = await tempDir('xdg-cwd-')
+    await writeFile(join(cwd, 'eedsh.config.ts'), source)
+
+    const code = await runEedsh(['sync'], {
+      ...h.options,
+      cwd,
+      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    })
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile xdg-profile')
+    expect(h.fs.files.has('/home/profiles/xdg-profile/.eedsh/generated/package.json')).toBe(true)
+    expect(configPath.endsWith(join('eedsh', 'config.ts'))).toBe(true)
+  })
+
+  it('falls back to ~/.config when XDG_CONFIG_HOME is unset or relative', async () => {
+    for (const value of [undefined, 'relative/dir']) {
+      const h = harness()
+      const home = await tempDir('xdg-fallback-home-')
+      await mkdir(join(home, '.config', 'eedsh'), { recursive: true })
+      await writeFile(join(home, '.config', 'eedsh', 'config.ts'), source)
+      const code = await runEedsh(['sync'], {
+        ...h.options,
+        env: { ...h.options.env, HOME: home, XDG_CONFIG_HOME: value },
+      })
+      expect(code).toBe(0)
+      expect(h.out.join('\n')).toContain('profile xdg-profile')
+      expect(h.fs.files.has('/home/profiles/xdg-profile/.eedsh/generated/package.json')).toBe(true)
+    }
+  })
+
+  it('does not discover a working-directory config', async () => {
+    const h = harness()
+    const home = await xdgHome()
+    const cwd = await tempDir('xdg-cwd-')
+    await writeFile(join(cwd, 'eedsh.config.ts'), source)
+
+    const code = await runEedsh(['sync'], {
+      ...h.options,
+      cwd,
+      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    })
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain(join(home, 'eedsh', 'config.ts'))
+    expect(errors).toContain('eedsh init')
+    expect(errors).toContain('--config')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('names the missing XDG config and both ways to provide one', async () => {
+    const h = harness()
+    const home = await xdgHome()
+    const cwd = await tempDir('xdg-empty-cwd-')
+    const code = await runEedsh(['sync'], {
+      ...h.options,
+      cwd,
+      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    })
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain(join(home, 'eedsh', 'config.ts'))
+    expect(errors).toContain('eedsh init')
+    expect(errors).toContain('--config <path>')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('rejects an explicit .mts config before evaluation', async () => {
+    const h = harness()
+    const dir = await tempDir('xdg-mts-')
+    const configPath = join(dir, 'config.mts')
+    await writeFile(configPath, source)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('config.unsupported_extension')
+    expect(errors).toContain('config.ts')
+    expect(h.fs.files.size).toBe(0)
+  })
 })
 
 describe('config evaluation', () => {
@@ -531,13 +600,17 @@ export default defineConfig({
 })
 `
 
-  it('syncs the declared default profile', async () => {
+  it('uses the declared default profile for run', async () => {
     const h = harness()
     const configPath = await writeConfig(defaultsSource)
-    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
-    expect(h.out.join('\n')).toContain('profile home')
-    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    const { calls, spawn } = fakeSpawner({ exitCode: 0 })
+    const code = await runEedsh(['run', '--config', configPath, '--no-sync'], {
+      ...h.options,
+      spawn,
+    })
+    expect(code).toBe(0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args.slice(1)).toEqual(['--profile', 'home'])
   })
 
   it('syncs the sole profile when no default is declared', async () => {
@@ -551,10 +624,182 @@ export default defineConfig({
   it('syncs a valid profile when a sibling profile is invalid', async () => {
     const h = harness()
     const configPath = await writeConfig(invalidSiblingSource)
-    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
+    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(1)
     expect(h.out.join('\n')).toContain('profile work')
     expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
-    expect(h.err.join('\n')).not.toContain('owned by the materializer')
+    expect(h.err.join('\n')).toContain('owned by the materializer')
+  })
+})
+
+describe('profile selection and all-profile sync', () => {
+  async function writeConfig(source: string): Promise<string> {
+    const dir = await tempDir('profile-select-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(configPath, source)
+    return configPath
+  }
+
+  const withDefault = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+  },
+})
+`
+
+  const withoutDefault = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+  },
+})
+`
+
+  const invalidHome = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  defaultProfile: 'work',
+  profiles: {
+    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
+  },
+})
+`
+
+  const strictWork = `import { bundle, defineConfig, defineProfile, generated, layer, override } from '@eedsh/config'
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    work: defineProfile({
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [layer('work', [override('missing-row', { interval: 1 })])],
+    }),
+    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
+  },
+})
+`
+
+  it('narrows sync to the named profile without falling back to the default', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withDefault)
+    const code = await runEedsh(['sync', '--config', configPath, '--profile', 'home'], h.options)
+    expect(code).toBe(0)
+    expect(h.out.join('\n')).toContain('profile home')
+    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+  })
+
+  it('reports an unknown --profile as a usage error listing the names', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withDefault)
+    const code = await runEedsh(['sync', '--config', configPath, '--profile', 'missing'], h.options)
+    expect(code).toBe(2)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('missing')
+    expect(errors).toContain('work')
+    expect(errors).toContain('home')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('publishes every profile on a bare sync', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withDefault)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(0)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.out.join('\n')).toContain('profile work')
+    expect(h.out.join('\n')).toContain('profile home')
+  })
+
+  it('reports an ambiguous one-profile selection as a usage error', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withoutDefault)
+    const { calls, spawn } = fakeSpawner()
+    const code = await runEedsh(['run', '--config', configPath, '--no-sync'], {
+      ...h.options,
+      spawn,
+    })
+    expect(code).toBe(2)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('work')
+    expect(errors).toContain('home')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('boots the profile named by --profile on run', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withDefault)
+    const { calls, spawn } = fakeSpawner({ exitCode: 7 })
+    const code = await runEedsh(
+      ['run', '--config', configPath, '--profile', 'home', '--no-sync', '--', '--port', '7777'],
+      { ...h.options, spawn },
+    )
+    expect(code).toBe(7)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args.slice(1)).toEqual(['--profile', 'home', '--port', '7777'])
+  })
+
+  it('rejects --profile on check as a usage error', async () => {
+    const h = harness()
+    const { calls, spawn } = fakeSpawner()
+    const code = await runEedsh(['check', '--profile', 'work', '--config', fixture('basic')], {
+      ...h.options,
+      spawn,
+    })
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('keeps syncing valid profiles after an invalid sibling', async () => {
+    const h = harness()
+    const configPath = await writeConfig(invalidHome)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('home')
+    expect(errors).toContain('owned by the materializer')
+  })
+
+  it('keeps syncing valid profiles after a locked sibling', async () => {
+    const h = harness({ lockContendedPaths: ['/home/profiles/work/.eedsh/sync.lock'] })
+    const configPath = await writeConfig(withDefault)
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    expect(h.err.join('\n')).toContain('another sync is running')
+  })
+
+  it('keeps syncing valid profiles after a strict failure in a sibling', async () => {
+    const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
+    const h = harness({ basePatches, realPreflight: true })
+    const configPath = await writeConfig(strictWork)
+    const code = await runEedsh(['sync', '--strict', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    expect(h.err.join('\n')).toContain('missing-row')
+  })
+
+  it('reports ambiguous doctor selection as a usage error', async () => {
+    const h = harness()
+    const configPath = await writeConfig(withoutDefault)
+    const code = await runEedsh(['doctor', '--config', configPath], doctorOptions(h))
+    expect(code).toBe(2)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('work')
+    expect(errors).toContain('home')
   })
 })
 

@@ -77,17 +77,18 @@ export function memoryFileSystem(
   }
 }
 
-/** Sync lock that records acquisition and release, with a simulated holder. */
-export function fakeSyncLock(options: { held?: boolean } = {}) {
+/** Sync lock that records acquisition and release, with simulated holders. */
+export function fakeSyncLock(options: { held?: boolean; contendedPaths?: readonly string[] } = {}) {
   const heldPaths = new Set<string>()
   const acquires: string[] = []
   const releases: string[] = []
   const contended = options.held ?? false
+  const external = new Set(options.contendedPaths ?? [])
   const shape: SyncLockShape = {
     acquire: (lockPath) =>
       Effect.suspend(() => {
         acquires.push(lockPath)
-        if (contended || heldPaths.has(lockPath)) {
+        if (contended || external.has(lockPath) || heldPaths.has(lockPath)) {
           return Effect.fail(new SyncLocked({ lockPath }))
         }
         heldPaths.add(lockPath)

@@ -67,7 +67,7 @@ function harness(options: HarnessOptions = {}) {
     out,
     err,
     options: {
-      env: { DSH_HOME: '/home' },
+      env: { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg' },
       stdout: (line: string) => out.push(line),
       stderr: (line: string) => err.push(line),
       services,
@@ -159,12 +159,14 @@ describe('command surface characterization', () => {
     const syncHelp = harness()
     expect(await runEedsh(['sync', '--help'], syncHelp.options)).toBe(0)
     const syncText = syncHelp.out.join('\n')
-    for (const flag of ['--config', '--strict', '--watch', '--explain']) {
+    for (const flag of ['--config', '--profile', '--strict', '--watch', '--explain']) {
       expect(syncText).toContain(flag)
     }
 
     const runHelp = harness()
     expect(await runEedsh(['run', '--help'], runHelp.options)).toBe(0)
-    expect(runHelp.out.join('\n')).toContain('--no-sync')
+    const runText = runHelp.out.join('\n')
+    expect(runText).toContain('--profile')
+    expect(runText).toContain('--no-sync')
   })
 })

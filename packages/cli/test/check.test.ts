@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Option } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { findTsconfigPath, resolveTypeScript } from '../src/check'
+import { resolveTypeScript } from '../src/check'
+import { findTsconfigPath } from '../src/internal/tsconfig'
 
 function tempProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'eedsh-check-test-'))

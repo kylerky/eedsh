@@ -7,7 +7,7 @@
  * once for the whole session.
  * @module @eedsh/cli/cli
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
@@ -21,15 +21,8 @@ import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
-import {
-  CONFIG_FILENAMES,
-  ConfigError,
-  findConfigPath,
-  findUnsupportedConfigPath,
-  loadConfig,
-  unsupportedConfigExtensionError,
-  validateConfigPath,
-} from './config'
+import { ConfigError, loadConfig, validateConfigPath } from './config'
+import { defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
@@ -58,6 +51,7 @@ import {
   AmbiguousProfile,
   UnknownProfile,
   describeProfileSelection,
+  selectAllProfiles,
   selectProfile,
 } from './selection'
 import { defaultSpawn, type SpawnLike } from './spawn'
@@ -278,6 +272,8 @@ interface CommandRuntime {
 interface CommandContext extends CommandRuntime {
   configPath: string
   plan: ProfilePlan
+  /** The `--profile` value the run was started with, for watch reruns. */
+  profile: Option.Option<string>
 }
 
 export function defaultServices(): CliServiceLayer {
@@ -447,7 +443,9 @@ function syncWatch(
       const loop = Effect.gen(function* () {
         while (true) {
           yield* Queue.take(changes)
-          const planExit = yield* Effect.exit(loadWatchedPlan(context.configPath, context))
+          const planExit = yield* Effect.exit(
+            loadWatchedPlan(context.configPath, context.profile, context),
+          )
           if (Exit.isFailure(planExit)) {
             if (Cause.hasInterruptsOnly(planExit.cause)) return yield* Effect.interrupt
             yield* Effect.sync(() => report(context.stderr, Cause.squash(planExit.cause)))
@@ -515,16 +513,12 @@ function resolveConfigPath(
     return Option.some(configPath)
   }
 
-  const discovered = findConfigPath(runtime.cwd)
-  if (Option.isSome(discovered)) return discovered
+  const configPath = defaultConfigPath(runtime.env)
+  if (existsSync(configPath)) return Option.some(configPath)
 
-  const rejected = findUnsupportedConfigPath(runtime.cwd)
-  if (Option.isSome(rejected)) {
-    report(runtime.stderr, unsupportedConfigExtensionError(rejected.value))
-    return Option.none()
-  }
-
-  runtime.stderr(`eedsh: cannot find a config (${CONFIG_FILENAMES.join(', ')}) in ${runtime.cwd}`)
+  runtime.stderr(
+    `eedsh: cannot find a config at ${configPath}; run "eedsh init" to create one, or pass --config <path>`,
+  )
   return Option.none()
 }
 
@@ -547,6 +541,7 @@ function planOfSelection(
 /** Load the config, choose one profile, and resolve its plan. */
 function loadWatchedPlan(
   configPath: string,
+  profile: Option.Option<string>,
   runtime: CommandRuntime,
 ): Effect.Effect<
   ProfilePlan,
@@ -554,7 +549,7 @@ function loadWatchedPlan(
 > {
   return Effect.gen(function* () {
     const config = yield* loadConfigValue(configPath, runtime)
-    const selection = selectProfile(config, Option.none())
+    const selection = selectProfile(config, profile)
     if (Result.isFailure(selection)) return yield* Effect.fail(selection.failure)
     return yield* planOfSelection(selection.success)
   })
@@ -565,8 +560,30 @@ function selectionFailure(runtime: CommandRuntime, error: ProfileSelectionError)
   return EXIT_USAGE
 }
 
+/** Report one profile-labelled failure without stopping the run. */
+function reportProfileFailure(
+  stderr: (line: string) => void,
+  name: string,
+  error: unknown,
+): void {
+  stderr(`eedsh: profile "${name}":`)
+  for (const line of describeError(error)) stderr(`eedsh: ${line}`)
+}
+
+/** Report a profile-labelled sync failure, keeping the explain hint. */
+function reportProfileSyncFailure(
+  stderr: (line: string) => void,
+  name: string,
+  error: unknown,
+  explain: boolean,
+): void {
+  reportProfileFailure(stderr, name, error)
+  if (!explain && rawPreflightWarnings(error).length > 0) stderr(EXPLAIN_HINT)
+}
+
 interface SyncCommandInput {
   configPath: Option.Option<string>
+  profile: Option.Option<string>
   strict: boolean
   watch: boolean
   explain: boolean
@@ -581,25 +598,75 @@ function runSyncCommand(
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const config = yield* loadConfigValue(configPath.value, runtime)
-    const selection = selectProfile(config, Option.none())
-    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
-    const plan = yield* planOfSelection(selection.success)
-    const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
+    const path = configPath.value
+    const config = yield* loadConfigValue(path, runtime)
+
     if (input.watch) {
+      const selection = selectProfile(config, input.profile)
+      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+      const entry = selection.success
+      if (Result.isFailure(entry.plan)) {
+        reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
+        return EXIT_FAILURE
+      }
+      const context: CommandContext = {
+        ...runtime,
+        configPath: path,
+        plan: entry.plan.success,
+        profile: input.profile,
+      }
       yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
       return EXIT_OK
     }
-    const result = yield* syncOnce(context, input.strict, input.explain, input.adoptOwnership)
-    yield* Effect.sync(() =>
-      printResult(runtime.stdout, runtime.stderr, plan, result, input.explain),
-    )
-    return EXIT_OK
+
+    let entries: readonly SelectedProfile[]
+    if (Option.isSome(input.profile)) {
+      const selection = selectProfile(config, input.profile)
+      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+      entries = [selection.success]
+    } else {
+      entries = selectAllProfiles(config)
+    }
+
+    const multiple = entries.length > 1
+    let failed = false
+    for (const entry of entries) {
+      if (Result.isFailure(entry.plan)) {
+        failed = true
+        reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
+        continue
+      }
+      const plan = entry.plan.success
+      if (multiple) runtime.stdout(`eedsh: profile "${entry.name}"`)
+      const context: CommandContext = {
+        ...runtime,
+        configPath: path,
+        plan,
+        profile: input.profile,
+      }
+      const runExit = yield* Effect.exit(
+        syncOnce(context, input.strict, input.explain, input.adoptOwnership),
+      )
+      if (Exit.isFailure(runExit)) {
+        if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
+        failed = true
+        reportProfileSyncFailure(
+          runtime.stderr,
+          entry.name,
+          Cause.squash(runExit.cause),
+          input.explain,
+        )
+        continue
+      }
+      printResult(runtime.stdout, runtime.stderr, plan, runExit.value, input.explain)
+    }
+    return failed ? EXIT_FAILURE : EXIT_OK
   })
 }
 
 interface RunCommandInput {
   configPath: Option.Option<string>
+  profile: Option.Option<string>
   noSync: boolean
   dshArgs: readonly string[]
 }
@@ -616,10 +683,20 @@ function runRunCommand(
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const config = yield* loadConfigValue(configPath.value, runtime)
-    const selection = selectProfile(config, Option.none())
+    const selection = selectProfile(config, input.profile)
     if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
-    const plan = yield* planOfSelection(selection.success)
-    const context: CommandContext = { ...runtime, configPath: configPath.value, plan }
+    const entry = selection.success
+    if (Result.isFailure(entry.plan)) {
+      reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
+      return EXIT_FAILURE
+    }
+    const plan = entry.plan.success
+    const context: CommandContext = {
+      ...runtime,
+      configPath: configPath.value,
+      plan,
+      profile: input.profile,
+    }
     if (!input.noSync) {
       const result = yield* syncOnce(context, false, false, false)
       yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
@@ -733,7 +810,9 @@ export async function runEedsh(
   let exitCode: number = EXIT_OK
 
   const configFlag = Flag.String('config').pipe(
-    Flag.withDescription('config file to load (default: eedsh.config.ts in the cwd)'),
+    Flag.withDescription(
+      'config file to load (default: $XDG_CONFIG_HOME/eedsh/config.ts)',
+    ),
     Flag.optional,
   )
   const strictFlag = Flag.Boolean('strict').pipe(
@@ -758,9 +837,17 @@ export async function runEedsh(
     ),
     Flag.withDefault(false),
   )
+  const syncProfileFlag = Flag.String('profile').pipe(
+    Flag.withDescription('profile to sync (default: every profile in the config)'),
+    Flag.optional,
+  )
+  const runProfileFlag = Flag.String('profile').pipe(
+    Flag.withDescription('profile to boot (default: the declared default, then the sole profile)'),
+    Flag.optional,
+  )
   const profileFlag = Flag.String('profile').pipe(
     Flag.withDescription(
-      'profile name to inspect under DSH_HOME (default: the configured profile)',
+      'profile name to inspect under DSH_HOME (default: the config default or sole profile)',
     ),
     Flag.optional,
   )
@@ -773,6 +860,7 @@ export async function runEedsh(
     'sync',
     {
       config: configFlag,
+      profile: syncProfileFlag,
       strict: strictFlag,
       watch: watchFlag,
       explain: explainFlag,
@@ -783,6 +871,7 @@ export async function runEedsh(
         exitCode = yield* runSyncCommand(
           {
             configPath: parsed.config,
+            profile: parsed.profile,
             strict: parsed.strict,
             watch: parsed.watch,
             explain: parsed.explain,
@@ -793,17 +882,21 @@ export async function runEedsh(
       }),
   ).pipe(Command.withDescription('evaluate the config, preflight the layers, and publish'))
 
-  const runCommandLine = Command.make('run', { config: configFlag, noSync: noSyncFlag }, (parsed) =>
-    Effect.gen(function* () {
-      exitCode = yield* runRunCommand(
-        {
-          configPath: parsed.config,
-          noSync: parsed.noSync,
-          dshArgs: split.passthrough,
-        },
-        runtime,
-      )
-    }),
+  const runCommandLine = Command.make(
+    'run',
+    { config: configFlag, profile: runProfileFlag, noSync: noSyncFlag },
+    (parsed) =>
+      Effect.gen(function* () {
+        exitCode = yield* runRunCommand(
+          {
+            configPath: parsed.config,
+            profile: parsed.profile,
+            noSync: parsed.noSync,
+            dshArgs: split.passthrough,
+          },
+          runtime,
+        )
+      }),
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
 
   const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>

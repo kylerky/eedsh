@@ -1,27 +1,22 @@
 /**
- * Config discovery and evaluation. A config is a TypeScript module whose
- * default export is a validated profile plan or a validation Result; it is
- * imported in-process through tsx's ESM and CJS hooks, with no build step or
- * temporary file.
+ * Config evaluation. A config is a single TypeScript module at the XDG path or
+ * an explicit `--config` path; its default export is an eedsh config. The
+ * module is imported in-process through tsx's ESM and CJS hooks, with no build
+ * step or temporary file, and resolves imports against its own project's
+ * nearest tsconfig.
  * @module @eedsh/cli/config
  */
-import { existsSync, statSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { statSync } from 'node:fs'
+import { extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type EedshConfig, validateConfigValue } from '@eedsh/config'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import { CONFIG_FILENAME } from './config-path'
+import { findTsconfigPath } from './internal/tsconfig'
 
-/** TypeScript config file names, in discovery order. */
-export const CONFIG_FILENAMES = ['eedsh.config.ts', 'eedsh.config.mts'] as const
-
-/** JavaScript config names eedsh rejects with a migration hint. */
-export const UNSUPPORTED_CONFIG_FILENAMES = ['eedsh.config.mjs', 'eedsh.config.js'] as const
-
-const SUPPORTED_EXTENSIONS = new Set(['.ts', '.mts'])
-
-/** A config discovery, evaluation, or export failure. */
+/** A config path, evaluation, or export failure. */
 export class ConfigError extends Data.TaggedError('ConfigError')<{
   readonly code: string
   readonly message: string
@@ -66,83 +61,91 @@ const nativeImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<{ default?: unknown }>
 
-let loaderRegistration: Promise<Result.Result<void, unknown>> | undefined
+/** The tsconfig tsx resolves imports against: a path, or false for none. */
+type TsxConfigSelection = string | false
 
-async function registerTsxLoader(): Promise<void> {
+interface TsxLoader {
+  readonly selection: TsxConfigSelection
+  unregister(): Promise<void>
+}
+
+let loaderHandle: TsxLoader | undefined
+let loaderQueue: Promise<void> = Promise.resolve()
+
+async function createLoader(selection: TsxConfigSelection): Promise<TsxLoader> {
   const [esmApi, cjsApi] = await Promise.all([import('tsx/esm/api'), import('tsx/cjs/api')])
-  esmApi.register()
-  cjsApi.register()
+  const esmUnregister = esmApi.register(
+    selection === false ? { tsconfig: false } : { tsconfig: selection },
+  )
+  const cjsUnregister = cjsApi.register()
+  return {
+    selection,
+    unregister: async () => {
+      await esmUnregister()
+      cjsUnregister()
+    },
+  }
 }
 
 /**
- * Register tsx's ESM and CJS hooks once per process. Both are needed: a `.ts`
- * config in a project without `"type": "module"` is classified as CommonJS, so
- * its dynamic import reaches the CJS loader rather than the ESM hooks.
- * Registration is lazy (never for `--help`/`--version`) and idempotent.
+ * Make tsx resolve config imports against the config project's tsconfig. Both
+ * hooks are registered: a `.ts` config in a project without
+ * `"type": "module"` is classified as CommonJS, so its dynamic import reaches
+ * the CJS loader rather than the ESM hooks. Registration is keyed by the
+ * tsconfig selection; switching config projects unregisters the previous hooks
+ * first. Calls are serialized, and a failed registration is retried by the next
+ * load. Never uses the process-global `TSX_TSCONFIG_PATH`.
  */
-function ensureTsxLoader(): Promise<Result.Result<void, unknown>> {
-  loaderRegistration ??= registerTsxLoader().then(
+function ensureTsxLoader(selection: TsxConfigSelection): Promise<Result.Result<void, unknown>> {
+  const next = loaderQueue.then(async () => {
+    if (loaderHandle !== undefined && loaderHandle.selection === selection) return
+    if (loaderHandle !== undefined) {
+      const previous = loaderHandle
+      loaderHandle = undefined
+      await previous.unregister()
+    }
+    loaderHandle = await createLoader(selection)
+  })
+  loaderQueue = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next.then(
     () => Result.succeed(undefined),
     (cause: unknown) => Result.fail(cause),
   )
-  return loaderRegistration
 }
 
 /**
- * Find the config file in a directory.
- * @param cwd - directory to search.
- * @returns the absolute config path, or None when none exists.
- */
-export function findConfigPath(cwd: string): Option.Option<string> {
-  for (const name of CONFIG_FILENAMES) {
-    const candidate = join(cwd, name)
-    if (existsSync(candidate)) return Option.some(candidate)
-  }
-  return Option.none()
-}
-
-/**
- * Find a JavaScript config that discovery rejects rather than silently skips.
- * @param cwd - directory to search.
- * @returns the rejected absolute config path, or None when none exists.
- */
-export function findUnsupportedConfigPath(cwd: string): Option.Option<string> {
-  for (const name of UNSUPPORTED_CONFIG_FILENAMES) {
-    const candidate = join(cwd, name)
-    if (existsSync(candidate)) return Option.some(candidate)
-  }
-  return Option.none()
-}
-
-/**
- * The stable failure for a JavaScript config path.
+ * The stable failure for a non-TypeScript config path.
  * @param configPath - the rejected path.
- * @returns the `config.unsupported_extension` error naming the accepted files.
+ * @returns the `config.unsupported_extension` error naming `config.ts`.
  */
 export function unsupportedConfigExtensionError(configPath: string): ConfigError {
-  const accepted = CONFIG_FILENAMES.join(' and ')
   return new ConfigError(
     'config.unsupported_extension',
-    `${configPath} is not a TypeScript config; eedsh loads only ${accepted} (rename the file)`,
+    `${configPath} is not a TypeScript config; eedsh loads only ${CONFIG_FILENAME}`,
   )
 }
 
 /**
- * Check a config path's extension.
+ * Check a config path's extension. Only `.ts` is accepted; `.mts`, `.js`, and
+ * `.mjs` are rejected before evaluation.
  * @param configPath - absolute config path.
- * @returns success for a supported path, or `config.unsupported_extension` for a
- * JavaScript config.
+ * @returns success for a TypeScript path, or `config.unsupported_extension`.
  */
 export function validateConfigPath(configPath: string): Result.Result<void, ConfigError> {
-  return SUPPORTED_EXTENSIONS.has(extname(configPath))
+  return extname(configPath) === '.ts'
     ? Result.succeed(undefined)
     : Result.fail(unsupportedConfigExtensionError(configPath))
 }
 
 /**
  * Import a config module and validate its default export as an eedsh config.
- * The module URL carries the file's modification time so a watch rerun
- * re-evaluates an edited config instead of reusing the module cache.
+ * Imports resolve against the nearest tsconfig at or above the config file (or
+ * the loader's ordinary rules when there is none), never the caller's working
+ * directory. The module URL carries the file's modification time so a watch
+ * rerun re-evaluates an edited config instead of reusing the module cache.
  * @param configPath - absolute config path.
  * @returns an Effect carrying the validated config, a config failure, or the
  * native schema error for an invalid envelope or export.
@@ -154,9 +157,10 @@ export function loadConfig(
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
 
-    const loaded = yield* Effect.promise(() => ensureTsxLoader())
+    const tsconfig = findTsconfigPath(configPath)
+    const selection: TsxConfigSelection = Option.isSome(tsconfig) ? tsconfig.value : false
+    const loaded = yield* Effect.promise(() => ensureTsxLoader(selection))
     if (Result.isFailure(loaded)) {
-      loaderRegistration = undefined
       return yield* Effect.fail(
         new ConfigError(
           'config.import_failed',
