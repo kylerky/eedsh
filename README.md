@@ -243,7 +243,7 @@ $DSH_HOME/profiles/<name>/
   cordis.yml                                     empty root config (DSH mounts the stack over it)
   cordis.patch.yml                               your layer; created empty only when missing
   pnpm-workspace.yaml                            pnpm settings DSH expects
-  .eedsh/plan.json                               plan mirror, written at the commit point
+  .eedsh/plan.json                               plan mirror, written immediately before the commit point
   .eedsh/generated/package.json                  generation record — the publication commit point
   .eedsh/generated/plans/<generationId>.json     authoritative validated plan (canonical JSON)
   .eedsh/generated/patches/<generationId>/<layerId>.yml
@@ -343,7 +343,20 @@ Effect version as `@eedsh/cli`; the workspace declares no separate `@effect/cli`
 
 ## Build from source
 
-Instructions for building from a checkout appear here.
+Building from a checkout needs Node.js >= 26 and pnpm 12.14.0:
+
+```sh
+pnpm install
+pnpm build
+```
+
+`pnpm build` runs the repository typecheck and then builds every package. Run the
+built CLI from the checkout:
+
+```sh
+node packages/cli/lib/bin.js --help
+node packages/cli/lib/bin.js sync --config ./eedsh.config.ts
+```
 
 ## Development
 
@@ -399,6 +412,6 @@ test/             workspace smoke, architecture, and (slow) integration tests
 
 The higher-level layer is deliberately out of scope for this change: modules,
 fragments, presets/`extends`, generated plugin-config types, project-level config,
-GUI manager augmentation, multiple profile surfaces, upgrade/migration machinery,
-and published npm packaging. The plan format is versioned so that layer can be
-added on top without changing what the materializer reads.
+GUI manager augmentation, multiple profile surfaces, and upgrade/migration machinery.
+The plan format is versioned so that layer can be added on top without changing what
+the materializer reads.
