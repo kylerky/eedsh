@@ -16,8 +16,8 @@ help and usage errors are rendered through an injected Console with ANSI escapes
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
 `spawn` live only in the live service layer. `@eedsh/plan` owns the plan schema and
 validation, `@eedsh/config` composes it for synchronous authoring, while
-`@eedsh/runtime` stays a plain Cordis plugin; `defineProfile` and `defineConfig`
-remain synchronous at the config boundary.
+`@eedsh/runtime` stays a plain Cordis plugin; `defineConfig().build()` remains
+synchronous at the config boundary and returns the native validation Result.
 
 ## Commands
 
@@ -76,12 +76,17 @@ eedsh --help | --version
   `node <pinned dsh>/lib/bin.js --profile <name> <your args>` with inherited stdio
   and the invoking environment.
 - `doctor` inspects a published profile without changing it; see [Doctor](#doctor).
-- `repl` opens a TypeScript session over the loaded config. Bindings persist,
-  including `config`, `profiles`, `plan`, and the authoring helpers. Saves are
-  debounced and re-evaluated; the session prints a plan diff and composition
-  summary, and keeps the previous evaluation after a bad save. Dot commands are
-  `.help`, `.reload`, `.resolve`, `.sync`, `.clear`, and `.exit`.
-  Inspection and `.reload` write no profile files. `.sync` publishes now;
+- `repl` opens a TypeScript session over the loaded config. Bindings persist:
+  `config` is the config view, `selectedProfile` is the selected profile view,
+  `plan` is `selectedProfile.plan()`, and the curated authoring factories
+  `bundle`, `defineConfig`, `group`, and `js` are bound. The legacy `profile`
+  string and raw `profiles` map are not. Tab completes commands, chain methods,
+  and profile, bundle, row, preset, and package names. Saves are debounced and
+  re-evaluated; the session prints a plan diff and composition summary, and keeps
+  the previous evaluation after a bad save. Dot commands are `.help`,
+  `.profile <name>`, `.reload`, `.resolve`, `.sync`, `.clear`, and `.exit`.
+  Inspection, `.profile`, completion, and `.reload` write no profile files.
+  `.sync` publishes now;
   `--sync` or `.sync on` publishes after each valid changed save, and
   `.sync off` returns to inspection. `.resolve name@exact-version` prepares a
   hash-keyed preview under `$XDG_CACHE_HOME/eedsh/repl` and prints the

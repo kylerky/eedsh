@@ -1,8 +1,10 @@
 # @eedsh/config
 
-The typed authoring surface for eedsh: `defineConfig`, which validates a shared
-DSH pin and a keyed record of `defineProfile` descriptors, plus helpers that map
-one-to-one onto DSH Loader patch concepts.
+The typed authoring and query surface for eedsh. `defineConfig()` starts a
+synchronous fluent builder, `bundle(name)` returns a handle that is both a plan
+selection and a query root, and layers, rows, and presets are typed objects.
+Typed objects normalize to plain plan data only at `build()`, so the persisted
+plan stays strict JSON.
 
 The plan contract itself lives in [`@eedsh/plan`](../plan/README.md): the Effect
 Schema and derived types, strict plan and config-envelope validation, and canonical
@@ -13,110 +15,132 @@ use.
 There is no DSH runtime dependency and no Effect runtime here. Effect is a peer
 dependency (also a dev dependency here) for the `Result`/`Schema.SchemaError`
 authoring surface; the source imports Effect through `effect/Result` and
-`effect/Schema` only. `defineProfile` returns a synchronous descriptor and
-`defineConfig` returns a synchronous `Result`, because a config module must
+`effect/Schema` only. Authoring is synchronous because a config module must
 default-export data before tsx and DSH can consume it.
 
 ## Example
 
 ```ts
-import {
-  bundle,
-  defineConfig,
-  defineProfile,
-  disable,
-  generated,
-  insert,
-  js,
-  layer,
-  override,
-} from '@eedsh/config'
+import { bundle, defineConfig, js } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({
-      packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [
-        layer('plugins', [
-          insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
-          disable('repeat-tool-reminder'),
-          override('agent-default-model', { provider: 'deepseek', model: 'deepseek-chat' }),
-          insert({
+const standard = bundle('@deepseek-ai/dsh-web-app').presets()[0]
+
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile
+      .package('@scope/my-plugin', 'link:../packages/my-plugin')
+      .bundle('@deepseek-ai/dsh-base')
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated()
+      .layer('plugins', (layer) => {
+        layer
+          .insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } })
+          .disable(standard ?? 'preset-minimal')
+          .override('agent-default-model', { provider: 'deepseek', model: 'deepseek-chat' })
+          .insert({
             id: 'plugin-manager',
             name: '@deepseek-ai/dsh-plugin-manager',
             disabled: js("!ctx.get('profileContext')"),
-          }),
-        ]),
-      ],
-    }),
-    home: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-    }),
-  },
-})
+          })
+      })
+  })
+  .build()
 ```
 
 ## API
 
-- `defineConfig(input)` — validate the config envelope (one exact DSH pin, safe
-  non-empty profile keys, and a declared default) and then validate each profile
-  plan independently with `@eedsh/plan`. Returns
-  `Result<EedshConfig, Schema.SchemaError>`; an envelope defect fails the whole
-  Result, while an invalid profile is stored as that profile's failure. It does not
-  throw.
-- `defineProfile(input)` — return a detached, synchronous profile descriptor. The
-  config record's key is the profile name and the config's shared `dsh` pin is
-  applied to the plan; `defineProfile` itself validates nothing and does not throw.
-- `bundle(name, { source? })` — one ordered bundle selection. `@eedsh/runtime` and
-  `@eedsh/generated` are reserved.
-- `generated()` — the positional marker for the generated layer; at most one.
-- `layer(id, patches)` — an ordered patch layer. Ids are safe kebab-case and become
-  patch file names.
-- `insert(entry | entry[])` — insert Loader entries.
-- `override(id, config)` — replace a row's whole config (DSH does not merge).
-- `disable(id)` / `enable(id)` — toggle a row.
-- `group(id, fields, children)` — a group entry with an isolate map and ordered
-  children; pass it to `insert`.
-- `js(source)` — a structured `{ "$eedsh": { "expr": source } }` expression node. The
-  source is stored verbatim and emitted as a `!!js` scalar by the CLI; it is never
-  evaluated here.
-- `raw(entry)` — preserve any Loader patch field the helpers do not name.
+### `defineConfig()` and `ConfigBuilder`
 
-## Authoring queries
+`defineConfig()` returns a mutable, single-use builder:
 
-The package resolves bundle rows synchronously while `config.ts` is evaluated:
+- `.dsh(pin)` sets one exact DSH version.
+- `.defaultProfile(name)` names the profile a command selects when none is named.
+- `.profile(name, build)` declares a profile; the callback receives a
+  `ProfileBuilder` scoped to that profile, and its return value is ignored.
+- `.build()` normalizes typed objects, validates the envelope and every profile,
+  and returns `Result<EedshConfig, Schema.SchemaError>`. It never throws; a
+  missing pin, an empty profile record, an unsafe key, or an unknown default is
+  Effect's native schema failure. Each profile is validated independently and an
+  invalid profile is stored as that profile's failure.
 
-```ts
-import { presets, row, rows } from '@eedsh/config'
+Builders are mutable because a config is assembled once. Calling `.build()` more
+than once returns independent equivalent values.
 
-const presetsInWeb = presets('@deepseek-ai/dsh-web-app')
-const timer = row('@deepseek-ai/dsh-base', 'timer')
-const fromWork = rows('@acme/plugin-bundle', { profile: 'work' })
-const vendored = row('@acme/plugin-bundle', 'acme-row', {
-  packageDir: '../vendor/plugin-bundle',
-})
-```
+### `ProfileBuilder`
 
-- No root reads the pinned installation named by `EEDSH_DSH_ANCHOR`; it never
-  falls back to a profile copy. The CLI sets the anchor to its pinned DSH
-  manifest for the config import.
-- `{ profile }` reads that profile's installed copy through the shared DSH home.
-- `{ packageDir }` reads the named package directory; a relative path resolves
-  against the directory containing `config.ts`.
-- Supplying both roots is an error.
+- `.bundle(name | Bundle, options = {})` adds an ordered bundle selection.
+  `options.source` overrides the package source. A rooted query is rejected.
+- `.generated()` adds the single positional generated-bundle marker.
+- `.layer(id, build?)` adds an ordered patch layer and scopes a `LayerBuilder`
+  to the callback.
+- `.package(name, spec)` adds one profile-local package dependency.
 
-`presets(bundle)` returns frozen `{ rowId, id, order?, name?, disabled? }`
-summaries. `rows(bundle)` returns every declared row, and `row(bundle, rowId)`
-returns one; both are frozen, plain JSON and can be passed to `insert` or used
-for targeting. Failures are `ResolutionError` values with a stable `code`, the
-queried `bundle`, and a message.
+### `LayerBuilder`
 
-## Config
+- `.insert(entry | entries)` inserts Loader entries, typed rows, or typed
+  presets.
+- `.override(target, config)` replaces a row's whole config; DSH does not merge.
+- `.disable(target)` / `.enable(target)` toggle a row.
+- `.raw(entry)` preserves any Loader patch field the builders do not name.
 
-`defineConfig` produces one `EedshConfig`, re-exported from `@eedsh/plan`:
+Each method appends a patch and returns the layer. A patch target may be a Loader
+row id, a `Row`, or a `Preset`; a `Preset` targets its own Loader row id.
+
+`group(id, fields, children)` and `js(source)` remain small value constructors
+for a group entry and a runtime expression node.
+
+### `bundle()`, `Bundle`, and `BundleQuery`
+
+`bundle(name, options?)` returns a `Bundle`: an ordered plan selection
+(`.toJSON()` is `{ kind: 'bundle', name }`) and a query handle. With no root,
+queries resolve from the pinned installation named by `EEDSH_DSH_ANCHOR` and
+never from a profile copy.
+
+- `.fromProfile(profile | { name })` returns a query-only handle rooted at a
+  profile's installed copy. The structural form lets a session view be passed
+  directly.
+- `.fromPackageDir(dir)` returns a query-only handle rooted at a package
+  directory; a relative path resolves against the directory containing the
+  config file.
+
+`BundleQuery` is deliberately not a plan selection: it has no plan-normalization
+brand, no `toJSON()`, and no second root method. Passing it to
+`ProfileBuilder.bundle()` is a type error and a runtime rejection.
+
+### Queries, `Row`, and `Preset`
+
+A handle is an immutable snapshot resolved on first use:
+
+- `.rows()` returns every declared row as a `Row`.
+- `.presets()` returns every preset as a `Preset`.
+- `.row(id)` returns one `Row` by Loader id; a missing id fails.
+- `.preset(id)` returns one `Preset` by preset id; a missing id fails.
+- `.version()`, `.packageDir()`, and `.origin()` report the resolved package
+  facts; `.origin()` is `pinned`, `profile`, `packageDir`, or `preview`.
+
+`Row` exposes `bundle`, `id`, `data`, `toJSON()`, and the patch methods
+`disable()`, `enable()`, and `override(config)`. `Preset` adds `rowId`,
+`id`, `order`, `name`, and `disabled`; its patch methods target `rowId`.
+Handles are immutable; patch methods return plain patch data.
+
+Failures are `ResolutionError` values with a stable `code`, the queried
+`bundle`, and a message. A failed resolution, missing row or preset, or invalid
+root fails rather than returning partial data.
+
+## Normalization
+
+Typed objects carry a global brand symbol and implement `.toJSON()`.
+`defineConfig().build()` recursively replaces branded objects with their plain
+values before validation; no method or class instance reaches the plan.
+`@eedsh/plan` remains unchanged and still rejects functions, class instances,
+non-finite numbers, and circular data. A rooted `BundleQuery` has no brand, so it
+cannot be silently accepted as a plan selection.
+
+## Config value
+
+`build()` produces one `EedshConfig`, re-exported from `@eedsh/plan`:
 
 ```ts
 interface EedshConfig {
@@ -128,20 +152,24 @@ interface EedshConfig {
 }
 ```
 
-The record key is the profile's sole identity. Records built dynamically from
-spreads, computed keys, loops, or environment values are accepted. Config-level
-defects fail the whole config: an absent or malformed `dsh` pin, an empty profile
-record, an unsafe profile key, or a `defaultProfile` that is not a key. Profile
-defects stay local: selecting, publishing, or running a valid sibling is unaffected.
+The profile key is the profile's sole identity. Config-level defects fail the
+whole config; profile defects stay local, so selecting, publishing, or running a
+valid sibling is unaffected.
 
-Each profile is a `ProfilePlan`; see the [`@eedsh/plan` README](../plan/README.md)
-for the plan shape, the validation rules, and canonical JSON.
+## Exports
 
-## Re-exported plan types
+The public surface is the typed authoring API: `defineConfig`, `ConfigBuilder`,
+`ProfileBuilder`, `LayerBuilder`, `bundle`, `Bundle`, `BundleQuery`,
+`Row`, `Preset`, `group`, `js`, `ResolutionError`, the resolution-trace
+helpers, and the re-exported plan types. The legacy free helpers (`rows`,
+`presets`, `row`, `defineProfile`, `insert`, `override`, `disable`,
+`enable`, `layer`, `raw`) are not exported.
 
-`@eedsh/config` re-exports these types from `@eedsh/plan`: `EedshConfig`,
-`InvalidConfigValue`, `ProfilePlan`, `PlanBundle`, `PlanLayer`, `PlanPatch`,
-`NamedBundle`, `GeneratedBundle`, `ExpressionNode`, `JsonValue`, `JsonObject`,
-and `JsonPrimitive`. Runtime validation is not re-exported: import
-`validatePlan`, `validateConfigValue`, `ProfilePlanSchema`, or
-`EedshConfigSchema` from `@eedsh/plan` directly.
+Runtime plan validation is not re-exported: import `validatePlan`,
+`validateConfigValue`, `ProfilePlanSchema`, or `EedshConfigSchema` from
+`@eedsh/plan` directly.
+
+## Migration
+
+The free-function API is intentionally replaced. The root [README](../README.md#migrating-from-the-free-function-api)
+has the full before/after mapping; the persisted plan format is unchanged.

@@ -57,8 +57,9 @@ truncation).
 
 ## Config envelope
 
-`defineConfig` in `@eedsh/config` produces one `EedshConfig`; this package owns the
-envelope schema and the untrusted-export normalization the CLI uses:
+`defineConfig().build()` in `@eedsh/config` produces one `EedshConfig`; this
+package owns the envelope schema and the untrusted-export normalization the CLI
+uses:
 
 ```ts
 interface EedshConfig {
