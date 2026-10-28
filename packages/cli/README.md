@@ -27,6 +27,7 @@ eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explai
 eedsh doctor [--profile <name> | --config <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
 eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh repl   [--profile <name>] [--config <path>] [--sync] [--eval <expression>]
 eedsh --help | --version
 ```
 
@@ -75,6 +76,19 @@ eedsh --help | --version
   `node <pinned dsh>/lib/bin.js --profile <name> <your args>` with inherited stdio
   and the invoking environment.
 - `doctor` inspects a published profile without changing it; see [Doctor](#doctor).
+- `repl` opens a TypeScript session over the loaded config. Bindings persist,
+  including `config`, `profiles`, `plan`, and the authoring helpers. Saves are
+  debounced and re-evaluated; the session prints a plan diff and composition
+  summary, and keeps the previous evaluation after a bad save. Dot commands are
+  `.help`, `.reload`, `.resolve`, `.sync`, `.clear`, and `.exit`.
+  Inspection and `.reload` write no profile files. `.sync` publishes now;
+  `--sync` or `.sync on` publishes after each valid changed save, and
+  `.sync off` returns to inspection. `.resolve name@exact-version` prepares a
+  hash-keyed preview under `$XDG_CACHE_HOME/eedsh/repl` and prints the
+  profile-root override; a successful preview-baked publication is re-evaluated
+  against the real profile, deleting the preview when the plans match. `--eval`
+  evaluates one expression without starting the prompt and exits non-zero on
+  failure.
 - Exit codes: `0` success; `1` config, validation, materialization, preflight, or
   launch failure; `2` usage error. Validation failures print Effect's native
   formatted schema message, including its location annotations. Locations are not

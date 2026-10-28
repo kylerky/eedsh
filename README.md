@@ -97,6 +97,7 @@ eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explai
 eedsh doctor [--profile <name> | --config <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
 eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
+eedsh repl   [--profile <name>] [--config <path>] [--sync] [--eval <expression>]
 eedsh --help | --version
 ```
 
@@ -147,6 +148,14 @@ eedsh --help | --version
   with `--profile <name>` and your arguments. An ambiguous selection is a usage
   error listing the profile names. `run` does not import the launcher, so argv,
   signals, and shutdown stay exactly DSH's.
+- `repl` evaluates TypeScript expressions against the loaded config, watches the
+  config directory, and prints the diff and composition summary after each save.
+  Bindings persist between entries, and `config`, `profiles`, `plan`, and the
+  authoring helpers are available. Dot commands are shell-level: `.help`,
+  `.reload`, `.resolve`, `.sync`, `.clear`, and `.exit`. Inspection and
+  `.reload` never write profile files; `.sync` (or `--sync`) publishes. `--eval`
+  evaluates one expression, prints its value, and exits with a non-zero status on
+  failure.
 - Exit codes: `0` success, `1` validation/materialization/launch/check failure, `2`
   usage error. Validation failures print Effect's native formatted schema message,
   including its location annotations; there are no stable `plan.*` codes. Each
@@ -224,6 +233,109 @@ entry, including fields these helpers do not name.
 | `group(id, fields, children)` | Build a group entry for `insert`, with fields, an optional isolate map, and ordered children. |
 | `js(source)` | Emit a `!!js` runtime expression evaluated at activation. |
 | `raw(entry)` | Preserve a raw Loader patch entry, including fields the helpers do not name. |
+
+## Authoring queries and the config REPL
+
+`@eedsh/config` resolves bundle rows synchronously while `config.ts` is
+evaluated. Queries return frozen JSON rows that can be passed to the patch
+helpers, or compact preset summaries that can be used to target a row.
+
+```ts
+import {
+  bundle,
+  defineConfig,
+  defineProfile,
+  disable,
+  generated,
+  insert,
+  layer,
+  presets,
+  row,
+  rows,
+} from '@eedsh/config'
+
+// No root: the pinned DSH installation named by EEDSH_DSH_ANCHOR.
+const standard = presets('@deepseek-ai/dsh-web-app')[0]
+
+// One explicit root: an installed profile copy, or a package directory.
+const installed = rows('@acme/plugin-bundle', { profile: 'work' })
+const vendored = row('@acme/plugin-bundle', 'acme-row', {
+  packageDir: '../vendor/plugin-bundle',
+})
+
+export default defineConfig({
+  dsh: '0.2.1-rc.2',
+  profiles: {
+    work: defineProfile({
+      bundles: [
+        bundle('@deepseek-ai/dsh-base'),
+        bundle('@deepseek-ai/dsh-web-app'),
+        generated(),
+      ],
+      layers: [
+        layer('presets', [
+          // standard is { rowId: 'preset-standard', id: 'standard', order: 1, ... }
+          disable(standard?.rowId ?? 'preset-minimal'),
+        ]),
+        layer('plugins', [insert([...installed, vendored])]),
+      ],
+    }),
+  },
+})
+```
+
+`presets(bundle)` returns frozen `{ rowId, id, order?, name?, disabled? }`
+summaries; use `rowId` in `disable`, `enable`, or `override`. `rows(bundle)`
+returns every declared row, and `row(bundle, rowId)` returns one. A query takes
+at most one root:
+
+- no root resolves from the pinned installation and never from a profile copy;
+  a custom bundle needs an explicit root;
+- `{ profile: 'work' }` resolves the bundle installed in that profile;
+- `{ packageDir: '../vendor/plugin-bundle' }` resolves the directory itself,
+  with a relative path resolved against the containing `config.ts`.
+
+Failures are structured `ResolutionError` values with a stable `code`, the
+`bundle` name, and a message. Missing anchors, uninstalled profile bundles,
+missing manifests, non-bundle packages, unreadable patches, and unknown row ids
+fail instead of returning partial data. The session and the config file use the
+same query code.
+
+```sh
+eedsh repl
+eedsh repl --profile work --sync
+eedsh repl --eval 'config.dsh'
+```
+
+The prompt evaluates TypeScript, including type annotations and top-level
+`await`, and keeps bindings across entries. After a save it re-evaluates,
+debounces bursts of edits, prints a plan diff (profile, bundle, package, layer,
+patch, and row changes), and prints the composed row count and preflight
+warnings. A bad save keeps the previous evaluation; `.reload` retries.
+
+For a custom bundle the selected profile has not installed, prepare a
+session-local preview:
+
+```sh
+.resolve @acme/plugin-bundle@1.2.3
+```
+
+The session copies the profile's manifest, workspace file, and lockfile into
+`$XDG_CACHE_HOME/eedsh/repl/<hash>`, installs the exact spec there, and
+evaluates with a printed profile-root override. `config.ts` keeps naming
+`{ profile: 'work' }`; it never names the preview. A failed install keeps the
+previous evaluation. Concurrent sessions with the same key serialize, completed
+keys are reused, and old previews are removed.
+
+Publishing is explicit: `.sync` publishes the current evaluation, while
+`--sync` or `.sync on` syncs after each successful debounced save. An invalid
+save is not published, a failed sync pauses continuous mode until a changed
+save, and `.sync off` returns to inspection. When a preview-baked plan is
+published, the session immediately re-evaluates against the real profile:
+identical plans delete the preview and report the bootstrap complete; a
+divergence is reported, the preview is kept, and the real evaluation is ready
+for the next `.sync`. Bundle or package-set changes are reported as requiring a
+restart.
 
 ## Configuration reference
 

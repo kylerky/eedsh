@@ -85,6 +85,35 @@ export default defineConfig({
   evaluated here.
 - `raw(entry)` — preserve any Loader patch field the helpers do not name.
 
+## Authoring queries
+
+The package resolves bundle rows synchronously while `config.ts` is evaluated:
+
+```ts
+import { presets, row, rows } from '@eedsh/config'
+
+const presetsInWeb = presets('@deepseek-ai/dsh-web-app')
+const timer = row('@deepseek-ai/dsh-base', 'timer')
+const fromWork = rows('@acme/plugin-bundle', { profile: 'work' })
+const vendored = row('@acme/plugin-bundle', 'acme-row', {
+  packageDir: '../vendor/plugin-bundle',
+})
+```
+
+- No root reads the pinned installation named by `EEDSH_DSH_ANCHOR`; it never
+  falls back to a profile copy. The CLI sets the anchor to its pinned DSH
+  manifest for the config import.
+- `{ profile }` reads that profile's installed copy through the shared DSH home.
+- `{ packageDir }` reads the named package directory; a relative path resolves
+  against the directory containing `config.ts`.
+- Supplying both roots is an error.
+
+`presets(bundle)` returns frozen `{ rowId, id, order?, name?, disabled? }`
+summaries. `rows(bundle)` returns every declared row, and `row(bundle, rowId)`
+returns one; both are frozen, plain JSON and can be passed to `insert` or used
+for targeting. Failures are `ResolutionError` values with a stable `code`, the
+queried `bundle`, and a message.
+
 ## Config
 
 `defineConfig` produces one `EedshConfig`, re-exported from `@eedsh/plan`:
