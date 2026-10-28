@@ -5,12 +5,40 @@
  * @module @eedsh/cli/repl/prompt
  */
 import { createInterface } from 'node:readline'
+import type { CompletionResult } from './completion'
 import { formatSessionError, isDotCommand, type ReplSession } from './session'
 
 /** Streams an interactive session reads from and writes to. */
 export interface ReplStreams {
   readonly input: NodeJS.ReadableStream
   readonly output: NodeJS.WritableStream
+}
+
+/** The completion surface the readline adapter needs. */
+export interface CompletingSession {
+  complete(line: string): Promise<CompletionResult>
+  completeGeneric(line: string): Promise<readonly [string[], string]>
+}
+
+/**
+ * Adapt one readline completion request: use the domain engine first, then the
+ * hidden evaluator's JavaScript completion, and contain every failure.
+ * @param session - the session whose catalogs and evaluator supply hits.
+ * @param line - the text before the cursor.
+ * @returns the hits and the token to replace.
+ */
+export async function completeShellLine(
+  session: CompletingSession,
+  line: string,
+): Promise<[string[], string]> {
+  try {
+    const result = await session.complete(line)
+    if (result.hits.length > 0) return [[...result.hits], line.slice(result.start)]
+    const [hits, completedOn] = await session.completeGeneric(line)
+    return [[...hits], completedOn]
+  } catch {
+    return [[], line]
+  }
 }
 
 /**
@@ -27,6 +55,7 @@ export async function runReplLoop(session: ReplSession, streams: ReplStreams): P
     output: streams.output,
     terminal,
     prompt: 'eedsh> ',
+    completer: async (line: string) => completeShellLine(session, line),
   })
   const prompt = (): void => {
     if (terminal) rl.prompt()

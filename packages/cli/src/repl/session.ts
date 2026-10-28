@@ -12,6 +12,7 @@ import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
+import { bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Option } from 'effect'
 import * as Result from 'effect/Result'
@@ -21,6 +22,14 @@ import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
 import { composePreflightLayers } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import { type WatchSession, watchConfigDirectory } from '../watch'
+import {
+  COMMAND_NAMES,
+  complete as completeLine,
+  type CompletionCatalogs,
+  type CompletionResult,
+  type CompletionRoot,
+  filterCompletionHits,
+} from './completion'
 import { diffPlans, type PlanMap } from './diff'
 import {
   cleanupPreviews,
@@ -67,6 +76,14 @@ export interface AuthoringPackage {
   readonly packagePath: string
   readonly entryPath: string
   readonly version: string
+}
+
+/** The structural query handle completion needs from either authoring copy. */
+interface QueryHandleLike {
+  rows(): readonly { readonly id: string }[]
+  presets(): readonly { readonly id: string }[]
+  fromProfile(profile: string): QueryHandleLike
+  fromPackageDir(dir: string): QueryHandleLike
 }
 
 /** Environment and stream seams for one session. */
@@ -458,6 +475,10 @@ export class ReplSession {
   private watcher: WatchSession | undefined
   private reloadQueue: Promise<void> = Promise.resolve()
   private evaluationNonce = 0
+  private catalogVersion = 0
+  private catalogCache:
+    | { readonly version: number; readonly catalogs: CompletionCatalogs }
+    | undefined
 
   private constructor(options: ReplSessionOptions, authoring: AuthoringPackage) {
     this.options = options
@@ -600,6 +621,200 @@ export class ReplSession {
       })
     }
     this.selectedProfileView = selected
+    this.invalidateCatalogs()
+  }
+
+  private invalidateCatalogs(): void {
+    this.catalogVersion += 1
+  }
+
+  private completionCatalogs(): CompletionCatalogs {
+    if (this.catalogCache?.version === this.catalogVersion) return this.catalogCache.catalogs
+    const catalogs: CompletionCatalogs = {
+      commands: COMMAND_NAMES,
+      profiles: this.configView?.profiles().map((profile) => profile.name) ?? [],
+      bundles: this.catalogBundles(),
+      packages: this.catalogPackages(),
+      rows: (bundle, root) => this.catalogRows(bundle, root),
+      presets: (bundle, root) => this.catalogPresets(bundle, root),
+    }
+    this.catalogCache = { version: this.catalogVersion, catalogs }
+    return catalogs
+  }
+
+  private queryFactory(): (name: string) => QueryHandleLike {
+    const candidate = this.authoring.module.bundle
+    return typeof candidate === 'function'
+      ? (candidate as unknown as (name: string) => QueryHandleLike)
+      : (defaultBundle as unknown as (name: string) => QueryHandleLike)
+  }
+
+  private queryHandle(bundle: string, root: CompletionRoot): QueryHandleLike {
+    let handle = this.queryFactory()(bundle)
+    if (root.profile !== undefined) handle = handle.fromProfile(root.profile)
+    else if (root.packageDir !== undefined) handle = handle.fromPackageDir(root.packageDir)
+    return handle
+  }
+
+  private catalogRows(bundle: string, root: CompletionRoot): readonly string[] {
+    try {
+      const ids: string[] = []
+      const seen = new Set<string>()
+      for (const row of this.queryHandle(bundle, root).rows()) {
+        if (row.id === '' || seen.has(row.id)) continue
+        seen.add(row.id)
+        ids.push(row.id)
+      }
+      return ids
+    } catch {
+      return []
+    }
+  }
+
+  private catalogPresets(bundle: string, root: CompletionRoot): readonly string[] {
+    try {
+      const ids: string[] = []
+      const seen = new Set<string>()
+      for (const preset of this.queryHandle(bundle, root).presets()) {
+        if (preset.id === '' || seen.has(preset.id)) continue
+        seen.add(preset.id)
+        ids.push(preset.id)
+      }
+      return ids
+    } catch {
+      return []
+    }
+  }
+
+  private catalogBundles(): readonly string[] {
+    const names = new Set<string>()
+    for (const item of this.plan?.bundles ?? []) {
+      if (item.kind === 'bundle') names.add(item.name)
+    }
+    for (const name of this.manifestBundles()) names.add(name)
+    for (const name of this.pinnedBundles()) names.add(name)
+    for (const spec of this.previewSpecs) names.add(spec.name)
+    return [...names].sort()
+  }
+
+  private profileManifest(): Record<string, unknown> | undefined {
+    try {
+      const path = join(this.effectiveProfileDir(), 'package.json')
+      if (!existsSync(path)) return undefined
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private manifestBundles(): readonly string[] {
+    const manifest = this.profileManifest()
+    const dsh = manifest?.dsh
+    const profile = dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).profile : undefined
+    const bundles =
+      profile !== null && typeof profile === 'object'
+        ? (profile as Record<string, unknown>).bundles
+        : undefined
+    return Array.isArray(bundles)
+      ? bundles.filter((item): item is string => typeof item === 'string')
+      : []
+  }
+
+  private catalogPackages(): readonly string[] {
+    const names = new Set<string>(Object.keys(this.plan?.packages ?? {}))
+    const manifest = this.profileManifest()
+    if (manifest !== undefined) {
+      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+        const value = manifest[section]
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
+        for (const name of Object.keys(value)) names.add(name)
+      }
+    }
+    return [...names].sort()
+  }
+
+  private pinnedBundles(): readonly string[] {
+    const installation = resolveDshInstallation()
+    if (Result.isFailure(installation)) return []
+    const anchor = installation.success.installAnchor
+    try {
+      const manifest = JSON.parse(readFileSync(anchor, 'utf8')) as Record<string, unknown>
+      const names: string[] = []
+      for (const section of ['dependencies', 'optionalDependencies']) {
+        const dependencies = manifest[section]
+        if (dependencies === null || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+          continue
+        }
+        for (const name of Object.keys(dependencies)) {
+          if (this.declaresBundle(anchor, name)) names.push(name)
+        }
+      }
+      return names
+    } catch {
+      return []
+    }
+  }
+
+  private declaresBundle(anchor: string, name: string): boolean {
+    try {
+      const path = createRequire(anchor).resolve(`${name}/package.json`)
+      const manifest = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      const dsh = manifest.dsh
+      return dsh !== null && typeof dsh === 'object' && 'bundle' in dsh
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Complete one line against the current evaluation's catalogs. Resolution
+   * traces produced by completion are drained so Tab never prints provenance.
+   * @param line - the text before the cursor.
+   * @returns the token start and hits.
+   */
+  async complete(line: string): Promise<CompletionResult> {
+    takeTrace()
+    try {
+      return completeLine({ line, cursor: line.length, catalogs: this.completionCatalogs() })
+    } finally {
+      takeTrace()
+    }
+  }
+
+  /**
+   * Fall back to the hidden evaluator's JavaScript completion.
+   * @param line - the text before the cursor.
+   * @returns the filtered hits and the completed-on token.
+   */
+  async completeGeneric(line: string): Promise<readonly [string[], string]> {
+    const server = this.server as unknown as {
+      complete?: (
+        text: string,
+        callback: (error: unknown, result?: [string[], string]) => void,
+      ) => void
+    }
+    const run = server.complete
+    if (typeof run !== 'function') return [[], line]
+    return await new Promise<readonly [string[], string]>((resolve) => {
+      let settled = false
+      const finish = (error: unknown, result?: [string[], string]): void => {
+        if (settled) return
+        settled = true
+        if ((error !== null && error !== undefined) || result === undefined) {
+          resolve([[], line])
+          return
+        }
+        resolve([filterCompletionHits(result[0]), result[1]])
+      }
+      try {
+        run.call(server, line, finish)
+      } catch {
+        resolve([[], line])
+      }
+    })
   }
 
   private async loadCandidate(): Promise<{
@@ -862,6 +1077,7 @@ export class ReplSession {
     this.plan = view.plan()
     this.profileName = name
     this.selectedProfileView = view
+    this.invalidateCatalogs()
     this.bind()
     this.stdout(`profile: ${name}`)
   }
@@ -971,6 +1187,7 @@ export class ReplSession {
       }
       this.pausedFingerprint = undefined
       if (this.preview !== undefined && outcome.changed) await this.verifyPreview(plan)
+      this.invalidateCatalogs()
       return outcome
     } catch (error) {
       this.pausedFingerprint = this.fingerprint()

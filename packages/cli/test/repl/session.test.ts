@@ -1,8 +1,9 @@
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { defineConfig } from '@eedsh/config'
+import { defineConfig, takeResolutionTrace } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
@@ -56,9 +57,6 @@ function rowsOf(plan: ProfilePlan): number {
 const authoring = {
   module: {
     defineConfig: () => 'bound-define-config',
-    bundle: () => 'bound-bundle',
-    group: () => 'bound-group',
-    js: () => 'bound-js',
     marker: 42,
   },
   packagePath: '/fake/@eedsh/config/package.json',
@@ -579,5 +577,80 @@ describe('shell commands', () => {
     await running
     expect(out.join('\n')).toContain('.reload')
     expect(chunks.join('')).not.toContain('eedsh>')
+  })
+})
+describe('completion catalogs', () => {
+  async function installProfileBundle(): Promise<string> {
+    const profileDir = join(work, 'home', 'profiles', 'work')
+    const packageDir = join(profileDir, 'node_modules', '@fixture', 'custom')
+    await mkdir(packageDir, { recursive: true })
+    await writeFile(
+      join(packageDir, 'package.json'),
+      JSON.stringify({
+        name: '@fixture/custom',
+        version: '1.0.0',
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }),
+    )
+    await writeFile(
+      join(packageDir, 'cordis.patch.yml'),
+      `- insert:
+    - id: profile-row
+      name: '@fixture/plugin'
+`,
+    )
+    return profileDir
+  }
+
+  it('refreshes profile names after a reload', async () => {
+    const h = await session({ config: configWithProfiles(['work'], 'work') })
+    expect((await h.session.complete('.profile ')).hits).toEqual(['work'])
+    h.setConfig(configWithProfiles(['work', 'home'], 'work'))
+    await h.session.reload()
+    expect((await h.session.complete('.profile ')).hits).toEqual(['work', 'home'])
+  })
+
+  it('resolves row ids for a rooted bundle through the profile install', async () => {
+    await installProfileBundle()
+    takeResolutionTrace()
+    const h = await session({ config: configWithProfiles(['work'], 'work') })
+    const result = await h.session.complete("bundle('@fixture/custom').fromProfile('work').row('")
+    expect(result.hits).toEqual(["'profile-row'"])
+    expect(takeResolutionTrace()).toEqual([])
+    expect(h.out.join('\n')).not.toContain('resolved @fixture/custom')
+  })
+
+  it('completes profile names in chain arguments', async () => {
+    const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
+    expect(
+      (await h.session.complete("bundle('@deepseek-ai/dsh-base').fromProfile('")).hits,
+    ).toEqual(["'work'", "'home'"])
+  })
+
+  it('keeps completion read-only', async () => {
+    const profileDir = await installProfileBundle()
+    const manifest = join(profileDir, 'package.json')
+    const before = await readFile(manifest, 'utf8')
+    const h = await session({ config: configWithProfiles(['work'], 'work') })
+    await h.session.complete("bundle('@fixture/custom').fromProfile('work').row('")
+    await h.session.complete('.profile ')
+    expect(await readFile(manifest, 'utf8')).toBe(before)
+    expect(existsSync(join(profileDir, '.eedsh'))).toBe(false)
+  })
+
+  it('keeps the prompt usable when completion resolution fails', async () => {
+    const h = await session({ config: configWithProfiles(['work'], 'work') })
+    const result = await h.session.complete("bundle('@fixture/missing').fromProfile('work').row('")
+    expect(result.hits).toEqual([])
+    expect(await h.session.evaluate('1 + 1')).toBe(2)
+  })
+
+  it('falls back to generic completion and filters prototype noise', async () => {
+    const h = await session()
+    await h.session.evaluate('const completionValue = 1')
+    const [hits] = await h.session.completeGeneric('completionV')
+    expect(hits).toContain('completionValue')
+    expect(hits).not.toContain('constructor')
+    expect(hits).not.toContain('toString')
   })
 })
