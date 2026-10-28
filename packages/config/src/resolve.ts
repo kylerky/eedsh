@@ -16,7 +16,7 @@ import {
   loadOverlayPatches,
   resolveProfileDir,
 } from '@deepseek-ai/dsh-app-boot'
-import type { PlanEntry } from './api'
+import type { PlanEntry } from './builders'
 
 /** The environment variable naming the pinned DSH installation's manifest. */
 export const DSH_ANCHOR_ENV = 'EEDSH_DSH_ANCHOR'

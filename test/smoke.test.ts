@@ -7,12 +7,29 @@ import { describe, expect, it } from 'vitest'
 const require = createRequire(import.meta.url)
 
 describe('workspace', () => {
-  it('exposes the @eedsh/config authoring entry', () => {
-    expect(typeof config.defineProfile).toBe('function')
+  it('exposes the typed @eedsh/config authoring entry', () => {
     expect(typeof config.defineConfig).toBe('function')
     expect(typeof config.bundle).toBe('function')
-    expect('assertPlan' in config).toBe(false)
-    for (const symbol of ['validateConfigValue', 'validatePlan', 'PLAN_VERSION']) {
+    expect(typeof config.js).toBe('function')
+    expect(typeof config.group).toBe('function')
+    for (const symbol of [
+      'defineProfile',
+      'rows',
+      'presets',
+      'row',
+      'insert',
+      'disable',
+      'enable',
+      'override',
+      'layer',
+      'raw',
+      'assertPlan',
+      'validatePlan',
+      'validateConfigValue',
+      'ProfilePlanSchema',
+      'EedshConfigSchema',
+      'PLAN_VERSION',
+    ]) {
       expect(symbol in config, `@eedsh/config must not export ${symbol}`).toBe(false)
     }
   })
@@ -23,10 +40,16 @@ describe('workspace', () => {
     expect(plan.PLAN_VERSION).toBe(1)
   })
 
-  it('returns a profile descriptor from defineProfile', () => {
-    const definition = config.defineProfile({})
-    expect(definition).toEqual({ bundles: [], layers: [], packages: {} })
-    expect(definition).not.toBeInstanceOf(Promise)
+  it('builds a profile through the fluent surface', () => {
+    const result = config
+      .defineConfig()
+      .dsh('0.2.1-rc.2')
+      .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+      .build()
+    expect(result).not.toBeInstanceOf(Promise)
+    if (result._tag !== 'Success') throw new Error('expected a success Result')
+    expect(result.success.dsh).toBe('0.2.1-rc.2')
+    expect(Object.keys(result.success.profiles)).toEqual(['work'])
   })
 
   it('exposes the @eedsh/runtime public entry', () => {

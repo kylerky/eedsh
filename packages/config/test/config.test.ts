@@ -1,18 +1,11 @@
-import {
-  bundle,
-  type DefineConfigInput,
-  defineConfig,
-  defineProfile,
-  generated,
-  insert,
-  layer,
-  type ProfileDefinition,
-} from '@eedsh/config'
+import { bundle, defineConfig } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
-import * as Schema from 'effect/Schema'
+import type * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
+
+const dsh = '0.2.1-rc.2'
 
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
 
@@ -25,32 +18,13 @@ function issuesOf(error: Schema.SchemaError) {
   }))
 }
 
-const dsh = '0.2.1-rc.2'
-
-function workProfile(): ProfileDefinition {
-  return defineProfile({
-    bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-    layers: [layer('work', [insert({ id: 'work-row', name: '@scope/work-row' })])],
-  })
-}
-
-function homeProfile(): ProfileDefinition {
-  return defineProfile({
-    bundles: [bundle('@deepseek-ai/dsh-base')],
-  })
-}
-
-function configOf(input: DefineConfigInput<Record<string, ProfileDefinition>>): EedshConfig {
-  const result = defineConfig(input)
+function configOf(result: Result.Result<EedshConfig, Schema.SchemaError>): EedshConfig {
   if (Result.isFailure(result)) throw new Error(result.failure.message)
   return result.success
 }
 
-function failureOf(
-  input: DefineConfigInput<Record<string, ProfileDefinition>>,
-): Schema.SchemaError {
-  const result = defineConfig(input)
-  if (Result.isSuccess(result)) throw new Error('expected defineConfig to fail')
+function failureOf(result: Result.Result<EedshConfig, Schema.SchemaError>): Schema.SchemaError {
+  if (Result.isSuccess(result)) throw new Error('expected defineConfig().build() to fail')
   return result.failure
 }
 
@@ -61,119 +35,193 @@ function planOf(config: EedshConfig, name: string): ProfilePlan {
   return result.success
 }
 
-describe('defineConfig envelope', () => {
-  it('produces one validated plan per key with the shared pin', () => {
-    const config = configOf({
-      dsh,
-      defaultProfile: 'work',
-      profiles: { work: workProfile(), home: homeProfile() },
-    })
+describe('fluent config builder', () => {
+  it('builds a minimal fluent config synchronously', () => {
+    const result = defineConfig()
+      .dsh(dsh)
+      .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+      .build()
+    expect(result).not.toBeInstanceOf(Promise)
+    const config = configOf(result)
     expect(config.dsh).toBe(dsh)
-    expect(config.defaultProfile).toBe('work')
+    expect(Object.keys(config.profiles)).toEqual(['work'])
+    expect(planOf(config, 'work').profile.name).toBe('work')
+  })
+
+  it('chains the pin, default profile, profiles, and packages', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh('1.2.3')
+        .defaultProfile('home')
+        .profile('work', (profile) =>
+          profile
+            .bundle('@deepseek-ai/dsh-base')
+            .bundle(bundle('@deepseek-ai/dsh-web-app', { source: 'link:../web-app' }))
+            .generated()
+            .layer('plugins', (layer) =>
+              layer.insert({ id: 'my-plugin', name: '@scope/my-plugin' }),
+            )
+            .package('@scope/my-plugin', 'link:../my-plugin'),
+        )
+        .profile('home', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+      .build(),
+    )
+    expect(config.dsh).toBe('1.2.3')
+    expect(config.defaultProfile).toBe('home')
     expect(Object.keys(config.profiles)).toEqual(['work', 'home'])
     const work = planOf(config, 'work')
-    const home = planOf(config, 'home')
-    expect(work.profile.name).toBe('work')
-    expect(home.profile.name).toBe('home')
-    expect(work.dsh).toBe(dsh)
-    expect(home.dsh).toBe(dsh)
-    expect(work.layers.map((item) => item.id)).toEqual(['work'])
+    expect(work.bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app', source: 'link:../web-app' },
+      { kind: 'generated' },
+    ])
+    expect(work.packages).toEqual({ '@scope/my-plugin': 'link:../my-plugin' })
+    expect(planOf(config, 'home').packages).toEqual({})
   })
 
-  it('uses the record key as the profile name and always applies the shared pin', () => {
-    const config = configOf({
-      dsh: '1.2.3',
-      profiles: { 'odd-name-2': homeProfile() },
-    })
-    expect(planOf(config, 'odd-name-2')).toMatchObject({
-      profile: { name: 'odd-name-2' },
-      dsh: '1.2.3',
-    })
-  })
-
-  it('accepts records built dynamically from entries', () => {
-    const names = ['work', 'home'] as const
-    const profiles = Object.fromEntries(
-      names.map((name) => [name, defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] })]),
+  it('scopes each layer callback to its own layer and keeps authored order', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          profile.layer('first', (layer) =>
+            layer.insert({ id: 'first-row', name: '@scope/first' }),
+          )
+          profile.layer('second', (layer) => layer.disable('preset-standard'))
+        })
+      .build(),
     )
-    const config = configOf({ dsh, profiles })
-    expect(Object.keys(config.profiles)).toEqual(['work', 'home'])
-    for (const name of names) expect(planOf(config, name).profile.name).toBe(name)
+    expect(planOf(config, 'work').layers).toEqual([
+      { id: 'first', patches: [{ insert: [{ id: 'first-row', name: '@scope/first' }] }] },
+      { id: 'second', patches: [{ id: 'preset-standard', disabled: true }] },
+    ])
   })
 
-  it('returns a synchronous Result and never throws for a bad envelope', () => {
-    const result = defineConfig({ dsh: 'latest', profiles: { work: workProfile() } })
-    expect(result).not.toBeInstanceOf(Promise)
-    expect(Result.isFailure(result)).toBe(true)
-    if (Result.isFailure(result)) expect(Schema.isSchemaError(result.failure)).toBe(true)
+  it('keeps the callback return value irrelevant', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          profile.bundle('@deepseek-ai/dsh-base')
+          return undefined as never
+        })
+      .build(),
+    )
+    expect(planOf(config, 'work').bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+    ])
+  })
+
+  it('normalizes typed handles before validation', () => {
+    const base = bundle('@deepseek-ai/dsh-base')
+    const web = bundle('@deepseek-ai/dsh-web-app')
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => profile.bundle(base).bundle(web).generated())
+      .build(),
+    )
+    const plan = planOf(config, 'work')
+    expect(plan.bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
+      { kind: 'generated' },
+    ])
+    expect(JSON.parse(JSON.stringify(plan))).toEqual(plan)
+  })
+
+  it('returns detached, independent builds', () => {
+    const builder = defineConfig().dsh(dsh)
+    builder.profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+    const first = configOf(builder.build())
+    const second = configOf(builder.build())
+    expect(first).toEqual(second)
+    expect(first).not.toBe(second)
   })
 })
 
-describe('config-level defects', () => {
-  it('rejects an empty profile record', () => {
-    const error = failureOf({ dsh, profiles: {} })
-    expect(Schema.isSchemaError(error)).toBe(true)
+describe('builder defects', () => {
+  it('fails at build when the pin is missing', () => {
+    const error = failureOf(
+      defineConfig()
+        .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+        .build(),
+    )
+    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['dsh'])
+  })
+
+  it('fails at build when no profile is declared', () => {
+    const error = failureOf(defineConfig().dsh(dsh).build())
     expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['profiles'])
   })
 
   it('rejects an unsafe profile key and names it', () => {
-    const error = failureOf({
-      dsh,
-      profiles: { 'a/b': homeProfile() },
-    })
+    const error = failureOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('a/b', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+        .build(),
+    )
     const issues = issuesOf(error)
     expect(issues.map((issue) => issue.path)).toContainEqual(['profiles', 'a/b'])
     expect(issues.some((issue) => issue.message.includes('"a/b"'))).toBe(true)
   })
 
   it('rejects an unknown default profile', () => {
-    const error = failureOf({
-      dsh,
-      defaultProfile: 'missing',
-      profiles: { work: workProfile() },
-    })
+    const error = failureOf(
+      defineConfig()
+        .dsh(dsh)
+        .defaultProfile('missing')
+        .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+        .build(),
+    )
     const issues = issuesOf(error)
     expect(issues.map((issue) => issue.path)).toContainEqual(['defaultProfile'])
     expect(issues.some((issue) => issue.message.includes('"missing"'))).toBe(true)
   })
 
-  it('rejects a malformed DSH pin', () => {
-    const error = failureOf({ dsh: 'latest', profiles: { work: workProfile() } })
-    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['dsh'])
-  })
-})
-
-describe('per-profile validation', () => {
-  it('keeps a valid sibling when one profile is invalid', () => {
-    const config = configOf({
-      dsh,
-      profiles: {
-        work: workProfile(),
-        home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
-      },
-    })
+  it('keeps an invalid profile as its own failure and validates its sibling', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+        .profile('home', (profile) => profile.bundle('@eedsh/runtime'))
+      .build(),
+    )
     const work = config.profiles.work
     const home = config.profiles.home
     expect(work !== undefined && Result.isSuccess(work)).toBe(true)
     expect(home !== undefined && Result.isFailure(home)).toBe(true)
     if (home !== undefined && Result.isFailure(home)) {
-      expect(Schema.isSchemaError(home.failure)).toBe(true)
       expect(home.failure.message).toContain('owned by the materializer')
     }
   })
 
-  it('stores a failure for an invalid default without failing the config', () => {
-    const config = configOf({
-      dsh,
-      defaultProfile: 'home',
-      profiles: {
-        work: workProfile(),
-        home: defineProfile({ bundles: [], layers: [layer('home', [insert({})])] }),
-      },
-    })
-    const home = config.profiles.home
-    expect(home !== undefined && Result.isFailure(home)).toBe(true)
-    const work = config.profiles.work
-    expect(work !== undefined && Result.isSuccess(work)).toBe(true)
+  it('fails with the native schema error and never throws', () => {
+    expect(() => defineConfig().dsh('latest').profile('work', () => undefined).build()).not.toThrow()
+    const failure = failureOf(defineConfig().dsh('latest').build())
+    expect(SchemaIssue.isIssue(failure.issue)).toBe(true)
+  })
+})
+
+describe('public authoring surface', () => {
+  it('replaces the free helpers with methods', async () => {
+    const module = (await import('@eedsh/config')) as Record<string, unknown>
+    for (const symbol of [
+      'defineProfile',
+      'rows',
+      'presets',
+      'row',
+      'insert',
+      'disable',
+      'enable',
+      'override',
+      'layer',
+      'raw',
+    ]) {
+      expect(symbol in module, `@eedsh/config must not export ${symbol}`).toBe(false)
+    }
+    expect(typeof module.defineConfig).toBe('function')
+    expect(typeof module.bundle).toBe('function')
   })
 })
