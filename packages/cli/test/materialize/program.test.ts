@@ -1,4 +1,4 @@
-import { canonicalJson } from '@eedsh/config'
+import { canonicalJson } from '@eedsh/plan'
 import { describe, expect, it } from 'vitest'
 import {
   BUNDLE,

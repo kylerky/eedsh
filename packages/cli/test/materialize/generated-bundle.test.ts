@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import type { ProfilePlan } from '@eedsh/config'
-import { bundle, canonicalJson, generated, insert, js, layer, override } from '@eedsh/config'
+import { bundle, generated, insert, js, layer, override } from '@eedsh/config'
+import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { describe, expect, it } from 'vitest'
 import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
 import { emitPatchesYaml } from '../../src/materialize/yaml'

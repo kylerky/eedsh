@@ -4,15 +4,8 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import {
-  bundle,
-  type EedshConfig,
-  generated,
-  insert,
-  layer,
-  type ProfilePlan,
-  validateConfigValue,
-} from '@eedsh/config'
+import { bundle, generated, insert, layer } from '@eedsh/config'
+import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
@@ -481,7 +474,7 @@ export default {
 `
 
   const authoringThrow = `
-import { validateConfigValue } from '@eedsh/config'
+import { validateConfigValue } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 const result = validateConfigValue({
   dsh: 'latest',

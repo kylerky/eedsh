@@ -9,7 +9,7 @@
 import { statSync } from 'node:fs'
 import { extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { type EedshConfig, validateConfigValue } from '@eedsh/config'
+import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'

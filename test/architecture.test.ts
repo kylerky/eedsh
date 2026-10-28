@@ -109,6 +109,30 @@ describe('package boundaries', () => {
     expect(importsEffect('runtime'), '@eedsh/runtime must not import effect').toBe(false)
   })
 
+  it('keeps runtime plan validators out of @eedsh/config', async () => {
+    const config = await import('@eedsh/config')
+    for (const symbol of [
+      'validatePlan',
+      'validateConfigValue',
+      'ProfilePlanSchema',
+      'EedshConfigSchema',
+    ]) {
+      expect(symbol in config, `@eedsh/config must not export ${symbol}`).toBe(false)
+    }
+  })
+
+  it('re-exports plan symbols from @eedsh/config as types only', () => {
+    const index = readFileSync(join(root, 'packages/config/src/index.ts'), 'utf8')
+    expect(index, '@eedsh/config must not runtime re-export @eedsh/plan').not.toMatch(
+      /export\s+\*\s+from\s+['"]@eedsh\/plan['"]/,
+    )
+  })
+
+  it('has @eedsh/cli import the plan contract directly', () => {
+    const specifiers = sourceImports('cli').map(({ specifier }) => specifier)
+    expect(specifiers, '@eedsh/cli must import @eedsh/plan').toContain('@eedsh/plan')
+  })
+
   it('confines the DSH runtime dependency to @eedsh/cli and @eedsh/runtime types', () => {
     for (const dependency of dependencyNames('config')) {
       expect(

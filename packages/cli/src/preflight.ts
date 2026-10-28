@@ -6,7 +6,7 @@
  */
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
-import type { ProfilePlan } from '@eedsh/config'
+import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'

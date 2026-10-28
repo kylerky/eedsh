@@ -13,9 +13,8 @@ import {
   override,
   type ProfileDefinition,
   raw,
-  validatePlan,
 } from '@eedsh/config'
-import { PLAN_FORMAT } from '@eedsh/plan'
+import { PLAN_FORMAT, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
@@ -61,12 +60,13 @@ describe('defineProfile', () => {
     expect(definition.layers).toEqual([{ id: 'Not Safe', patches: [] }])
   })
 
-  it('keeps validatePlan available and assertPlan absent', async () => {
+  it('keeps plan validation in @eedsh/plan and assertPlan absent', async () => {
     const definition = defineProfile({})
     expect(definition).toEqual({ bundles: [], layers: [], packages: {} })
     expect(Result.isSuccess(validatePlan({}))).toBe(false)
     const module = await import('@eedsh/config')
     expect('assertPlan' in module).toBe(false)
+    expect('validatePlan' in module).toBe(false)
   })
 })
 

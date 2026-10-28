@@ -4,7 +4,7 @@
  * @module @eedsh/cli/materialize/program
  */
 import { join } from 'node:path'
-import { canonicalJson, type ProfilePlan } from '@eedsh/config'
+import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option, Schema } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'

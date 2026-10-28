@@ -4,7 +4,7 @@
  * the explicit name, then the declared default, then the sole profile.
  * @module @eedsh/cli/selection
  */
-import type { EedshConfig, ProfilePlan } from '@eedsh/config'
+import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Data, Option } from 'effect'
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'

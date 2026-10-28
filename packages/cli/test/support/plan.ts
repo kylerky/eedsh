@@ -1,4 +1,4 @@
-import { PLAN_FORMAT, PLAN_VERSION, type ProfilePlan, validatePlan } from '@eedsh/config'
+import { PLAN_FORMAT, PLAN_VERSION, type ProfilePlan, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 
 /** A profile plan input for tests that need a plan value directly. */

@@ -5,7 +5,7 @@
  * `effect/process` spawner, so the pipeline has no hand-written Node seam.
  * @module @eedsh/cli/internal/effect/services
  */
-import type { ProfilePlan } from '@eedsh/config'
+import type { ProfilePlan } from '@eedsh/plan'
 import { Context, type Effect } from 'effect'
 import type * as PlatformError from 'effect/PlatformError'
 import type { GeneratedBundle } from '../../materialize/generated-bundle'

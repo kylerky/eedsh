@@ -5,7 +5,7 @@
  * @module @eedsh/cli/materialize/yaml
  */
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
-import type { PlanPatch } from '@eedsh/config'
+import type { PlanPatch } from '@eedsh/plan'
 import * as yaml from 'js-yaml'
 
 /**

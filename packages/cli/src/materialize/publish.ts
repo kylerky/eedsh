@@ -6,7 +6,7 @@
  * @module @eedsh/cli/materialize/publish
  */
 import { dirname, join } from 'node:path'
-import { canonicalJson, type ProfilePlan } from '@eedsh/config'
+import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'

@@ -3,9 +3,9 @@ import {
   generated as generatedMarker,
   insert,
   override,
-  type ProfilePlan,
   layer as planLayer,
 } from '@eedsh/config'
+import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'

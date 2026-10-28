@@ -6,7 +6,7 @@
  * @module @eedsh/cli/doctor
  */
 import { join } from 'node:path'
-import { canonicalJson, type ProfilePlan, ProfilePlanSchema } from '@eedsh/config'
+import { canonicalJson, type ProfilePlan, ProfilePlanSchema } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'

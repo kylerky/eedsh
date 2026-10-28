@@ -5,7 +5,7 @@
  * and no longer manages is removed, so code is the source of truth.
  * @module @eedsh/cli/materialize/manifest
  */
-import type { ProfilePlan } from '@eedsh/config'
+import type { ProfilePlan } from '@eedsh/plan'
 import { Option, Schema } from 'effect'
 import { readRecord, readStringArray, readStringRecord } from '../internal/schema-readers'
 import { type Diagnostic, notice, warning } from './diagnostics'
