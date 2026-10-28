@@ -1,0 +1,29 @@
+{
+  "name": "@eedsh/plan",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The eedsh profile plan contract: schema, validation, config envelopes, and canonical JSON",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "peerDependencies": {
+    "effect": "4.0.6"
+  },
+  "devDependencies": {
+    "effect": "4.0.6"
+  }
+}
