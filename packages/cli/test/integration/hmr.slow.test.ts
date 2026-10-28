@@ -3,7 +3,6 @@ import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, disable, generated, layer } from '../support/plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
@@ -13,6 +12,7 @@ import { resolveDshInstallation } from '../../src/dsh'
 import { materialize } from '../../src/materialize/program'
 import { delay, waitFor } from '../support/async'
 import { planOf } from '../support/plan'
+import { bundle, disable, generated, layer } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()

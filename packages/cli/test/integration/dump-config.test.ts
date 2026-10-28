@@ -2,7 +2,6 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, generated, insert, layer, override } from '../support/plan-parts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
@@ -12,6 +11,7 @@ import { liveServiceLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
 import { preflightLayer } from '../../src/preflight'
 import { planOf } from '../support/plan'
+import { bundle, generated, insert, layer, override } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()

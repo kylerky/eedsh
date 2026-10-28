@@ -1,7 +1,9 @@
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
-  bundle,
   Bundle,
   BundleQuery,
+  bundle,
   group,
   js,
   LayerBuilder,
@@ -12,8 +14,6 @@ import {
 } from '@eedsh/config'
 import { PLAN_FORMAT, PLAN_VERSION, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
-import { writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type AuthoringFixture,
@@ -84,7 +84,8 @@ describe('authoring brand', () => {
     expect(normalizeAuthoring({ bundles: [rooted] })).toEqual({ bundles: [rooted] })
     const plan = validatePlan(planValue(rooted))
     expect(Result.isFailure(plan)).toBe(true)
-    if (Result.isFailure(plan)) expect(plan.failure.message).toContain('bundle must be a JSON object')
+    if (Result.isFailure(plan))
+      expect(plan.failure.message).toContain('bundle must be a JSON object')
   })
 })
 
@@ -107,13 +108,19 @@ describe('typed resolution data', () => {
     expect(fromName.rows().map((row) => row.id)).toEqual(['custom-row'])
     expect(fromHandle.rows().map((row) => row.id)).toEqual(['custom-row'])
     expect(
-      bundle('@fixture/base').fromProfile('work').rows().map((row) => row.id),
+      bundle('@fixture/base')
+        .fromProfile('work')
+        .rows()
+        .map((row) => row.id),
     ).toEqual(['profile-copy'])
   })
 
   it('resolves an absolute and relative package directory', () => {
     expect(
-      bundle('@fixture/vendored').fromPackageDir(fixture.packageDir).rows().map((row) => row.id),
+      bundle('@fixture/vendored')
+        .fromPackageDir(fixture.packageDir)
+        .rows()
+        .map((row) => row.id),
     ).toEqual(['vendored-row'])
     expect(
       bundle('@fixture/vendored')
@@ -248,9 +255,7 @@ describe('layer patches', () => {
       $eedsh: { expr: "ctx.get('profileContext')" },
     })
     expect(
-      group('group-row', { isolate: { label: { color: 'red' } } }, [
-        { id: 'child-a', name: 'a' },
-      ]),
+      group('group-row', { isolate: { label: { color: 'red' } } }, [{ id: 'child-a', name: 'a' }]),
     ).toEqual({
       id: 'group-row',
       isolate: { label: { color: 'red' } },

@@ -479,4 +479,3 @@ export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBun
     rows,
   })
 }
-

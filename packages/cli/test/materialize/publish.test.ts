@@ -1,4 +1,3 @@
-import { bundle, generated, insert, layer } from '../support/plan-parts'
 import { Effect, Exit, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
@@ -15,6 +14,7 @@ import { reconcileManifest } from '../../src/materialize/manifest'
 import { publishProfile } from '../../src/materialize/publish'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
+import { bundle, generated, insert, layer } from '../support/plan-parts'
 
 const PROFILE_DIR = '/home/profiles/work'
 const MANIFEST_PATH = `${PROFILE_DIR}/package.json`

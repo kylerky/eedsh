@@ -1,7 +1,6 @@
-import { readFile, writeFile } from 'node:fs/promises'
-import { mkdir, mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { bundle, BundleQuery, ResolutionError, takeResolutionTrace } from '@eedsh/config'
+import { BundleQuery, bundle, ResolutionError, takeResolutionTrace } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../cli/src/config'
@@ -134,9 +133,7 @@ describe('explicit roots', () => {
   })
 
   it('resolves an absolute package directory', () => {
-    expect(
-      bundle('@fixture/vendored').fromPackageDir(fixture.packageDir).rows(),
-    ).toHaveLength(1)
+    expect(bundle('@fixture/vendored').fromPackageDir(fixture.packageDir).rows()).toHaveLength(1)
   })
 
   it('resolves a relative package directory against the config file', () => {

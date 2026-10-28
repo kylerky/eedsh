@@ -64,7 +64,7 @@ describe('fluent config builder', () => {
             .package('@scope/my-plugin', 'link:../my-plugin'),
         )
         .profile('home', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
-      .build(),
+        .build(),
     )
     expect(config.dsh).toBe('1.2.3')
     expect(config.defaultProfile).toBe('home')
@@ -84,12 +84,10 @@ describe('fluent config builder', () => {
       defineConfig()
         .dsh(dsh)
         .profile('work', (profile) => {
-          profile.layer('first', (layer) =>
-            layer.insert({ id: 'first-row', name: '@scope/first' }),
-          )
+          profile.layer('first', (layer) => layer.insert({ id: 'first-row', name: '@scope/first' }))
           profile.layer('second', (layer) => layer.disable('preset-standard'))
         })
-      .build(),
+        .build(),
     )
     expect(planOf(config, 'work').layers).toEqual([
       { id: 'first', patches: [{ insert: [{ id: 'first-row', name: '@scope/first' }] }] },
@@ -105,7 +103,7 @@ describe('fluent config builder', () => {
           profile.bundle('@deepseek-ai/dsh-base')
           return undefined as never
         })
-      .build(),
+        .build(),
     )
     expect(planOf(config, 'work').bundles).toEqual([
       { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
@@ -119,7 +117,7 @@ describe('fluent config builder', () => {
       defineConfig()
         .dsh(dsh)
         .profile('work', (profile) => profile.bundle(base).bundle(web).generated())
-      .build(),
+        .build(),
     )
     const plan = planOf(config, 'work')
     expect(plan.bundles).toEqual([
@@ -186,7 +184,7 @@ describe('builder defects', () => {
         .dsh(dsh)
         .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .profile('home', (profile) => profile.bundle('@eedsh/runtime'))
-      .build(),
+        .build(),
     )
     const work = config.profiles.work
     const home = config.profiles.home
@@ -198,7 +196,12 @@ describe('builder defects', () => {
   })
 
   it('fails with the native schema error and never throws', () => {
-    expect(() => defineConfig().dsh('latest').profile('work', () => undefined).build()).not.toThrow()
+    expect(() =>
+      defineConfig()
+        .dsh('latest')
+        .profile('work', () => undefined)
+        .build(),
+    ).not.toThrow()
     const failure = failureOf(defineConfig().dsh('latest').build())
     expect(SchemaIssue.isIssue(failure.issue)).toBe(true)
   })

@@ -5,8 +5,9 @@
  * immutable typed handles over one resolution snapshot.
  * @module @eedsh/config/query
  */
-import type { JsonValue, NamedBundle, PlanEntry, PlanPatch } from '@eedsh/plan'
+import type { JsonValue, NamedBundle, PlanPatch } from '@eedsh/plan'
 import { AUTHORING_KIND, authoringKind } from './authoring'
+import type { PlanEntry } from './builders'
 import {
   type QueryRoot,
   ResolutionError,
@@ -278,11 +279,7 @@ export class Bundle extends BundleQuery {
    * @returns a query-only handle.
    */
   fromProfile(profile: string | { readonly name?: unknown }): BundleQuery {
-    return new BundleQuery(
-      this.bundle,
-      { profile: this.profileName(profile) },
-      this.options(),
-    )
+    return new BundleQuery(this.bundle, { profile: this.profileName(profile) }, this.options())
   }
 
   /**

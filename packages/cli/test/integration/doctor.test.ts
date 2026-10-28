@@ -1,6 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { bundle, generated, insert, layer } from '../support/plan-parts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -14,6 +13,7 @@ import {
 import { materialize } from '../../src/materialize/program'
 import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 import { planOf } from '../support/plan'
+import { bundle, generated, insert, layer } from '../support/plan-parts'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')

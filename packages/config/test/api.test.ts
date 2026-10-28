@@ -67,9 +67,9 @@ describe('layer builder patches', () => {
   })
 
   it('group entries can be inserted', () => {
-    const patch = new LayerBuilder('groups')
-      .insert(group('group-row', {}, [{ id: 'child', name: 'child' }]))
-      .patches[0]
+    const patch = new LayerBuilder('groups').insert(
+      group('group-row', {}, [{ id: 'child', name: 'child' }]),
+    ).patches[0]
     expect(patch).toEqual({
       insert: [
         {
@@ -103,10 +103,7 @@ describe('layer builder patches', () => {
   })
 
   it('keeps patch order', () => {
-    const value = new LayerBuilder('ordered')
-      .disable('a')
-      .enable('a')
-      .override('b', { on: true })
+    const value = new LayerBuilder('ordered').disable('a').enable('a').override('b', { on: true })
     expect(value.id).toBe('ordered')
     expect(value.patches).toEqual([
       { id: 'a', disabled: true },

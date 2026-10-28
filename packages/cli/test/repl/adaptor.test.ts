@@ -1,5 +1,5 @@
-import { completeShellLine } from '../../src/repl/prompt'
 import { describe, expect, it } from 'vitest'
+import { completeShellLine } from '../../src/repl/prompt'
 
 describe('readline completion adapter', () => {
   it('returns domain hits with the token to replace', async () => {

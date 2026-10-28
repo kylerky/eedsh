@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, generated, insert, layer } from './support/plan-parts'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -31,6 +30,7 @@ import {
   memoryFileSystem,
 } from './support/fakes'
 import { planOf } from './support/plan'
+import { bundle, generated, insert, layer } from './support/plan-parts'
 import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)

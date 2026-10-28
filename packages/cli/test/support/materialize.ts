@@ -1,4 +1,3 @@
-import { bundle, generated, insert, layer } from './plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -11,6 +10,7 @@ import {
 import { type MaterializeOptions, materialize } from '../../src/materialize/program'
 import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock, memoryFileSystem } from './fakes'
 import { planOf } from './plan'
+import { bundle, generated, insert, layer } from './plan-parts'
 
 /** Absolute profile directory every materialization test publishes into. */
 export const PROFILE_DIR = '/home/profiles/work'

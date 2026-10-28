@@ -276,7 +276,9 @@ describe('typed domain bindings', () => {
     h.setConfig(configWith(['a', 'b']))
     await h.session.reload()
     expect(await h.session.evaluate('selectedProfile.layers()[0].patches.length')).toBe(2)
-    expect(await h.session.evaluate('selectedProfile.layers()[0].patches[1].insert[0].id')).toBe('b')
+    expect(await h.session.evaluate('selectedProfile.layers()[0].patches[1].insert[0].id')).toBe(
+      'b',
+    )
   })
 
   it('fails loudly when the authoring module collides with a binding', async () => {

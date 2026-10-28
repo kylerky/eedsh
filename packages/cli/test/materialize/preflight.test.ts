@@ -1,10 +1,3 @@
-import {
-  bundle,
-  generated as generatedMarker,
-  insert,
-  override,
-  layer as planLayer,
-} from '../support/plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
@@ -25,6 +18,13 @@ import {
   preflightLayer,
 } from '../../src/preflight'
 import { planOf } from '../support/plan'
+import {
+  bundle,
+  generated as generatedMarker,
+  insert,
+  override,
+  layer as planLayer,
+} from '../support/plan-parts'
 
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 

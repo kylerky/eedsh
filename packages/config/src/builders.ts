@@ -21,11 +21,11 @@ import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import { normalizeAuthoring } from './authoring'
 import {
-  bundleSelection,
   type Bundle,
+  bundleSelection,
   type PatchTarget,
-  patchTargetId,
   type Preset,
+  patchTargetId,
   type Row,
 } from './query'
 

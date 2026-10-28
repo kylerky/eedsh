@@ -90,7 +90,19 @@ const METHODS: Record<MethodKind, readonly string[]> = {
     'toJSON',
   ],
   config: ['defaultProfile', 'dsh', 'profile', 'profiles'],
-  profile: ['bundles', 'error', 'layers', 'name', 'plan', 'result', 'valid'],
+  profile: [
+    'bundles',
+    'composition',
+    'entries',
+    'error',
+    'layers',
+    'name',
+    'packages',
+    'plan',
+    'published',
+    'result',
+    'valid',
+  ],
   plan: ['bundles', 'dsh', 'format', 'layers', 'packages', 'profile', 'version'],
 }
 
@@ -134,7 +146,9 @@ function isWordChar(char: string): boolean {
 }
 
 /** The open string at the end of the text, when the cursor is inside one. */
-function openString(before: string): { readonly start: number; readonly quote: string } | undefined {
+function openString(
+  before: string,
+): { readonly start: number; readonly quote: string } | undefined {
   let quote: string | undefined
   let start = -1
   for (let index = 0; index < before.length; index += 1) {

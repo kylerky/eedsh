@@ -1,4 +1,3 @@
-import { bundle, insert, layer as planLayer } from '../support/plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
@@ -24,6 +23,7 @@ import {
   memoryFileSystem,
 } from '../support/fakes'
 import { planOf } from '../support/plan'
+import { bundle, insert, layer as planLayer } from '../support/plan-parts'
 
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'

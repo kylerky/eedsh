@@ -60,6 +60,26 @@ function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
 }
 
 /**
+ * Every row id a patch list touches, including inserted rows, nested group
+ * children, and id-targeted patches, in application order.
+ * @param patches - the patches to scan.
+ * @returns the touched row ids, with repeats in patch order.
+ */
+export function touchedRowIds(patches: readonly Record<string, unknown>[]): string[] {
+  const ids: string[] = []
+  const visitEntry = (entry: unknown): void => {
+    const record = readRecord(entry)
+    if (typeof record.id === 'string') ids.push(record.id)
+    if (record.group === true && Array.isArray(record.config)) record.config.forEach(visitEntry)
+  }
+  for (const patch of patches) {
+    if (typeof patch.id === 'string') ids.push(patch.id)
+    if (Array.isArray(patch.insert)) patch.insert.forEach(visitEntry)
+  }
+  return ids
+}
+
+/**
  * Compose preflight layers in application order. Bundle layers are composed
  * first; the generated layers sit at the plan's marker position. Warnings are
  * kept raw, and duplicate ids inserted by generated layers are reported.

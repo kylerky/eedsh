@@ -1,5 +1,5 @@
-import { COMMAND_NAMES, type CompletionCatalogs, complete } from '../../src/repl/completion'
 import { describe, expect, it } from 'vitest'
+import { COMMAND_NAMES, type CompletionCatalogs, complete } from '../../src/repl/completion'
 
 const catalogs: CompletionCatalogs = {
   commands: COMMAND_NAMES,

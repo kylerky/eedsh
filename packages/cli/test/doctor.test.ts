@@ -1,4 +1,3 @@
-import { bundle, generated, insert, layer } from './support/plan-parts'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { describe, expect, it } from 'vitest'
@@ -12,6 +11,7 @@ import {
 import { sha256 } from '../src/internal/sha256'
 import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
 import { planOf } from './support/plan'
+import { bundle, generated, insert, layer } from './support/plan-parts'
 
 const LOCKFILE_PATH = `${PROFILE_DIR}/pnpm-lock.yaml`
 

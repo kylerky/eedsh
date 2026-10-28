@@ -14,20 +14,25 @@ import { inspect } from 'node:util'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import { type ConfigError, loadConfig as defaultLoadConfig } from '../config'
+import { type DoctorResult, doctor } from '../doctor'
 import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
-import { composePreflightLayers } from '../preflight'
+import type { GenerationRecord } from '../materialize/generated-bundle'
+import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
+import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
+import { composePreflightLayers, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import { type WatchSession, watchConfigDirectory } from '../watch'
 import {
   COMMAND_NAMES,
-  complete as completeLine,
   type CompletionCatalogs,
   type CompletionResult,
   type CompletionRoot,
+  complete as completeLine,
   filterCompletionHits,
 } from './completion'
 import { diffPlans, type PlanMap } from './diff'
@@ -40,7 +45,13 @@ import {
   previewCacheRoot,
   removePreview,
 } from './preview'
-import { ConfigView, ProfileView } from './views'
+import {
+  type CompositionSnapshot,
+  ConfigView,
+  type ProfileSnapshot,
+  type ProfileView,
+  type PublishedSnapshot,
+} from './views'
 
 /** A loadable config failure. */
 export type ReplConfigFailure = ConfigError | Schema.SchemaError
@@ -65,6 +76,10 @@ export interface CompositionResult {
   readonly rowCount: number
   readonly warnings: readonly string[]
   readonly error?: string
+  /** The composed entries in application order, when composition succeeded. */
+  readonly entries?: readonly Record<string, unknown>[]
+  /** Row id to the last layer or bundle that touched it. */
+  readonly sources?: Readonly<Record<string, string>>
 }
 
 /** A composition runner supplied by the session or a test. */
@@ -107,6 +122,8 @@ export interface ReplSessionOptions {
   readonly now?: () => number
   readonly authoring?: AuthoringPackage
   readonly watchConfig?: boolean
+  /** Read the published state of a profile; injectable for tests. */
+  readonly doctor?: (profileDir: string) => Promise<DoctorResult>
   /** Suppress the banner and composition summary for `--eval`. */
   readonly oneShot?: boolean
 }
@@ -387,6 +404,10 @@ function profileDirectory(name: string, env: Record<string, string | undefined>)
     : resolveProfileDir(name, home)
 }
 
+async function defaultDoctor(profileDir: string): Promise<DoctorResult> {
+  return await Effect.runPromise(doctor({ profileDir }).pipe(Effect.provide(NodeServices.layer)))
+}
+
 async function defaultCompose(
   plan: ProfilePlan,
   profileDir: string,
@@ -423,6 +444,10 @@ async function defaultCompose(
       })
     }
   }
+  const sources: Record<string, string> = {}
+  for (const layer of layers) {
+    for (const id of touchedRowIds(layer.patches)) sources[id] = layer.label
+  }
   const composition = composePreflightLayers(layers, {
     generatedLayerLabels: layers
       .filter((layer) => layer.label.startsWith('generated:'))
@@ -432,7 +457,12 @@ async function defaultCompose(
   if (composition.duplicateInsertIds.length > 0) {
     warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)
   }
-  return { rowCount: composition.entries.length, warnings }
+  return {
+    rowCount: composition.entries.length,
+    warnings,
+    entries: composition.entries,
+    sources,
+  }
 }
 
 /** One interactive config session. Construct with {@link ReplSession.create}. */
@@ -456,6 +486,7 @@ export class ReplSession {
     evaluationNonce?: string,
   ) => Effect.Effect<EedshConfig, ReplConfigFailure>
   private readonly compose: ComposePlan
+  private readonly runDoctor: (profileDir: string) => Promise<DoctorResult>
   private readonly syncPlan: SyncPlan | undefined
   private readonly installPreview: ((dir: string) => Promise<void>) | undefined
   private readonly cacheRoot: string
@@ -489,6 +520,7 @@ export class ReplSession {
     this.env = options.env ?? process.env
     this.authoring = authoring
     this.loadConfig = options.loadConfig ?? defaultLoadConfig
+    this.runDoctor = options.doctor ?? defaultDoctor
     this.syncPlan = options.syncPlan
     this.installPreview = options.installPreview
     this.cacheRoot = options.cacheRoot ?? previewCacheRoot(this.env)
@@ -608,20 +640,122 @@ export class ReplSession {
     })
   }
 
-  private applySelection(config: EedshConfig, plan: ProfilePlan, name: string): void {
+  private async applySelection(
+    config: EedshConfig,
+    plan: ProfilePlan,
+    name: string,
+  ): Promise<void> {
     this.config = config
     this.plan = plan
     this.profileName = name
-    this.configView = new ConfigView(config)
-    const selected = this.configView.profile(name)
+    await this.refreshViews()
+  }
+
+  private async refreshViews(): Promise<void> {
+    const snapshots = await this.buildSnapshots(this.config)
+    this.configView = new ConfigView(this.config, snapshots)
+    const selected = this.configView.profile(this.profileName)
     if (selected === undefined) {
       throw new ReplSessionError({
         code: 'repl.profile_selection',
-        message: `profile ${JSON.stringify(name)} is not declared`,
+        message: `profile ${JSON.stringify(this.profileName)} is not declared`,
       })
     }
     this.selectedProfileView = selected
     this.invalidateCatalogs()
+  }
+
+  private async buildSnapshots(config: EedshConfig): Promise<ReadonlyMap<string, ProfileSnapshot>> {
+    const snapshots = new Map<string, ProfileSnapshot>()
+    for (const [name, result] of Object.entries(config.profiles)) {
+      const profileDir =
+        name === this.profileName ? this.effectiveProfileDir() : profileDirectory(name, this.env)
+      const plan = Result.isSuccess(result) ? result.success : undefined
+      let composition: CompositionSnapshot | undefined
+      if (plan !== undefined) {
+        try {
+          const composed = await this.compose(plan, profileDir)
+          composition = {
+            rowCount: composed.rowCount,
+            entries: composed.entries ?? [],
+            sources: composed.sources ?? {},
+            warnings: composed.warnings,
+            error: composed.error,
+          }
+        } catch (error) {
+          composition = {
+            rowCount: 0,
+            entries: [],
+            sources: {},
+            warnings: [],
+            error: messageOf(error),
+          }
+        }
+      }
+      const published = await this.publishedSnapshot(profileDir)
+      snapshots.set(name, { profileDir, composition, published })
+    }
+    return snapshots
+  }
+
+  private async publishedSnapshot(profileDir: string): Promise<PublishedSnapshot> {
+    const exists = profileDir !== '' && existsSync(profileDir)
+    const manifest = exists ? this.readJsonRecord(join(profileDir, 'package.json')) : undefined
+    let generation: GenerationLookup | undefined
+    let record: GenerationRecord | undefined
+    let plan: unknown
+    let planPath: string | undefined
+    if (exists) {
+      const recordPath = join(profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
+      if (existsSync(recordPath)) {
+        try {
+          const parsed = JSON.parse(readFileSync(recordPath, 'utf8')) as unknown
+          generation = classifyGenerationRecord(parsed, recordPath)
+          if (generation._tag === 'valid') {
+            record = generation.record
+            planPath = join(profileDir, GENERATED_DIRNAME, 'plans', `${record.generationId}.json`)
+            if (existsSync(planPath)) {
+              plan = JSON.parse(readFileSync(planPath, 'utf8')) as unknown
+            }
+          }
+        } catch {
+          generation = undefined
+        }
+      }
+    }
+    let findings: DoctorResult
+    try {
+      findings =
+        profileDir === ''
+          ? { findings: [], errors: 0, warnings: 0 }
+          : await this.runDoctor(profileDir)
+    } catch {
+      findings = { findings: [], errors: 0, warnings: 0 }
+    }
+    return {
+      dir: profileDir,
+      exists,
+      manifest,
+      generation,
+      record,
+      plan,
+      planPath,
+      findings: findings.findings,
+      errors: findings.errors,
+      warnings: findings.warnings,
+    }
+  }
+
+  private readJsonRecord(path: string): Record<string, unknown> | undefined {
+    try {
+      if (!existsSync(path)) return undefined
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private invalidateCatalogs(): void {
@@ -713,7 +847,8 @@ export class ReplSession {
   private manifestBundles(): readonly string[] {
     const manifest = this.profileManifest()
     const dsh = manifest?.dsh
-    const profile = dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).profile : undefined
+    const profile =
+      dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).profile : undefined
     const bundles =
       profile !== null && typeof profile === 'object'
         ? (profile as Record<string, unknown>).bundles
@@ -745,7 +880,11 @@ export class ReplSession {
       const names: string[] = []
       for (const section of ['dependencies', 'optionalDependencies']) {
         const dependencies = manifest[section]
-        if (dependencies === null || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+        if (
+          dependencies === null ||
+          typeof dependencies !== 'object' ||
+          Array.isArray(dependencies)
+        ) {
           continue
         }
         for (const name of Object.keys(dependencies)) {
@@ -839,10 +978,10 @@ export class ReplSession {
 
   private async loadAndSelect(): Promise<void> {
     const loaded = await this.loadCandidate()
-    this.applySelection(loaded.config, loaded.plan, loaded.name)
+    await this.applySelection(loaded.config, loaded.plan, loaded.name)
     this.bind()
     this.printTraces(loaded.traces)
-    await this.printComposition()
+    this.printComposition()
   }
 
   private printTraces(traces: readonly ResolutionTrace[]): void {
@@ -862,24 +1001,18 @@ export class ReplSession {
     }
   }
 
-  private async printComposition(): Promise<void> {
+  private printComposition(): void {
     if (this.options.oneShot === true) return
-    const profileDir = this.effectiveProfileDir()
-    let summary: CompositionResult
-    try {
-      summary = await this.compose(this.plan, profileDir)
-    } catch (error) {
-      this.stderr(`composition failed: ${messageOf(error)}`)
+    const composition = this.selectedProfileView.composition()
+    if (composition.error !== undefined) {
+      this.stderr(`composition unavailable: ${composition.error}`)
       return
     }
-    if (summary.error !== undefined) {
-      this.stderr(`composition unavailable: ${summary.error}`)
-      return
-    }
+    const warnings = composition.warnings
     this.stdout(
-      `composition: ${summary.rowCount} row${summary.rowCount === 1 ? '' : 's'}, ${summary.warnings.length} warning${summary.warnings.length === 1 ? '' : 's'}`,
+      `composition: ${composition.rowCount} row${composition.rowCount === 1 ? '' : 's'}, ${warnings.length} warning${warnings.length === 1 ? '' : 's'}`,
     )
-    for (const warning of summary.warnings) this.stderr(`preflight: ${warning}`)
+    for (const warning of warnings) this.stderr(`preflight: ${warning}`)
   }
 
   private effectiveProfileDir(): string {
@@ -917,10 +1050,10 @@ export class ReplSession {
     const diff = diffPlans(previous, next)
     if (diff.length === 0) this.stdout('reload: no changes')
     else for (const line of diff) this.stdout(line)
-    this.applySelection(loaded.config, loaded.plan, loaded.name)
+    await this.applySelection(loaded.config, loaded.plan, loaded.name)
     this.bind()
     this.printTraces(loaded.traces)
-    await this.printComposition()
+    this.printComposition()
     if (!this.syncEnabled) return
     const nextFingerprint = this.fingerprint()
     if (nextFingerprint === previousFingerprint) return
@@ -1009,7 +1142,7 @@ export class ReplSession {
           this.stderr('usage: .profile <name>')
           return false
         }
-        this.switchProfile(name)
+        await this.switchProfile(name)
         return false
       }
       case '.reload':
@@ -1050,7 +1183,7 @@ export class ReplSession {
     }
   }
 
-  private switchProfile(name: string): void {
+  private async switchProfile(name: string): Promise<void> {
     const names = this.configView.profiles().map((profile) => profile.name)
     const view = this.configView.profile(name)
     if (view === undefined) {
@@ -1064,20 +1197,19 @@ export class ReplSession {
       return
     }
     if (!view.valid) {
-      this.reportFailure('profile not switched', new ReplSessionError({
-        code: 'repl.invalid_profile',
-        message: `profile ${JSON.stringify(name)} is invalid`,
-        lines: [
-          `profile ${JSON.stringify(name)} is invalid`,
-          ...(view.error ?? '').split('\n'),
-        ],
-      }))
+      this.reportFailure(
+        'profile not switched',
+        new ReplSessionError({
+          code: 'repl.invalid_profile',
+          message: `profile ${JSON.stringify(name)} is invalid`,
+          lines: [`profile ${JSON.stringify(name)} is invalid`, ...(view.error ?? '').split('\n')],
+        }),
+      )
       return
     }
     this.plan = view.plan()
     this.profileName = name
-    this.selectedProfileView = view
-    this.invalidateCatalogs()
+    await this.refreshViews()
     this.bind()
     this.stdout(`profile: ${name}`)
   }
@@ -1148,12 +1280,12 @@ export class ReplSession {
     let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
     try {
       loaded = await this.loadCandidate()
-      this.applySelection(loaded.config, loaded.plan, loaded.name)
+      await this.applySelection(loaded.config, loaded.plan, loaded.name)
       this.bind()
     } catch (error) {
       this.preview = previous.preview
       this.previewSpecs = previous.specs
-      this.applySelection(previous.config, previous.plan, previous.profileName)
+      await this.applySelection(previous.config, previous.plan, previous.profileName)
       this.applyPreviewEnv()
       this.reportFailure('preview not ready', error)
       return
@@ -1163,7 +1295,7 @@ export class ReplSession {
     )
     this.stdout(`profile-root override: ${JSON.stringify({ [this.profileName]: prepared.dir })}`)
     this.printTraces(loaded.traces)
-    await this.printComposition()
+    this.printComposition()
   }
 
   /** Publish the current evaluation, or report why publication did not happen. */
@@ -1187,7 +1319,8 @@ export class ReplSession {
       }
       this.pausedFingerprint = undefined
       if (this.preview !== undefined && outcome.changed) await this.verifyPreview(plan)
-      this.invalidateCatalogs()
+      await this.refreshViews()
+      this.bind()
       return outcome
     } catch (error) {
       this.pausedFingerprint = this.fingerprint()
@@ -1209,7 +1342,7 @@ export class ReplSession {
         this.preview = undefined
         this.previewSpecs = []
         this.retainedPreviewDir = undefined
-        this.applySelection(loaded.config, loaded.plan, loaded.name)
+        await this.applySelection(loaded.config, loaded.plan, loaded.name)
         this.bind()
         this.stdout(
           'bootstrap complete: the real install reproduces the published plan; preview deleted',

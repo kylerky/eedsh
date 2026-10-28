@@ -16,8 +16,8 @@ export * from './authoring'
 export * from './builders'
 export * from './query'
 export {
-  clearResolutionTrace,
   CONFIG_DIR_ENV,
+  clearResolutionTrace,
   DSH_ANCHOR_ENV,
   PROFILE_ROOT_OVERRIDE_ENV,
   type QueryRoot,

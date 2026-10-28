@@ -1,4 +1,3 @@
-import { bundle, generated } from '../support/plan-parts'
 import { canonicalJson, type PlanBundle, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import { describe, expect, it } from 'vitest'
@@ -11,6 +10,7 @@ import {
 import { ensureProfileFiles } from '../../src/materialize/profile'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
+import { bundle, generated } from '../support/plan-parts'
 
 const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'
