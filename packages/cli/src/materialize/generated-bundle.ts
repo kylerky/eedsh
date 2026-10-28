@@ -5,7 +5,7 @@
  * @module @eedsh/cli/materialize/generated-bundle
  */
 import { dirname, join } from 'node:path'
-import { canonicalJson, hashPlan, type ProfilePlan } from '@eedsh/config'
+import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
@@ -122,6 +122,16 @@ export interface GeneratedBundle {
  */
 export function authoritativePlanPath(generationId: string): string {
   return `plans/${generationId}.json`
+}
+
+/**
+ * Hash a validated plan canonically for the generation record. A formatting-only
+ * difference in the plan never changes its hash.
+ * @param plan - the validated plan.
+ * @returns the SHA-256 hex digest of the canonical plan.
+ */
+export function hashPlan(plan: ProfilePlan): string {
+  return sha256(canonicalJson(plan))
 }
 
 /** Inputs for {@link buildGeneratedBundle}. */

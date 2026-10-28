@@ -2,7 +2,7 @@
  * JSON compatibility and expression-node checks for the profile plan. The walk
  * is cycle-safe, reports native issue paths, and runs as a root refinement on
  * the public plan schema.
- * @module @eedsh/config/plan/json
+ * @module @eedsh/plan/json
  */
 import { isPlainObject } from './plain-object'
 

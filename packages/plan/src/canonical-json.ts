@@ -1,11 +1,9 @@
 /**
- * Canonical JSON and plan hashing. The generation identifier and the record
- * written into the generated bundle use these helpers, so a formatting-only
- * difference never produces a new generation.
- * @module @eedsh/config/plan/hash
+ * Canonical JSON for plan comparison. The generation identifier and the record
+ * written into the generated bundle use it, so a formatting-only difference
+ * never produces a new generation.
+ * @module @eedsh/plan/canonical-json
  */
-import { createHash } from 'node:crypto'
-import type { ProfilePlan } from './schema'
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => canonicalize(item))
@@ -25,13 +23,4 @@ function canonicalize(value: unknown): unknown {
  */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value))
-}
-
-/**
- * Hash a validated plan canonically.
- * @param plan - the validated plan.
- * @returns the SHA-256 hex digest of the canonical plan.
- */
-export function hashPlan(plan: ProfilePlan): string {
-  return createHash('sha256').update(canonicalJson(plan)).digest('hex')
 }

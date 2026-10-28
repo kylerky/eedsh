@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/config'
+import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 

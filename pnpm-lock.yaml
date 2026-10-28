@@ -202,6 +202,9 @@ importers:
       '@eedsh/config':
         specifier: workspace:*
         version: link:../config
+      '@eedsh/plan':
+        specifier: workspace:*
+        version: link:../plan
       '@eedsh/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -229,6 +232,10 @@ importers:
         version: 4.0.9
 
   packages/config:
+    dependencies:
+      '@eedsh/plan':
+        specifier: workspace:*
+        version: link:../plan
     devDependencies:
       effect:
         specifier: 4.0.6

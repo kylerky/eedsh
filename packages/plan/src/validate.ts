@@ -1,7 +1,7 @@
 /**
  * Effect-native plan validation. {@link validatePlan} is the strict decode
  * entry point and returns Effect's native result and schema error.
- * @module @eedsh/config/plan/validate
+ * @module @eedsh/plan/validate
  */
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'

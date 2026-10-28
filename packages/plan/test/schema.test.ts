@@ -1,16 +1,15 @@
 import {
   canonicalJson,
-  hashPlan,
   PLAN_FORMAT,
   PLAN_VERSION,
   type ProfilePlan,
   ProfilePlanSchema,
-} from '@eedsh/config'
+} from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
-import { bundle, layer, plan } from '../support/plan'
+import { bundle, layer, plan } from './support/plan'
 
 /** The strict plan entry point: every issue, excess properties rejected. */
 const decode = Schema.decodeUnknownResult(ProfilePlanSchema, {
@@ -352,27 +351,11 @@ describe('JSON compatibility and expression nodes', () => {
   })
 })
 
-describe('canonical plan hashing', () => {
+describe('canonical plan JSON', () => {
   it('sorts object keys', () => {
     expect(canonicalJson({ b: 1, a: { d: 2, c: 3 } })).toBe('{"a":{"c":3,"d":2},"b":1}')
   })
-
-  it('is stable across key insertion order and changes with content', () => {
-    const left = decodeOrThrow(plan({ packages: { alpha: '1.0.0', beta: '2.0.0' } }))
-    const right = decodeOrThrow(plan({ packages: { beta: '2.0.0', alpha: '1.0.0' } }))
-    expect(hashPlan(left)).toBe(hashPlan(right))
-    const changed = decodeOrThrow(plan({ dsh: '0.2.2-rc.1' }))
-    expect(hashPlan(changed)).not.toBe(hashPlan(left))
-  })
-
-  it('produces a 64-character hex digest', () => {
-    expect(hashPlan(decodeOrThrow(plan()))).toMatch(/^[0-9a-f]{64}$/)
-  })
 })
-
-function decodeOrThrow(value: unknown): ProfilePlan {
-  return Result.getOrThrow(decode(value))
-}
 
 describe('profile plan typing', () => {
   it('exposes the derived plan shape through the public type', () => {

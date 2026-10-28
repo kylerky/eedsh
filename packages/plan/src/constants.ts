@@ -1,7 +1,7 @@
 /**
  * Stable plan identifiers. Kept apart from the plan types so the schema can
  * import them without importing the type module.
- * @module @eedsh/config/plan/constants
+ * @module @eedsh/plan/constants
  */
 
 /** Stable plan format identifier written into every plan. */

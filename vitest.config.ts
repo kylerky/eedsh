@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@eedsh/config': fileURLToPath(new URL('packages/config/src/index.ts', import.meta.url)),
+      '@eedsh/plan': fileURLToPath(new URL('packages/plan/src/index.ts', import.meta.url)),
       '@eedsh/runtime': fileURLToPath(new URL('packages/runtime/src/index.ts', import.meta.url)),
     },
   },

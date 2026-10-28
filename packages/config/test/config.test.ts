@@ -3,14 +3,12 @@ import {
   type DefineConfigInput,
   defineConfig,
   defineProfile,
-  type EedshConfig,
   generated,
   insert,
   layer,
   type ProfileDefinition,
-  type ProfilePlan,
-  validateConfigValue,
 } from '@eedsh/config'
+import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
@@ -177,93 +175,5 @@ describe('per-profile validation', () => {
     expect(home !== undefined && Result.isFailure(home)).toBe(true)
     const work = config.profiles.work
     expect(work !== undefined && Result.isSuccess(work)).toBe(true)
-  })
-})
-
-describe('validateConfigValue', () => {
-  it('normalizes a plain config object profile by profile', () => {
-    const result = validateConfigValue({
-      dsh,
-      defaultProfile: 'work',
-      profiles: {
-        work: workProfile(),
-        home: { bundles: [bundle('@deepseek-ai/dsh-base')] },
-      },
-    })
-    if (Result.isFailure(result)) throw new Error(result.failure.message)
-    const config = result.success
-    expect(planOf(config, 'work').profile.name).toBe('work')
-    expect(planOf(config, 'home').profile.name).toBe('home')
-    expect(planOf(config, 'home').bundles).toEqual([
-      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
-    ])
-  })
-
-  it('revalidates profile Results so a forged success cannot bypass the plan', () => {
-    const result = validateConfigValue({
-      dsh,
-      profiles: {
-        work: Result.succeed({
-          bundles: [bundle('@eedsh/runtime')],
-        }),
-      },
-    })
-    if (Result.isFailure(result)) throw new Error(result.failure.message)
-    const profile = result.success.profiles.work
-    expect(profile !== undefined && Result.isFailure(profile)).toBe(true)
-    if (profile !== undefined && Result.isFailure(profile)) {
-      expect(profile.failure.message).toContain('owned by the materializer')
-    }
-  })
-
-  it('accepts a config Result export and revalidates its success value', () => {
-    const authored = defineConfig({
-      dsh,
-      profiles: { work: workProfile() },
-    })
-    const result = validateConfigValue(authored)
-    if (Result.isFailure(result)) throw new Error(result.failure.message)
-    expect(planOf(result.success, 'work').profile.name).toBe('work')
-
-    const forged = validateConfigValue(
-      Result.succeed({ dsh: 'latest', profiles: { work: workProfile() } }),
-    )
-    expect(Result.isFailure(forged)).toBe(true)
-    if (Result.isFailure(forged)) {
-      expect(Schema.isSchemaError(forged.failure)).toBe(true)
-      expect(forged.failure.message).toContain('"latest" is not an exact version')
-    }
-  })
-
-  it('reports a failed config Result as its native schema error', () => {
-    const authored = defineConfig({ dsh: 'latest', profiles: { work: workProfile() } })
-    if (Result.isSuccess(authored)) throw new Error('expected authoring to fail')
-    const result = validateConfigValue(authored)
-    expect(Result.isFailure(result)).toBe(true)
-    if (Result.isFailure(result)) {
-      expect(result.failure).toBe(authored.failure)
-      expect(Schema.isSchemaError(result.failure)).toBe(true)
-    }
-  })
-
-  it('rejects a lone plan export', () => {
-    const plan = planOf(configOf({ dsh, profiles: { work: workProfile() } }), 'work')
-    const result = validateConfigValue(plan)
-    expect(Result.isFailure(result)).toBe(true)
-    if (Result.isFailure(result)) expect(Schema.isSchemaError(result.failure)).toBe(true)
-    const resultExport = validateConfigValue(Result.succeed(plan))
-    expect(Result.isFailure(resultExport)).toBe(true)
-  })
-
-  it('revalidates a plan-shaped profile entry under the config envelope', () => {
-    const plan = planOf(configOf({ dsh, profiles: { work: workProfile() } }), 'work')
-    const result = validateConfigValue({ dsh, profiles: { work: plan } })
-    if (Result.isFailure(result)) throw new Error(result.failure.message)
-    const profile = result.success.profiles.work
-    expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
-    if (profile !== undefined && Result.isSuccess(profile)) {
-      expect(profile.success.profile.name).toBe('work')
-      expect(profile.success.dsh).toBe(dsh)
-    }
   })
 })

@@ -1,7 +1,4 @@
+// Temporary compatibility re-export while the CLI and tests move to @eedsh/plan.
+export * from '@eedsh/plan'
 export * from './api'
 export * from './config'
-export * from './plan/constants'
-export * from './plan/hash'
-export * from './plan/schema'
-export * from './plan/types'
-export * from './plan/validate'

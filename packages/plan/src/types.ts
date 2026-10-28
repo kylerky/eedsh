@@ -1,7 +1,7 @@
 /**
  * Plan primitives. The format and version constants live in `./constants.js`,
  * and the plan types are derived from the public schema in `./schema.js`.
- * @module @eedsh/config/plan/types
+ * @module @eedsh/plan/types
  */
 
 /** A JSON scalar. */

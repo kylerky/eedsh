@@ -20,6 +20,9 @@
   "scripts": {
     "build": "tsdown"
   },
+  "dependencies": {
+    "@eedsh/plan": "workspace:*"
+  },
   "peerDependencies": {
     "effect": "4.0.6"
   },

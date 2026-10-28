@@ -1,17 +1,9 @@
-import {
-  bundle,
-  defineConfig,
-  defineProfile,
-  PLAN_FORMAT,
-  PLAN_VERSION,
-  type ProfilePlan,
-  validatePlan,
-} from '@eedsh/config'
+import { PLAN_FORMAT, PLAN_VERSION, type ProfilePlan, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
-import { layer, plan } from '../support/plan'
+import { layer, plan } from './support/plan'
 
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
 
@@ -114,40 +106,5 @@ describe('validatePlan', () => {
     const issues = issuesOf('not-a-plan')
     expect(issues.length).toBeGreaterThan(0)
     expect(issues.map((issue) => issue.path)).toContainEqual([])
-  })
-})
-
-describe('defineConfig profile boundary', () => {
-  it('stores the native failure Result synchronously', () => {
-    const result = defineConfig({
-      dsh: '0.2.1-rc.2',
-      profiles: { work: defineProfile({ bundles: [bundle('@eedsh/runtime')] }) },
-    })
-    expect(Result.isSuccess(result)).toBe(true)
-    expect(result).not.toBeInstanceOf(Promise)
-    if (Result.isFailure(result)) return
-    const profile = result.success.profiles.work
-    expect(profile !== undefined && Result.isFailure(profile)).toBe(true)
-    if (profile !== undefined && Result.isFailure(profile)) {
-      expect(Schema.isSchemaError(profile.failure)).toBe(true)
-      expect(profile.failure).toBeInstanceOf(Error)
-      expect(profile.failure._tag).toBe('SchemaError')
-      expect(SchemaIssue.isIssue(profile.failure.issue)).toBe(true)
-    }
-  })
-
-  it('returns one plain plan per profile synchronously', () => {
-    const result = defineConfig({
-      dsh: '0.2.1-rc.2',
-      profiles: { work: defineProfile({ bundles: [] }) },
-    })
-    expect(Result.isSuccess(result)).toBe(true)
-    if (Result.isFailure(result)) return
-    const profile = result.success.profiles.work
-    expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
-    if (profile !== undefined && Result.isSuccess(profile)) {
-      expect(profile.success.format).toBe(PLAN_FORMAT)
-      expect(profile.success.profile.name).toBe('work')
-    }
   })
 })

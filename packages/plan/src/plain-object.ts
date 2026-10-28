@@ -2,7 +2,7 @@
  * The prototype-strict object guard used at the plan and JSON boundaries. It
  * is deliberately stronger than the CLI's record guard: class instances and
  * other non-plain objects must be rejected before schema decoding.
- * @module @eedsh/config/plan/plain-object
+ * @module @eedsh/plan/plain-object
  */
 
 /**

@@ -1,7 +1,7 @@
 /**
  * The public profile plan schema. It is the single source of truth for the
  * plan shape, the validation rules, and the derived plan types.
- * @module @eedsh/config/plan/schema
+ * @module @eedsh/plan/schema
  */
 import * as Schema from 'effect/Schema'
 import { PLAN_FORMAT, PLAN_VERSION } from './constants'

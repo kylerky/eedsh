@@ -10,12 +10,13 @@
 import type {
   ExpressionNode,
   GeneratedBundle,
+  JsonObject,
+  JsonValue,
   NamedBundle,
   PlanBundle,
   PlanLayer,
   PlanPatch,
-} from './plan/schema'
-import type { JsonObject, JsonValue } from './plan/types'
+} from '@eedsh/plan'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject

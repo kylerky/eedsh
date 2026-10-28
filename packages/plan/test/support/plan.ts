@@ -1,4 +1,4 @@
-import { PLAN_FORMAT, PLAN_VERSION } from '@eedsh/config'
+import { PLAN_FORMAT, PLAN_VERSION } from '@eedsh/plan'
 
 /** A shape-level bundle selection for schema tests. */
 export const bundle = (name: string) => ({ kind: 'bundle', name })
