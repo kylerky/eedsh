@@ -1,4 +1,4 @@
-import { bundle, generated, insert, layer } from '@eedsh/config'
+import { bundle, generated, insert, layer } from './support/plan-parts'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { describe, expect, it } from 'vitest'

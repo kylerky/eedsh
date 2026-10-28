@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { bundle, generated, insert, layer } from '@eedsh/config'
+import { bundle, generated, insert, layer } from '../support/plan-parts'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'

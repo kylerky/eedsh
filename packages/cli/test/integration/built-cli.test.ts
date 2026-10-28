@@ -152,16 +152,18 @@ describe('built CLI integration', () => {
 
     await writeFile(
       configPath,
-      `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+      `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .build()
 `,
     )
 

@@ -4,7 +4,7 @@ import {
   insert,
   override,
   layer as planLayer,
-} from '@eedsh/config'
+} from '../support/plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'

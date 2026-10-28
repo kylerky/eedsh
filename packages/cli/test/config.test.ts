@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 import {
   ConfigError,
@@ -21,40 +22,73 @@ async function configDir(source: string): Promise<string> {
 }
 
 const multiProfileSource = `
-import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'home',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('home')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base')
+  })
+  .build()
 `
 
 const soleProfileSource = `
-import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    solo: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('solo', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+  })
+  .build()
 `
 
 const invalidSiblingSource = `
-import { bundle, defineConfig, defineProfile } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base')
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@eedsh/runtime')
+  })
+  .build()
+`
+
+const plainConfigSource = `
+export default {
   dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
   profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
-    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
+    'plain-export': {
+      bundles: [{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }, { kind: 'generated' }],
+      layers: [],
+      packages: {},
+    },
   },
-})
+}
+`
+
+const lonePlanSource = `
+export default {
+  format: 'eedsh/profile-plan',
+  version: 1,
+  profile: { name: 'legacy-plan' },
+  dsh: '0.2.1-rc.2',
+  bundles: [],
+  layers: [],
+  packages: {},
+}
 `
 
 describe('config path validation', () => {
@@ -94,7 +128,7 @@ describe('config path validation', () => {
 })
 
 describe('config loading', () => {
-  it('loads a multi-profile config with its declared default', async () => {
+  it('loads a fluently built multi-profile config Result', async () => {
     const dir = await configDir(multiProfileSource)
     const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     expect(config.dsh).toBe('0.2.1-rc.2')
@@ -106,11 +140,30 @@ describe('config loading', () => {
     expect(work !== undefined && Result.isSuccess(work)).toBe(true)
   })
 
-  it('loads a sole-profile config without a default', async () => {
+  it('loads a sole-profile fluent config without a default', async () => {
     const dir = await configDir(soleProfileSource)
     const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     expect(config.defaultProfile).toBeUndefined()
     expect(Object.keys(config.profiles)).toEqual(['solo'])
+  })
+
+  it('loads a plain config value and validates its profiles', async () => {
+    const dir = await configDir(plainConfigSource)
+    const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    expect(Object.keys(config.profiles)).toEqual(['plain-export'])
+    const profile = config.profiles['plain-export']
+    expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
+  })
+
+  it('rejects a lone profile plan as a config', async () => {
+    const dir = await configDir(lonePlanSource)
+    const exit = await Effect.runPromiseExit(loadConfig(join(dir, 'config.ts')))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause)
+      expect(Schema.isSchemaError(error)).toBe(true)
+      if (Schema.isSchemaError(error)) expect(error.message).toContain('profiles')
+    }
   })
 
   it('keeps an invalid profile as data instead of failing the config', async () => {

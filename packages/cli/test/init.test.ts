@@ -70,8 +70,10 @@ describe('init templates', () => {
 
     const config = h.fs.files.get(configPath) ?? ''
     expect(config).toContain('defineConfig')
-    expect(config).toContain('defineProfile')
-    expect(config).toContain('default: defineProfile')
+    expect(config).toContain(".profile('default'")
+    expect(config).toContain('.generated()')
+    expect(config).toContain('.build()')
+    expect(config).not.toContain('defineProfile')
 
     const manifest = json(h.fs.files.get(packagePath))
     expect(manifest.type).toBe('module')

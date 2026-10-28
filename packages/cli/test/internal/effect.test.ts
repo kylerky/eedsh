@@ -1,4 +1,4 @@
-import { bundle, insert, layer as planLayer } from '@eedsh/config'
+import { bundle, insert, layer as planLayer } from '../support/plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'

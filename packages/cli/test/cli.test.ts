@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { bundle, generated, insert, layer } from '@eedsh/config'
+import { bundle, generated, insert, layer } from './support/plan-parts'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -58,17 +58,19 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 function watchConfigSource(row: string): string {
-  return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+  return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    'cli-watch': defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('cli-watch', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${row}', name: '@scope/${row}' })
+      })
+  })
+  .build()
 `
 }
 
@@ -242,16 +244,16 @@ describe('explicit config paths', () => {
 })
 
 describe('XDG config resolution', () => {
-  const source = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+  const source = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    'xdg-profile': defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('xdg-profile', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+  })
+  .build()
 `
 
   async function xdgHome(): Promise<string> {
@@ -442,13 +444,11 @@ export default {
 `
 
   const failureResult = `
-import { defineConfig, defineProfile } from '@eedsh/config'
-export default defineConfig({
-  dsh: 'latest',
-  profiles: {
-    work: defineProfile({ bundles: [] }),
-  },
-})
+import { defineConfig } from '@eedsh/config'
+export default defineConfig()
+  .dsh('latest')
+  .profile('work', () => undefined)
+  .build()
 `
 
   const forgedSuccess = `
@@ -555,40 +555,44 @@ describe('multi-profile configs', () => {
   }
 
   const defaultsSource = `
-import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'home',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('home')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base')
+  })
+  .build()
 `
 
   const soleSource = `
-import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    solo: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('solo', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .build()
 `
 
   const invalidSiblingSource = `
-import { bundle, defineConfig, defineProfile } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base')] }),
-    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base')
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@eedsh/runtime')
+  })
+  .build()
 `
 
   it('uses the declared default profile for run', async () => {
@@ -630,53 +634,63 @@ describe('profile selection and all-profile sync', () => {
     return configPath
   }
 
-  const withDefault = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+  const withDefault = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .build()
 `
 
-  const withoutDefault = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+  const withoutDefault = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .build()
 `
 
-  const invalidHome = `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+  const invalidHome = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@eedsh/runtime')
+  })
+  .build()
 `
 
-  const strictWork = `import { bundle, defineConfig, defineProfile, generated, layer, override } from '@eedsh/config'
+  const strictWork = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('work', [override('missing-row', { interval: 1 })])],
-    }),
-    home: defineProfile({ bundles: [bundle('@deepseek-ai/dsh-base'), generated()] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('work', (layer) => {
+        layer.override('missing-row', { interval: 1 })
+      })
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated()
+  })
+  .build()
 `
 
   it('narrows sync to the named profile without falling back to the default', async () => {
@@ -1496,74 +1510,92 @@ describe('multi-profile sync --watch', () => {
   }
 
   function twoProfiles(workRow: string, homeRow: string): string {
-    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+    return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${workRow}', name: '@scope/${workRow}' })])],
-    }),
-    home: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${homeRow}', name: '@scope/${homeRow}' })])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${workRow}', name: '@scope/${workRow}' })
+      })
+  })
+  .profile('home', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${homeRow}', name: '@scope/${homeRow}' })
+      })
+  })
+  .build()
 `
   }
 
   function singleProfile(row: string): string {
-    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+    return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${row}', name: '@scope/${row}' })])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${row}', name: '@scope/${row}' })
+      })
+  })
+  .build()
 `
   }
 
   function invalidHome(workRow: string): string {
-    return `import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+    return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${workRow}', name: '@scope/${workRow}' })])],
-    }),
-    home: defineProfile({ bundles: [bundle('@eedsh/runtime')] }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${workRow}', name: '@scope/${workRow}' })
+      })
+  })
+  .profile('home', (profile) => {
+    profile.bundle('@eedsh/runtime')
+  })
+  .build()
 `
   }
 
   function strictWorkSource(homeRow: string): string {
-    return `import { bundle, defineConfig, defineProfile, generated, insert, layer, override } from '@eedsh/config'
+    return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  defaultProfile: 'work',
-  profiles: {
-    work: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [override('missing-row', { interval: 1 })])],
-    }),
-    home: defineProfile({
-      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-      layers: [layer('cli', [insert({ id: '${homeRow}', name: '@scope/${homeRow}' })])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .defaultProfile('work')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.override('missing-row', { interval: 1 })
+      })
+  })
+  .profile('home', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer('cli', (layer) => {
+        layer.insert({ id: '${homeRow}', name: '@scope/${homeRow}' })
+      })
+  })
+  .build()
 `
   }
 

@@ -32,13 +32,13 @@ async function writeMappedProject(prefix: string, profileName: string): Promise<
   const configPath = join(dir, 'config.ts')
   await writeFile(
     configPath,
-    `import { defineConfig, defineProfile } from '@eedsh/config'
+    `import { defineConfig } from '@eedsh/config'
 import { profileName } from '@project/helper'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: { [profileName]: defineProfile({ bundles: [] }) },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile(profileName, () => undefined)
+  .build()
 `,
   )
   return configPath
@@ -68,13 +68,13 @@ describe('config loader resolution', () => {
     const configPath = join(projectDir, 'config.ts')
     await writeFile(
       configPath,
-      `import { defineConfig, defineProfile } from '@eedsh/config'
+      `import { defineConfig } from '@eedsh/config'
 import { profileName } from '@shared/helper'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: { [profileName]: defineProfile({ bundles: [] }) },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile(profileName, () => undefined)
+  .build()
 `,
     )
 
@@ -110,13 +110,13 @@ export default defineConfig({
     const configPath = join(projectDir, 'config.ts')
     await writeFile(
       configPath,
-      `import { defineConfig, defineProfile } from '@eedsh/config'
+      `import { defineConfig } from '@eedsh/config'
 import { profileName } from './helper'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: { [profileName]: defineProfile({ bundles: [] }) },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile(profileName, () => undefined)
+  .build()
 `,
     )
 
@@ -129,7 +129,7 @@ export default defineConfig({
     )
     await writeFile(
       join(callerDir, 'wrong.ts'),
-      "export const defineConfig = (): never => { throw new Error('caller mapping applied') }\nexport const defineProfile = (): never => { throw new Error('caller mapping applied') }\n",
+      "export const defineConfig = (): never => { throw new Error('caller mapping applied') }\n",
     )
 
     const previous = process.cwd()

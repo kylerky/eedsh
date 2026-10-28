@@ -69,31 +69,24 @@ describe('authoring resolution integration', () => {
     const configPath = join(configDir, 'config.ts')
     await writeFile(
       configPath,
-      `import {
-  defineConfig,
-  defineProfile,
-  generated,
-  insert,
-  layer,
-  row,
-  rows,
-} from '@eedsh/config'
+      `import { bundle, defineConfig } from '@eedsh/config'
 
-const pinned = row('@deepseek-ai/dsh-base', 'timer')
-const fromProfile = rows('@fixture/custom', { profile: 'work' })[0]
-const fromDirectory = rows('@fixture/vendored', {
-  packageDir: '../node_modules/@fixture/vendored',
-})[0]
+const pinned = bundle('@deepseek-ai/dsh-base').row('timer')
+const fromProfile = bundle('@fixture/custom').fromProfile('work').row('profile-row')
+const fromDirectory = bundle('@fixture/vendored')
+  .fromPackageDir('../node_modules/@fixture/vendored')
+  .row('vendored-row')
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      bundles: [generated()],
-      layers: [layer('queried', [insert([pinned, fromProfile, fromDirectory])])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .generated()
+      .layer('queried', (layer) => {
+        layer.insert([pinned, fromProfile, fromDirectory])
+      })
+  })
+  .build()
 `,
     )
 

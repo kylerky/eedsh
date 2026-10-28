@@ -135,20 +135,17 @@ export function resolveDshPin(): Result.Result<string, InitError> {
  * @returns the module source.
  */
 export function initConfigTemplate(dsh: string): string {
-  return `import { bundle, defineConfig, defineProfile, generated } from '@eedsh/config'
+  return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: ${JSON.stringify(dsh)},
-  profiles: {
-    ${INIT_PROFILE_NAME}: defineProfile({
-      bundles: [
-        bundle('@deepseek-ai/dsh-base'),
-        bundle('@deepseek-ai/dsh-web-app'),
-        generated(),
-      ],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh(${JSON.stringify(dsh)})
+  .profile('${INIT_PROFILE_NAME}', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated()
+  })
+  .build()
 `
 }
 

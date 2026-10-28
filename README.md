@@ -43,37 +43,25 @@ starting point. eedsh never discovers a config in the working directory.
 
 ```ts
 // $XDG_CONFIG_HOME/eedsh/config.ts
-import {
-  bundle,
-  defineConfig,
-  defineProfile,
-  disable,
-  generated,
-  layer,
-  override,
-} from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      bundles: [
-        bundle('@deepseek-ai/dsh-base'),
-        bundle('@deepseek-ai/dsh-web-app'),
-        generated(),
-      ],
-      layers: [
-        layer('overrides', [
-          override('agent-default-model', {
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated()
+      .layer('overrides', (layer) => {
+        layer
+          .override('agent-default-model', {
             provider: 'deepseek',
             model: 'deepseek-chat',
-          }),
-          disable('repeat-tool-reminder'),
-        ]),
-      ],
-    }),
-  },
-})
+          })
+          .disable('repeat-tool-reminder')
+      })
+  })
+  .build()
 ```
 
 ```sh
@@ -169,51 +157,38 @@ profile-local package and shows the annotation points for the main helpers.
 
 ```ts
 // $XDG_CONFIG_HOME/eedsh/config.ts
-import {
-  bundle,
-  defineConfig,
-  defineProfile,
-  disable,
-  generated,
-  insert,
-  js,
-  layer,
-  override,
-} from '@eedsh/config'
+import { defineConfig, js } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      packages: { '@scope/my-plugin': 'link:../packages/my-plugin' },
-      bundles: [
-        bundle('@deepseek-ai/dsh-base'),
-        bundle('@deepseek-ai/dsh-web-app'),
-        generated(), // generated layers sit here: after web-app, before nothing else
-      ],
-      layers: [
-        layer('plugins', [
-          // `insert` adds new rows; `disable` targets an existing row by id.
-          insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } }),
-          disable('repeat-tool-reminder'),
-        ]),
-        layer('overrides', [
-          // `override` replaces the row's whole config, exactly like a DSH Loader patch.
-          override('agent-default-model', {
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .package('@scope/my-plugin', 'link:../packages/my-plugin')
+      .bundle('@deepseek-ai/dsh-base')
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated() // generated layers sit here: after web-app, before nothing else
+      .layer('plugins', (layer) => {
+        // `insert` adds new rows; `disable` targets an existing row by id.
+        layer
+          .insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } })
+          .disable('repeat-tool-reminder')
+      })
+      .layer('overrides', (layer) => {
+        // `override` replaces the row's whole config, exactly like a DSH Loader patch.
+        layer
+          .override('agent-default-model', {
             provider: 'deepseek',
             model: 'deepseek-chat',
-          }),
-          insert({
+          })
+          .insert({
             id: 'plugin-manager',
             name: '@deepseek-ai/dsh-plugin-manager',
             // `js` emits a runtime expression that DSH evaluates at activation.
             disabled: js("!ctx.get('profileContext')"),
-          }),
-        ]),
-      ],
-    }),
-  },
-})
+          })
+      })
+  })
+  .build()
 ```
 
 The helpers map one-to-one onto Loader patch concepts. `override` replaces an

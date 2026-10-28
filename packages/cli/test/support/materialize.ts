@@ -1,4 +1,4 @@
-import { bundle, generated, insert, layer } from '@eedsh/config'
+import { bundle, generated, insert, layer } from './plan-parts'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
