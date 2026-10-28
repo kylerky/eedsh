@@ -14,3 +14,4 @@ export type {
 } from '@eedsh/plan'
 export * from './api'
 export * from './config'
+export * from './resolve'

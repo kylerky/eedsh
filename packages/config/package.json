@@ -21,12 +21,15 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@eedsh/plan": "workspace:*"
+    "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
+    "@eedsh/plan": "workspace:*",
+    "js-yaml": "4.3.2"
   },
   "peerDependencies": {
     "effect": "4.0.6"
   },
   "devDependencies": {
+    "@types/js-yaml": "4.0.9",
     "effect": "4.0.6"
   }
 }

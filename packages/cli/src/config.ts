@@ -7,13 +7,14 @@
  * @module @eedsh/cli/config
  */
 import { statSync } from 'node:fs'
-import { extname } from 'node:path'
+import { dirname, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { CONFIG_FILENAME } from './config-path'
+import { resolveDshInstallation } from './dsh'
 import { findTsconfigPath } from './internal/tsconfig'
 
 /** A config path, evaluation, or export failure. */
@@ -140,6 +141,33 @@ export function validateConfigPath(configPath: string): Result.Result<void, Conf
     : Result.fail(unsupportedConfigExtensionError(configPath))
 }
 
+function restoreEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) delete process.env[name]
+  else process.env[name] = previous
+}
+
+/**
+ * Set the authoring environment for one config import and return its restore
+ * function. The pinned DSH manifest survives module duplication and is visible
+ * to config-project's own copy of `@eedsh/config`; the config directory lets a
+ * relative package root resolve against the file rather than the CLI's cwd.
+ */
+function importEnvironment(configPath: string): () => void {
+  const previousAnchor = process.env.EEDSH_DSH_ANCHOR
+  const previousConfigDir = process.env.EEDSH_CONFIG_DIR
+  const installation = resolveDshInstallation()
+  if (Result.isSuccess(installation)) {
+    process.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
+  } else {
+    delete process.env.EEDSH_DSH_ANCHOR
+  }
+  process.env.EEDSH_CONFIG_DIR = dirname(configPath)
+  return () => {
+    restoreEnv('EEDSH_DSH_ANCHOR', previousAnchor)
+    restoreEnv('EEDSH_CONFIG_DIR', previousConfigDir)
+  }
+}
+
 /**
  * Import a config module and validate its default export as an eedsh config.
  * Imports resolve against the nearest tsconfig at or above the config file (or
@@ -178,7 +206,14 @@ export function loadConfig(
     const url = pathToFileURL(configPath)
     url.search = `?eedsh=${stamp}`
     const imported = yield* Effect.tryPromise({
-      try: () => nativeImport(url.href),
+      try: async () => {
+        const restore = importEnvironment(configPath)
+        try {
+          return await nativeImport(url.href)
+        } finally {
+          restore()
+        }
+      },
       catch: (cause) =>
         Schema.isSchemaError(cause)
           ? cause
