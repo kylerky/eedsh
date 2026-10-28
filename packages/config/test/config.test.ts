@@ -1,4 +1,4 @@
-import { bundle, defineConfig } from '@eedsh/config'
+import { bundle, defineConfig, ResolutionError } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
@@ -226,5 +226,17 @@ describe('public authoring surface', () => {
     }
     expect(typeof module.defineConfig).toBe('function')
     expect(typeof module.bundle).toBe('function')
+  })
+})
+describe('rooted query rejection', () => {
+  it('rejects a rooted query as a bundle selection', () => {
+    const rooted = bundle('@deepseek-ai/dsh-base').fromProfile('work')
+    const builder = defineConfig().dsh(dsh)
+    expect(() =>
+      builder.profile('work', (profile) => {
+        // @ts-expect-error a rooted query is query-only and not a plan selection
+        profile.bundle(rooted)
+      }),
+    ).toThrowError(ResolutionError)
   })
 })
