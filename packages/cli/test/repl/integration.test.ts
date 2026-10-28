@@ -61,12 +61,12 @@ describe('preview and authoring integration', () => {
       dsh: { profile: { bundles: [] } },
     })
     const configPath = join(configDir, 'config.ts')
-    const initial = `import { defineConfig, defineProfile, generated } from '@eedsh/config'
+    const initial = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: { work: defineProfile({ bundles: [generated()] }) },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => profile.generated())
+  .build()
 `
     await writeFile(configPath, initial)
     const out: string[] = []
@@ -84,19 +84,20 @@ export default defineConfig({
     sessions.push(session)
     expect(session.currentPlan.profile.name).toBe('work')
 
-    const querySource = `import { defineConfig, defineProfile, generated, insert, layer, rows } from '@eedsh/config'
+    const querySource = `import { bundle, defineConfig } from '@eedsh/config'
 
-const custom = rows('@acme/plugin-bundle', { profile: 'work' })
+const custom = bundle('@acme/plugin-bundle').fromProfile('work').rows()
 
-export default defineConfig({
-  dsh: '0.2.1-rc.2',
-  profiles: {
-    work: defineProfile({
-      bundles: [generated()],
-      layers: [layer('custom', [insert(custom)])],
-    }),
-  },
-})
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .generated()
+      .layer('custom', (layer) => {
+        layer.insert([...custom])
+      })
+  })
+  .build()
 `
     await writeFile(configPath, querySource)
     await session.reload()

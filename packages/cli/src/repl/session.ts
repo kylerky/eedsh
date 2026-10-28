@@ -31,6 +31,7 @@ import {
   previewCacheRoot,
   removePreview,
 } from './preview'
+import { ConfigView, ProfileView } from './views'
 
 /** A loadable config failure. */
 export type ReplConfigFailure = ConfigError | Schema.SchemaError
@@ -120,9 +121,21 @@ interface ResolutionTrace {
 }
 
 const TRACE_KEY = Symbol.for('@eedsh/config.resolution-trace')
+/** The curated authoring factories bound into the prompt. */
+const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'group', 'js'] as const
+
+/** The typed view names the prompt owns; an authoring export must not shadow one. */
+const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
+
 const HELP_LINES = [
+  'bindings:',
+  '  config                the loaded config view: dsh, defaultProfile, profiles()',
+  '  selectedProfile       the selected profile view: name, plan(), bundles(), layers()',
+  '  plan                  selectedProfile.plan()',
+  'Tab completes commands, chain methods, and profile, bundle, row, and preset names',
   'commands:',
   '  .help                 list session and shell commands',
+  '  .profile <name>       switch the selected profile without re-importing',
   '  .reload               re-evaluate the config now',
   '  .resolve <name>@<ver> prepare a session preview and evaluate against it',
   '  .sync [on|off]        publish now, or toggle continuous sync',
@@ -435,6 +448,8 @@ export class ReplSession {
   private config!: EedshConfig
   private plan!: ProfilePlan
   private profileName!: string
+  private configView!: ConfigView
+  private selectedProfileView!: ProfileView
   private syncEnabled: boolean
   private preview: PreparedPreview | undefined
   private previewSpecs: PreviewSpec[] = []
@@ -535,6 +550,10 @@ export class ReplSession {
         )
         this.stdout(`config: ${this.configPath}`)
         this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
+        this.stdout('bindings: config, selectedProfile, plan')
+        this.stdout(
+          'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names',
+        )
         if (this.options.cacheRoot === undefined) {
           await cleanupPreviews(this.cacheRoot, { now: this.now }).catch(() => undefined)
         }
@@ -549,12 +568,38 @@ export class ReplSession {
 
   private bind(): void {
     const context = this.server.context as Record<string, unknown>
-    Object.assign(context, this.authoring.module, {
-      config: this.config,
-      profiles: this.config.profiles,
-      plan: this.plan,
-      profile: this.profileName,
+    for (const name of VIEW_BINDINGS) {
+      if (Object.hasOwn(this.authoring.module, name)) {
+        throw new ReplSessionError({
+          code: 'repl.binding_collision',
+          message: `the config project's @eedsh/config exports "${name}", which collides with the session binding "${name}"`,
+        })
+      }
+    }
+    const bindings: Record<string, unknown> = {}
+    for (const name of AUTHORING_BINDINGS) {
+      if (Object.hasOwn(this.authoring.module, name)) bindings[name] = this.authoring.module[name]
+    }
+    Object.assign(context, bindings, {
+      config: this.configView,
+      selectedProfile: this.selectedProfileView,
+      plan: this.selectedProfileView.plan(),
     })
+  }
+
+  private applySelection(config: EedshConfig, plan: ProfilePlan, name: string): void {
+    this.config = config
+    this.plan = plan
+    this.profileName = name
+    this.configView = new ConfigView(config)
+    const selected = this.configView.profile(name)
+    if (selected === undefined) {
+      throw new ReplSessionError({
+        code: 'repl.profile_selection',
+        message: `profile ${JSON.stringify(name)} is not declared`,
+      })
+    }
+    this.selectedProfileView = selected
   }
 
   private async loadCandidate(): Promise<{
@@ -579,9 +624,7 @@ export class ReplSession {
 
   private async loadAndSelect(): Promise<void> {
     const loaded = await this.loadCandidate()
-    this.config = loaded.config
-    this.plan = loaded.plan
-    this.profileName = loaded.name
+    this.applySelection(loaded.config, loaded.plan, loaded.name)
     this.bind()
     this.printTraces(loaded.traces)
     await this.printComposition()
@@ -659,9 +702,7 @@ export class ReplSession {
     const diff = diffPlans(previous, next)
     if (diff.length === 0) this.stdout('reload: no changes')
     else for (const line of diff) this.stdout(line)
-    this.config = loaded.config
-    this.plan = loaded.plan
-    this.profileName = loaded.name
+    this.applySelection(loaded.config, loaded.plan, loaded.name)
     this.bind()
     this.printTraces(loaded.traces)
     await this.printComposition()
@@ -747,6 +788,15 @@ export class ReplSession {
       case '.help':
         for (const help of HELP_LINES) this.stdout(help)
         return false
+      case '.profile': {
+        const name = args[0]
+        if (args.length !== 1 || name === undefined) {
+          this.stderr('usage: .profile <name>')
+          return false
+        }
+        this.switchProfile(name)
+        return false
+      }
       case '.reload':
         await this.enqueueReload()
         return false
@@ -783,6 +833,37 @@ export class ReplSession {
         }
         return false
     }
+  }
+
+  private switchProfile(name: string): void {
+    const names = this.configView.profiles().map((profile) => profile.name)
+    const view = this.configView.profile(name)
+    if (view === undefined) {
+      this.reportFailure(
+        'profile not switched',
+        new ReplSessionError({
+          code: 'repl.unknown_profile',
+          message: `profile ${JSON.stringify(name)} is not declared; available profiles: ${names.join(', ')}`,
+        }),
+      )
+      return
+    }
+    if (!view.valid) {
+      this.reportFailure('profile not switched', new ReplSessionError({
+        code: 'repl.invalid_profile',
+        message: `profile ${JSON.stringify(name)} is invalid`,
+        lines: [
+          `profile ${JSON.stringify(name)} is invalid`,
+          ...(view.error ?? '').split('\n'),
+        ],
+      }))
+      return
+    }
+    this.plan = view.plan()
+    this.profileName = name
+    this.selectedProfileView = view
+    this.bind()
+    this.stdout(`profile: ${name}`)
   }
 
   private parseSpecs(raw: readonly string[]): PreviewSpec[] {
@@ -851,16 +932,12 @@ export class ReplSession {
     let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
     try {
       loaded = await this.loadCandidate()
-      this.config = loaded.config
-      this.plan = loaded.plan
-      this.profileName = loaded.name
+      this.applySelection(loaded.config, loaded.plan, loaded.name)
       this.bind()
     } catch (error) {
       this.preview = previous.preview
       this.previewSpecs = previous.specs
-      this.config = previous.config
-      this.plan = previous.plan
-      this.profileName = previous.profileName
+      this.applySelection(previous.config, previous.plan, previous.profileName)
       this.applyPreviewEnv()
       this.reportFailure('preview not ready', error)
       return
@@ -915,9 +992,7 @@ export class ReplSession {
         this.preview = undefined
         this.previewSpecs = []
         this.retainedPreviewDir = undefined
-        this.config = loaded.config
-        this.plan = loaded.plan
-        this.profileName = loaded.name
+        this.applySelection(loaded.config, loaded.plan, loaded.name)
         this.bind()
         this.stdout(
           'bootstrap complete: the real install reproduces the published plan; preview deleted',

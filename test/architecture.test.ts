@@ -56,7 +56,9 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * Effect-free runtime is outside this scan. Author-time resolution and the
  * typed query handles throw structured failures at a synchronous API boundary;
  * the REPL owns Node's exception-shaped I/O (dynamic imports, REPL evaluation,
- * preview installs) and converts those failures to printable session state.
+ * preview installs), and the exploration views report an invalid plan lookup as
+ * a tagged session failure, and both convert those failures to printable
+ * session state.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
@@ -64,6 +66,7 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/config/src/resolve.ts',
   'packages/cli/src/repl/preview.ts',
   'packages/cli/src/repl/session.ts',
+  'packages/cli/src/repl/views.ts',
 ])
 
 /** JavaScript exception control flow in one source text. */

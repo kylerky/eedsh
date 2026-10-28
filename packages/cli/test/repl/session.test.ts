@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+import { defineConfig } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
@@ -18,28 +18,27 @@ let work = ''
 const sessions: ReplSession[] = []
 
 function configWith(rows: readonly string[], defaultProfile?: 'work'): EedshConfig {
-  const result = defineConfig({
-    dsh: '0.2.1-rc.2',
-    ...(defaultProfile === undefined ? {} : { defaultProfile }),
-    profiles: {
-      work: defineProfile({
-        bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
-        layers: [layer('work', [insert(rows.map((id) => ({ id, name: `@scope/${id}` })))])],
-      }),
-    },
-  })
+  const builder = defineConfig().dsh('0.2.1-rc.2')
+  if (defaultProfile !== undefined) builder.defaultProfile(defaultProfile)
+  const result = builder
+    .profile('work', (profile) => {
+      profile
+        .bundle('@deepseek-ai/dsh-base')
+        .generated()
+        .layer('work', (layer) => {
+          for (const id of rows) layer.insert({ id, name: `@scope/${id}` })
+        })
+    })
+    .build()
   if (Result.isFailure(result)) throw result.failure
   return result.success
 }
 
 function configWithProfiles(names: readonly string[], defaultProfile?: string): EedshConfig {
-  const profiles: Record<string, ReturnType<typeof defineProfile>> = {}
-  for (const name of names) profiles[name] = defineProfile({ bundles: [generated()] })
-  const result = defineConfig({
-    dsh: '0.2.1-rc.2',
-    ...(defaultProfile === undefined ? {} : { defaultProfile }),
-    profiles,
-  })
+  const builder = defineConfig().dsh('0.2.1-rc.2')
+  if (defaultProfile !== undefined) builder.defaultProfile(defaultProfile)
+  for (const name of names) builder.profile(name, (profile) => profile.generated())
+  const result = builder.build()
   if (Result.isFailure(result)) throw result.failure
   return result.success
 }
@@ -55,7 +54,13 @@ function rowsOf(plan: ProfilePlan): number {
 }
 
 const authoring = {
-  module: { marker: 42, presets: () => [] },
+  module: {
+    defineConfig: () => 'bound-define-config',
+    bundle: () => 'bound-bundle',
+    group: () => 'bound-group',
+    js: () => 'bound-js',
+    marker: 42,
+  },
   packagePath: '/fake/@eedsh/config/package.json',
   entryPath: '/fake/@eedsh/config/index.js',
   version: '0.0.0',
@@ -65,6 +70,7 @@ interface Harness {
   session: ReplSession
   out: string[]
   err: string[]
+  loads: () => number
   setConfig: (config: EedshConfig) => void
   setFailure: (error: ConfigError) => void
   syncs: ProfilePlan[]
@@ -79,10 +85,12 @@ async function session(
     watch?: (dir: string, onChange: () => void) => Promise<{ close(): Promise<void> }>
     installPreview?: (dir: string) => Promise<void>
     watchConfig?: boolean
+    authoringModule?: Record<string, unknown>
   } = {},
 ): Promise<Harness> {
   let current = options.config ?? configWith(['a'])
   let failure: ConfigError | undefined
+  let loadCount = 0
   const out: string[] = []
   const err: string[] = []
   const syncs: ProfilePlan[] = []
@@ -93,7 +101,10 @@ async function session(
     env: { DSH_HOME: join(work, 'home') },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
-    loadConfig: () => (failure === undefined ? Effect.succeed(current) : Effect.fail(failure)),
+    loadConfig: () => {
+      loadCount += 1
+      return failure === undefined ? Effect.succeed(current) : Effect.fail(failure)
+    },
     compose: async (plan) => ({ rowCount: rowsOf(plan), warnings: [] }),
     syncPlan:
       options.syncPlan ??
@@ -104,7 +115,10 @@ async function session(
     ...(options.watch === undefined ? {} : { watch: options.watch }),
     ...(options.installPreview === undefined ? {} : { installPreview: options.installPreview }),
     cacheRoot: join(work, 'cache'),
-    authoring,
+    authoring:
+      options.authoringModule === undefined
+        ? authoring
+        : { ...authoring, module: options.authoringModule },
     watchConfig: options.watchConfig ?? false,
   })
   sessions.push(created)
@@ -112,6 +126,7 @@ async function session(
     session: created,
     out,
     err,
+    loads: () => loadCount,
     setConfig: (config) => {
       current = config
       failure = undefined
@@ -145,7 +160,8 @@ describe('session evaluation', () => {
     expect(await h.session.evaluate('x + 5')).toBe(7)
     expect(await h.session.evaluate('await Promise.resolve(9)')).toBe(9)
     expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
-    expect(await h.session.evaluate('marker')).toBe(42)
+    expect(await h.session.evaluate('typeof marker')).toBe('undefined')
+    expect(await h.session.evaluate('typeof defineConfig')).toBe('function')
   })
 
   it('selects the default profile and reports ambiguity or an unknown name', async () => {
@@ -193,7 +209,10 @@ describe('session evaluation', () => {
         exports: { '.': './index.js', './package.json': './package.json' },
       }),
     )
-    await writeFile(join(packageDir, 'index.js'), 'export const marker = 99\n')
+    await writeFile(
+      join(packageDir, 'index.js'),
+      "export const defineConfig = () => 'bound'\nexport const marker = 99\n",
+    )
     const created = await ReplSession.create({
       configPath: join(configDir, 'config.ts'),
       env: { DSH_HOME: join(work, 'home') },
@@ -206,7 +225,8 @@ describe('session evaluation', () => {
     sessions.push(created)
     expect(created.authoring.version).toBe('9.9.9')
     expect(created.authoring.entryPath).toBe(join(packageDir, 'index.js'))
-    expect(await created.evaluate('marker')).toBe(99)
+    expect(await created.evaluate('defineConfig()')).toBe('bound')
+    expect((await created.evaluateOutcome('marker')).ok).toBe(false)
     await rm(configDir, { recursive: true, force: true })
   })
 
@@ -226,6 +246,51 @@ describe('session evaluation', () => {
     } finally {
       await rm(configDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('typed domain bindings', () => {
+  it('binds config, selectedProfile, and plan', async () => {
+    const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
+    expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
+    expect(await h.session.evaluate('config.profiles().map((profile) => profile.name)')).toEqual([
+      'work',
+      'home',
+    ])
+    expect(await h.session.evaluate('selectedProfile.name')).toBe('work')
+    expect(await h.session.evaluate('plan.profile.name')).toBe('work')
+    expect(await h.session.evaluate('selectedProfile.bundles().length')).toBe(0)
+    expect(await h.session.evaluate('selectedProfile.layers().length')).toBe(0)
+  })
+
+  it('does not bind the legacy profile string or the raw profiles map', async () => {
+    const h = await session()
+    expect(await h.session.evaluate('typeof profile')).toBe('undefined')
+    const legacy = await h.session.evaluateOutcome('profile')
+    expect(legacy.ok).toBe(false)
+    const raw = await h.session.evaluateOutcome('profiles')
+    expect(raw.ok).toBe(false)
+    expect(await h.session.evaluate('1 + 1')).toBe(2)
+  })
+
+  it('keeps bindings current after reload', async () => {
+    const h = await session()
+    h.setConfig(configWith(['a', 'b']))
+    await h.session.reload()
+    expect(await h.session.evaluate('selectedProfile.layers()[0].patches.length')).toBe(2)
+    expect(await h.session.evaluate('selectedProfile.layers()[0].patches[1].insert[0].id')).toBe('b')
+  })
+
+  it('fails loudly when the authoring module collides with a binding', async () => {
+    await expect(
+      session({ authoringModule: { config: {}, defineConfig: () => undefined } }),
+    ).rejects.toMatchObject({ code: 'repl.binding_collision' })
+    await expect(
+      session({ authoringModule: { selectedProfile: {}, defineConfig: () => undefined } }),
+    ).rejects.toMatchObject({ code: 'repl.binding_collision' })
+    await expect(
+      session({ authoringModule: { plan: {}, defineConfig: () => undefined } }),
+    ).rejects.toMatchObject({ code: 'repl.binding_collision' })
   })
 })
 
@@ -249,6 +314,56 @@ describe('reload and diff', () => {
     await h.session.command('.reload')
     expect(h.session.currentPlan).not.toBe(before)
     expect(h.out.join('\n')).toContain('+ row "b"')
+  })
+})
+
+describe('profile switching', () => {
+  it('switches the selected profile without re-importing the config', async () => {
+    const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
+    const before = h.loads()
+    await h.session.command('.profile home')
+    expect(h.session.profile).toBe('home')
+    expect(await h.session.evaluate('selectedProfile.name')).toBe('home')
+    expect(await h.session.evaluate('plan.profile.name')).toBe('home')
+    expect(h.loads()).toBe(before)
+    expect(h.out.join('\n')).toContain('profile: home')
+  })
+
+  it('reports an unknown profile, lists the declared names, and keeps the selection', async () => {
+    const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
+    await h.session.command('.profile missing')
+    expect(h.err.join('\n')).toContain('"missing"')
+    expect(h.err.join('\n')).toContain('work, home')
+    expect(h.session.profile).toBe('work')
+    expect(await h.session.evaluate('selectedProfile.name')).toBe('work')
+  })
+
+  it('rejects an invalid profile and keeps the selection', async () => {
+    const result = defineConfig()
+      .dsh('0.2.1-rc.2')
+      .defaultProfile('work')
+      .profile('work', (profile) => profile.generated())
+      .profile('home', (profile) => profile.bundle('@eedsh/runtime'))
+      .build()
+    if (Result.isFailure(result)) throw result.failure
+    const h = await session({ config: result.success })
+    await h.session.command('.profile home')
+    expect(h.err.join('\n')).toContain('invalid')
+    expect(h.session.profile).toBe('work')
+  })
+
+  it('makes .sync act on the switched profile', async () => {
+    const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
+    await h.session.command('.profile home')
+    await h.session.command('.sync')
+    expect(h.syncs).toHaveLength(1)
+    expect(h.syncs[0]?.profile.name).toBe('home')
+  })
+
+  it('reports usage for a missing argument', async () => {
+    const h = await session()
+    await h.session.command('.profile')
+    expect(h.err.join('\n')).toContain('usage: .profile <name>')
   })
 })
 
@@ -419,6 +534,19 @@ describe('preview integration', () => {
 })
 
 describe('shell commands', () => {
+  it('lists bindings, commands, and discovery hints in the banner and help', async () => {
+    const h = await session()
+    const banner = h.out.join('\n')
+    for (const token of ['config', 'selectedProfile', 'plan', '.profile', 'Tab']) {
+      expect(banner).toContain(token)
+    }
+    await h.session.command('.help')
+    const help = h.out.join('\n')
+    for (const token of ['config', 'selectedProfile', 'plan', '.profile', 'Tab']) {
+      expect(help).toContain(token)
+    }
+  })
+
   it('lists commands, rejects unknown dot words, and exits', async () => {
     const h = await session()
     await h.session.command('.help')
