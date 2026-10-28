@@ -41,6 +41,29 @@ export async function completeShellLine(
   }
 }
 
+/** The callback-shaped completer `node:readline` expects. */
+export type ReplCompleter = (
+  line: string,
+  callback: (error: Error | null, result: [string[], string]) => void,
+) => void
+
+/**
+ * Adapt the async completion surface to readline's callback completer. The
+ * public readline wrapper only preserves a completer whose function length is
+ * two; a one-argument async completer is wrapped and its Promise reaches the
+ * callback instead of the hits.
+ * @param session - the session whose catalogs and evaluator supply hits.
+ * @returns a callback completer for `createInterface`.
+ */
+export function createCompletionCompleter(session: CompletingSession): ReplCompleter {
+  return (line, callback) => {
+    completeShellLine(session, line).then(
+      (result) => callback(null, result),
+      () => callback(null, [[], line]),
+    )
+  }
+}
+
 /**
  * Run the interactive loop until .exit, EOF, or an interrupt.
  * @param session - an initialized session.
@@ -55,7 +78,7 @@ export async function runReplLoop(session: ReplSession, streams: ReplStreams): P
     output: streams.output,
     terminal,
     prompt: 'eedsh> ',
-    completer: async (line: string) => completeShellLine(session, line),
+    completer: createCompletionCompleter(session),
   })
   const prompt = (): void => {
     if (terminal) rl.prompt()

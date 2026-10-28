@@ -166,7 +166,8 @@ const HELP_LINES = [
   '  config                the loaded config view: dsh, defaultProfile, profiles()',
   '  selectedProfile       the selected profile view: name, plan(), bundles(), layers()',
   '  plan                  selectedProfile.plan()',
-  'Tab completes commands, chain methods, and profile, bundle, row, and preset names',
+  'Tab completes commands, chain methods, and profile, bundle, row, and preset names;',
+  '  press Tab again to list ambiguous matches',
   'commands:',
   '  .help                 list session and shell commands',
   '  .profile <name>       switch the selected profile without re-importing',
@@ -605,7 +606,7 @@ export class ReplSession {
         this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
         this.stdout('bindings: config, selectedProfile, plan')
         this.stdout(
-          'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names',
+          'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names (a second Tab lists ambiguous matches)',
         )
         if (this.options.cacheRoot === undefined) {
           await cleanupPreviews(this.cacheRoot, { now: this.now }).catch(() => undefined)

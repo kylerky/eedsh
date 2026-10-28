@@ -81,7 +81,8 @@ eedsh --help | --version
   `plan` is `selectedProfile.plan()`, and the curated authoring factories
   `bundle`, `defineConfig`, `group`, and `js` are bound. The legacy `profile`
   string and raw `profiles` map are not. Tab completes commands, chain methods,
-  and profile, bundle, row, preset, and package names. Saves are debounced and
+  and profile, bundle, row, preset, and package names; a second Tab lists
+  ambiguous matches. Saves are debounced and
   re-evaluated; the session prints a plan diff and composition summary, and keeps
   the previous evaluation after a bad save. Dot commands are `.help`,
   `.profile <name>`, `.reload`, `.resolve`, `.sync`, `.clear`, and `.exit`.

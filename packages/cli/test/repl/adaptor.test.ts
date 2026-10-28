@@ -1,5 +1,7 @@
+import { createInterface } from 'node:readline'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { completeShellLine } from '../../src/repl/prompt'
+import { completeShellLine, createCompletionCompleter, type ReplCompleter } from '../../src/repl/prompt'
 
 describe('readline completion adapter', () => {
   it('returns domain hits with the token to replace', async () => {
@@ -44,5 +46,29 @@ describe('readline completion adapter', () => {
     }
     expect(await completeShellLine(session, "bundle('")).toEqual([[], ''])
     expect(calls).toBe(1)
+  })
+
+  it('uses the two-argument callback completer readline does not wrap', async () => {
+    const session = {
+      complete: async () => ({ start: 0, hits: ['value'] }),
+      completeGeneric: async (): Promise<readonly [string[], string]> => [[], ''],
+    }
+    const completer = createCompletionCompleter(session)
+    expect(completer.length).toBe(2)
+
+    const rl = createInterface({
+      input: new PassThrough(),
+      output: new PassThrough(),
+      terminal: false,
+      completer,
+    })
+    expect((rl as unknown as { completer: ReplCompleter }).completer).toBe(completer)
+    const result = await new Promise<readonly [string[], string]>((resolve) => {
+      ;(rl as unknown as { completer: ReplCompleter }).completer('val', (_error, hits) =>
+        resolve(hits),
+      )
+    })
+    expect(result).toEqual([['value'], 'val'])
+    rl.close()
   })
 })

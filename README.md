@@ -145,7 +145,8 @@ eedsh --help | --version
   `published()`), and `plan` is `selectedProfile.plan()`. The curated authoring
   factories `bundle`, `defineConfig`, `group`, and `js` are bound; the legacy
   `profile` string and raw `profiles` map are not. Tab completes commands, chain
-  methods, and profile, bundle, row, preset, and package names. Dot commands are
+  methods, and profile, bundle, row, preset, and package names; a second Tab lists
+  ambiguous matches. Dot commands are
   shell-level: `.help`, `.profile <name>`, `.reload`, `.resolve`, `.sync`,
   `.clear`, and `.exit`. Inspection, `.profile`, completion, `.reload`, and
   exploration never write profile files; `.sync` (or `--sync`) publishes. `--eval`
@@ -302,8 +303,9 @@ loudly. The legacy `profile` string and raw `profiles` map are gone: use
 
 Tab completion follows the domain grammar: shell commands and their arguments,
 chain methods valid at the current step, and profile, bundle, row, preset, and
-package names. A rooted chain does not offer a second root, completion never
-writes or publishes, and a failing resolution produces no hits.
+package names. The first Tab inserts a unique or common prefix; a second Tab
+lists ambiguous matches. A rooted chain does not offer a second root, completion
+never writes or publishes, and a failing resolution produces no hits.
 
 The exploration views are read-only snapshots rebuilt on load, reload, profile
 switch, preview change, and successful sync:
