@@ -1,10 +1,10 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { composePreflightLayers } from '../../src/preflight'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../src/config'
+import { composePreflightLayers } from '../../src/preflight'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')

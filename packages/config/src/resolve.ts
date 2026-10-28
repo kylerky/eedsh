@@ -304,7 +304,10 @@ function explicitRoot(
     const profileManifest = join(dir, 'package.json')
     if (!existsSync(profileManifest)) {
       throw new ResolutionError({
-        code: override === undefined ? 'resolution.profile_missing' : 'resolution.profile_override_invalid',
+        code:
+          override === undefined
+            ? 'resolution.profile_missing'
+            : 'resolution.profile_override_invalid',
         bundle,
         profile,
         path: dir,
@@ -339,11 +342,17 @@ function explicitRoot(
   return { packageDir: '', origin: 'pinned' }
 }
 
-function assertPackageDir(bundle: string, packageDir: string, origin: ResolutionOrigin, profile?: string): string {
+function assertPackageDir(
+  bundle: string,
+  packageDir: string,
+  origin: ResolutionOrigin,
+  profile?: string,
+): string {
   const manifestPath = join(packageDir, 'package.json')
   if (!existsSync(manifestPath)) {
     throw new ResolutionError({
-      code: origin === 'packageDir' ? 'resolution.package_dir_missing' : 'resolution.bundle_not_found',
+      code:
+        origin === 'packageDir' ? 'resolution.package_dir_missing' : 'resolution.bundle_not_found',
       bundle,
       path: manifestPath,
       ...(profile === undefined ? {} : { profile }),
@@ -356,7 +365,11 @@ function assertPackageDir(bundle: string, packageDir: string, origin: Resolution
   return manifestPath
 }
 
-function loadRows(bundle: string, manifest: BundleManifest, packageDir: string): readonly PlanEntry[] {
+function loadRows(
+  bundle: string,
+  manifest: BundleManifest,
+  packageDir: string,
+): readonly PlanEntry[] {
   const declaration = manifest.dsh?.bundle
   if (declaration === undefined) {
     throw new ResolutionError({
@@ -414,7 +427,7 @@ function loadRows(bundle: string, manifest: BundleManifest, packageDir: string):
 export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBundle {
   const selected = explicitRoot(bundle, root)
   let packageDir = selected.packageDir
-  let origin = selected.origin
+  const origin = selected.origin
   if (origin === 'pinned') {
     const anchor = anchorManifest(bundle)
     const installed = packageDirFromAnchor(anchor.path, bundle)
@@ -434,7 +447,8 @@ export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBun
     manifest = readJsonObject(manifestPath) as BundleManifest
   } catch (cause) {
     throw new ResolutionError({
-      code: origin === 'packageDir' ? 'resolution.package_dir_invalid' : 'resolution.bundle_not_found',
+      code:
+        origin === 'packageDir' ? 'resolution.package_dir_invalid' : 'resolution.bundle_not_found',
       bundle,
       path: manifestPath,
       ...(selected.profile === undefined ? {} : { profile: selected.profile }),
@@ -481,7 +495,7 @@ function isPresetRow(entry: PlanEntry): boolean {
   if (entry.name === '@deepseek-ai/dsh-agent-preset') return true
   const id = typeof entry.id === 'string' ? entry.id : undefined
   const config = isRecord(entry.config) ? entry.config : undefined
-  return id !== undefined && id.startsWith('preset-') && typeof config?.id === 'string'
+  return id?.startsWith('preset-') === true && typeof config?.id === 'string'
 }
 
 /**

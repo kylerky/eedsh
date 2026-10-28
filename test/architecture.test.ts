@@ -53,9 +53,17 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 /**
  * The only production exception sites the architecture check permits. The
  * malformed-expression branch is unreachable after plan validation, and the
- * Effect-free runtime is outside this scan.
+ * Effect-free runtime is outside this scan. Author-time resolution throws
+ * structured failures at a synchronous API boundary; the REPL owns Node's
+ * exception-shaped I/O (dynamic imports, REPL evaluation, preview installs)
+ * and converts those failures to printable session state.
  */
-const EXCEPTION_ALLOWLIST = new Set(['packages/cli/src/materialize/yaml.ts'])
+const EXCEPTION_ALLOWLIST = new Set([
+  'packages/cli/src/materialize/yaml.ts',
+  'packages/config/src/resolve.ts',
+  'packages/cli/src/repl/preview.ts',
+  'packages/cli/src/repl/session.ts',
+])
 
 /** JavaScript exception control flow in one source text. */
 function exceptionSites(text: string): string[] {

@@ -180,6 +180,7 @@ function importEnvironment(configPath: string): () => void {
  */
 export function loadConfig(
   configPath: string,
+  evaluationNonce?: string,
 ): Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError> {
   return Effect.gen(function* () {
     const pathResult = validateConfigPath(configPath)
@@ -204,15 +205,14 @@ export function loadConfig(
     })
 
     const url = pathToFileURL(configPath)
-    url.search = `?eedsh=${stamp}`
+    url.search =
+      evaluationNonce === undefined
+        ? `?eedsh=${stamp}`
+        : `?eedsh=${stamp}&evaluation=${encodeURIComponent(evaluationNonce)}`
     const imported = yield* Effect.tryPromise({
       try: async () => {
         const restore = importEnvironment(configPath)
-        try {
-          return await nativeImport(url.href)
-        } finally {
-          restore()
-        }
+        return await nativeImport(url.href).finally(restore)
       },
       catch: (cause) =>
         Schema.isSchemaError(cause)

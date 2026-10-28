@@ -1,0 +1,972 @@
+/**
+ * The config REPL session. It owns evaluation bindings, the selected profile,
+ * save-triggered reloads, preview resolution, and in-session publication.
+ * Formatting lives here so the command, tests, and non-TTY runs share it.
+ * @module @eedsh/cli/repl/session
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import type { REPLServer } from 'node:repl'
+import { PassThrough } from 'node:stream'
+import { pathToFileURL } from 'node:url'
+import { inspect } from 'node:util'
+import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
+import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
+import { Cause, Effect, Exit, Option } from 'effect'
+import * as Result from 'effect/Result'
+import type * as Schema from 'effect/Schema'
+import { type ConfigError, loadConfig as defaultLoadConfig } from '../config'
+import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
+import { composePreflightLayers } from '../preflight'
+import { describeProfileSelection, selectProfile } from '../selection'
+import { type WatchSession, watchConfigDirectory } from '../watch'
+import { diffPlans, type PlanMap } from './diff'
+import {
+  cleanupPreviews,
+  type PreparedPreview,
+  PreviewError,
+  type PreviewSpec,
+  preparePreview,
+  previewCacheRoot,
+  removePreview,
+} from './preview'
+
+/** A loadable config failure. */
+export type ReplConfigFailure = ConfigError | Schema.SchemaError
+
+/** A line sink. */
+export type LineSink = (line: string) => void
+
+/** One successful publication result, as the command's sync runner reports it. */
+export interface SyncOutcome {
+  readonly changed: boolean
+  readonly generationId: string
+  readonly restartRequired?: boolean
+  readonly warnings?: readonly string[]
+  readonly notices?: readonly string[]
+}
+
+/** A publication runner supplied by the command or a test. */
+export type SyncPlan = (plan: ProfilePlan) => Promise<SyncOutcome>
+
+/** One preflight composition summary. */
+export interface CompositionResult {
+  readonly rowCount: number
+  readonly warnings: readonly string[]
+  readonly error?: string
+}
+
+/** A composition runner supplied by the session or a test. */
+export type ComposePlan = (plan: ProfilePlan, profileDir: string) => Promise<CompositionResult>
+
+/** The authoring package loaded from the config project. */
+export interface AuthoringPackage {
+  readonly module: Record<string, unknown>
+  readonly packagePath: string
+  readonly entryPath: string
+  readonly version: string
+}
+
+/** Environment and stream seams for one session. */
+export interface ReplSessionOptions {
+  readonly configPath: string
+  readonly profile?: string
+  readonly sync?: boolean
+  readonly cwd?: string
+  readonly env?: Record<string, string | undefined>
+  readonly stdout?: LineSink
+  readonly stderr?: LineSink
+  readonly loadConfig?: (
+    path: string,
+    evaluationNonce?: string,
+  ) => Effect.Effect<EedshConfig, ReplConfigFailure>
+  readonly watch?: (dir: string, onChange: () => void) => Promise<WatchSession>
+  readonly compose?: ComposePlan
+  readonly syncPlan?: SyncPlan
+  readonly installPreview?: (dir: string) => Promise<void>
+  readonly cacheRoot?: string
+  readonly now?: () => number
+  readonly authoring?: AuthoringPackage
+  readonly watchConfig?: boolean
+  /** Suppress the banner and composition summary for `--eval`. */
+  readonly oneShot?: boolean
+}
+
+/** A structured session failure with printable diagnostic lines. */
+export class ReplSessionError extends Error {
+  readonly _tag = 'ReplSessionError'
+  readonly code: string
+  readonly lines: readonly string[]
+
+  constructor(input: {
+    readonly code: string
+    readonly message: string
+    readonly lines?: readonly string[]
+  }) {
+    super(input.message)
+    this.name = 'ReplSessionError'
+    this.code = input.code
+    this.lines = input.lines ?? [input.message]
+  }
+}
+
+interface ResolutionTrace {
+  readonly bundle: string
+  readonly packageDir: string
+  readonly version: string
+  readonly origin: 'pinned' | 'profile' | 'packageDir' | 'preview'
+  readonly profile?: string
+}
+
+const TRACE_KEY = Symbol.for('@eedsh/config.resolution-trace')
+const HELP_LINES = [
+  'commands:',
+  '  .help                 list session and shell commands',
+  '  .reload               re-evaluate the config now',
+  '  .resolve <name>@<ver> prepare a session preview and evaluate against it',
+  '  .sync [on|off]        publish now, or toggle continuous sync',
+  '  .clear                clear the screen in a terminal',
+  '  .exit                 end the session',
+  'expressions are TypeScript and may use top-level await; bindings persist',
+]
+
+function traceStore(): ResolutionTrace[] {
+  const global = globalThis as typeof globalThis & { [key: symbol]: unknown }
+  const existing = global[TRACE_KEY]
+  if (Array.isArray(existing)) return existing as ResolutionTrace[]
+  const created: ResolutionTrace[] = []
+  global[TRACE_KEY] = created
+  return created
+}
+
+function takeTrace(): ResolutionTrace[] {
+  const store = traceStore()
+  return store.splice(0, store.length)
+}
+
+function clearTrace(): void {
+  traceStore().splice(0, traceStore().length)
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function errorLines(error: unknown): string[] {
+  const tagged =
+    error !== null && typeof error === 'object' ? (error as Record<string, unknown>) : {}
+  if (typeof tagged._tag === 'string') {
+    switch (tagged._tag) {
+      case 'ConfigError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'ResolutionError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'PreviewError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'ReplSessionError':
+        return Array.isArray(tagged.lines) ? tagged.lines.map(String) : [messageOf(error)]
+      case 'SyncLocked':
+        return [`another sync is running for this profile; lock: ${String(tagged.lockPath)}`]
+      case 'PreflightFailure': {
+        const warnings = Array.isArray(tagged.warnings) ? tagged.warnings.map(String) : []
+        return [String(tagged.message), ...warnings]
+      }
+      case 'PackageInstallFailure':
+        return [
+          `package installation failed in ${String(tagged.profileDir)}: ${String(tagged.cause)}`,
+        ]
+      case 'OwnershipRecordInvalid':
+        return [`cannot reconcile ${String(tagged.path)}: ${String(tagged.detail)}`]
+      default:
+        break
+    }
+  }
+  if (typeof tagged.message === 'string') return tagged.message.split('\n')
+  return [messageOf(error)]
+}
+
+function planMap(config: EedshConfig): PlanMap {
+  const map = new Map<string, ProfilePlan | undefined>()
+  for (const [name, result] of Object.entries(config.profiles)) {
+    map.set(name, Result.isSuccess(result) ? result.success : undefined)
+  }
+  return map
+}
+
+function selectedPlan(
+  config: EedshConfig,
+  profile: string | undefined,
+): { name: string; plan: ProfilePlan } {
+  const selection = selectProfile(
+    config,
+    profile === undefined ? Option.none() : Option.some(profile),
+  )
+  if (Result.isFailure(selection)) {
+    throw new ReplSessionError({
+      code: 'repl.profile_selection',
+      message: describeProfileSelection(selection.failure),
+      lines: [describeProfileSelection(selection.failure)],
+    })
+  }
+  if (Result.isFailure(selection.success.plan)) {
+    throw new ReplSessionError({
+      code: 'repl.invalid_profile',
+      message: `profile ${JSON.stringify(selection.success.name)} is invalid`,
+      lines: [
+        `profile ${JSON.stringify(selection.success.name)} is invalid`,
+        ...selection.success.plan.failure.message.split('\n'),
+      ],
+    })
+  }
+  return { name: selection.success.name, plan: selection.success.plan.success }
+}
+
+function declaresAuthoring(configDir: string): boolean {
+  let dir = configDir
+  while (true) {
+    const manifestPath = join(dir, 'package.json')
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+          const value = manifest[section]
+          if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+            if (Object.hasOwn(value, '@eedsh/config')) return true
+          }
+        }
+      } catch {
+        // A malformed project manifest does not prove the dependency exists.
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return false
+    dir = parent
+  }
+}
+
+function authoringPackage(configPath: string): AuthoringPackage {
+  const configDir = dirname(configPath)
+  const require = createRequire(join(configDir, 'package.json'))
+  const localPackage = join(configDir, 'node_modules', '@eedsh', 'config', 'package.json')
+  let packagePath: string
+  let entryPath: string
+  if (!existsSync(localPackage) && !declaresAuthoring(configDir)) {
+    throw new ReplSessionError({
+      code: 'repl.authoring_package_missing',
+      message: `the config project at ${configDir} has not installed @eedsh/config (no node_modules/@eedsh/config and no declaring package.json)`,
+    })
+  }
+  try {
+    packagePath = require.resolve('@eedsh/config/package.json')
+    entryPath = require.resolve('@eedsh/config')
+  } catch (cause) {
+    throw new ReplSessionError({
+      code: 'repl.authoring_package_missing',
+      message: `the config project at ${configDir} has not installed @eedsh/config: ${messageOf(cause)}`,
+    })
+  }
+  let version = 'unknown'
+  try {
+    const manifest = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown }
+    if (typeof manifest.version === 'string') version = manifest.version
+  } catch {
+    // The package resolved; a missing version only weakens the banner.
+  }
+  return {
+    module: {},
+    packagePath,
+    entryPath,
+    version,
+  }
+}
+
+async function loadAuthoringModule(
+  packageInfo: AuthoringPackage,
+): Promise<Record<string, unknown>> {
+  try {
+    return (await import(pathToFileURL(packageInfo.entryPath).href)) as Record<string, unknown>
+  } catch (cause) {
+    throw new ReplSessionError({
+      code: 'repl.authoring_package_unloadable',
+      message: `cannot import the config project's @eedsh/config at ${packageInfo.entryPath}: ${messageOf(cause)}`,
+    })
+  }
+}
+
+async function createEvaluator(): Promise<{
+  server: REPLServer
+  evaluate: (code: string) => Promise<unknown>
+}> {
+  await import('tsx/patch-repl')
+  const repl = await import('node:repl')
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const server = repl.start({
+    input,
+    output,
+    terminal: false,
+    prompt: '',
+    useColors: false,
+    breakEvalOnSigint: false,
+  })
+  const evaluate = (code: string): Promise<unknown> =>
+    new Promise((resolvePromise, reject) => {
+      const target = server as unknown as {
+        eval: (
+          code: string,
+          context: unknown,
+          filename: string,
+          callback: (error: Error | null, result: unknown) => void,
+        ) => void
+        _handleError?: (error: unknown) => unknown
+      }
+      const originalHandleError = target._handleError
+      let settled = false
+      const finish = (error: unknown, result?: unknown): void => {
+        if (settled) return
+        settled = true
+        if (originalHandleError === undefined) delete target._handleError
+        else target._handleError = originalHandleError
+        if (error === null || error === undefined) resolvePromise(result)
+        else reject(error)
+      }
+      // Node's REPL reports runtime errors through _handleError instead of the
+      // eval callback. Capture that path so one-shot evaluation and the prompt
+      // both receive the failure and keep the session alive.
+      target._handleError = (error: unknown) => {
+        finish(error)
+        return 'handled'
+      }
+      const fn = target.eval
+      try {
+        fn.call(server, code, server.context, 'eedsh', (error, result) => {
+          finish(error, result)
+        })
+      } catch (error) {
+        finish(error)
+      }
+    })
+  return { server, evaluate }
+}
+
+function profileDirectory(name: string, env: Record<string, string | undefined>): string {
+  const home = env.DSH_HOME
+  return home === undefined || home.trim() === ''
+    ? resolveProfileDir(name)
+    : resolveProfileDir(name, home)
+}
+
+async function defaultCompose(
+  plan: ProfilePlan,
+  profileDir: string,
+  installAnchor: string,
+): Promise<CompositionResult> {
+  const layers: { label: string; patches: Record<string, unknown>[] }[] = []
+  let generatedPlaced = false
+  for (const item of plan.bundles) {
+    if (item.kind === 'generated') {
+      for (const layer of plan.layers) {
+        layers.push({
+          label: `generated:${layer.id}`,
+          patches: layer.patches as Record<string, unknown>[],
+        })
+      }
+      generatedPlaced = true
+      continue
+    }
+    const result = resolveBundleLayers(item.name, profileDir, installAnchor)
+    if (Result.isFailure(result)) {
+      return {
+        rowCount: 0,
+        warnings: [],
+        error: `cannot resolve bundle ${JSON.stringify(item.name)}: ${messageOf(result.failure)} `,
+      }
+    }
+    layers.push({ label: `bundle:${item.name}`, patches: result.success })
+  }
+  if (!generatedPlaced) {
+    for (const layer of plan.layers) {
+      layers.push({
+        label: `generated:${layer.id}`,
+        patches: layer.patches as Record<string, unknown>[],
+      })
+    }
+  }
+  const composition = composePreflightLayers(layers, {
+    generatedLayerLabels: layers
+      .filter((layer) => layer.label.startsWith('generated:'))
+      .map((layer) => layer.label),
+  })
+  const warnings = [...composition.warnings]
+  if (composition.duplicateInsertIds.length > 0) {
+    warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)
+  }
+  return { rowCount: composition.entries.length, warnings }
+}
+
+/** One interactive config session. Construct with {@link ReplSession.create}. */
+export class ReplSession {
+  readonly configPath: string
+  readonly configDir: string
+  readonly stdout: LineSink
+  readonly stderr: LineSink
+  readonly authoring: AuthoringPackage
+
+  private readonly options: ReplSessionOptions
+  private readonly env: Record<string, string | undefined>
+  private readonly previousEnv: {
+    anchor: string | undefined
+    configDir: string | undefined
+    override: string | undefined
+    dshHome: string | undefined
+  }
+  private readonly loadConfig: (
+    path: string,
+    evaluationNonce?: string,
+  ) => Effect.Effect<EedshConfig, ReplConfigFailure>
+  private readonly compose: ComposePlan
+  private readonly syncPlan: SyncPlan | undefined
+  private readonly installPreview: ((dir: string) => Promise<void>) | undefined
+  private readonly cacheRoot: string
+  private readonly now: () => number
+  private server!: REPLServer
+  private evaluateRaw!: (code: string) => Promise<unknown>
+  private config!: EedshConfig
+  private plan!: ProfilePlan
+  private profileName!: string
+  private syncEnabled: boolean
+  private preview: PreparedPreview | undefined
+  private previewSpecs: PreviewSpec[] = []
+  private retainedPreviewDir: string | undefined
+  private pausedFingerprint: string | undefined
+  private watcher: WatchSession | undefined
+  private reloadQueue: Promise<void> = Promise.resolve()
+  private evaluationNonce = 0
+
+  private constructor(options: ReplSessionOptions, authoring: AuthoringPackage) {
+    this.options = options
+    this.configPath = options.configPath
+    this.configDir = dirname(options.configPath)
+    this.stdout = options.stdout ?? ((line) => console.log(line))
+    this.stderr = options.stderr ?? ((line) => console.error(line))
+    this.env = options.env ?? process.env
+    this.authoring = authoring
+    this.loadConfig = options.loadConfig ?? defaultLoadConfig
+    this.syncPlan = options.syncPlan
+    this.installPreview = options.installPreview
+    this.cacheRoot = options.cacheRoot ?? previewCacheRoot(this.env)
+    this.now = options.now ?? Date.now
+    this.syncEnabled = options.sync === true
+    this.compose =
+      options.compose ??
+      ((plan, profileDir) => {
+        const installation = resolveDshInstallation()
+        if (Result.isFailure(installation)) {
+          return Promise.resolve({
+            rowCount: 0,
+            warnings: [],
+            error: messageOf(installation.failure),
+          })
+        }
+        return defaultCompose(plan, profileDir, installation.success.installAnchor)
+      })
+    this.previousEnv = {
+      anchor: process.env.EEDSH_DSH_ANCHOR,
+      configDir: process.env.EEDSH_CONFIG_DIR,
+      override: process.env.EEDSH_PROFILE_ROOT_OVERRIDE,
+      dshHome: process.env.DSH_HOME,
+    }
+  }
+
+  /**
+   * Resolve the config project's authoring package and start a session.
+   * @param options - config path, profile, streams, and seams.
+   * @returns the initialized session, or a structured failure.
+   */
+  static async create(options: ReplSessionOptions): Promise<ReplSession> {
+    let authoring = options.authoring
+    if (authoring === undefined) {
+      const info = authoringPackage(options.configPath)
+      authoring = { ...info, module: await loadAuthoringModule(info) }
+    }
+    const session = new ReplSession(options, authoring)
+    await session.initialize()
+    return session
+  }
+
+  /** The selected profile's validated plan. */
+  get currentPlan(): ProfilePlan {
+    return this.plan
+  }
+
+  /** The selected profile name. */
+  get profile(): string {
+    return this.profileName
+  }
+
+  /** Whether continuous sync is enabled. */
+  get continuousSync(): boolean {
+    return this.syncEnabled
+  }
+
+  /** Whether a session preview is active. */
+  get previewActive(): boolean {
+    return this.preview !== undefined
+  }
+
+  private async initialize(): Promise<void> {
+    const installation = resolveDshInstallation()
+    if (Result.isFailure(installation)) throw installation.failure
+    try {
+      this.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
+      this.env.EEDSH_CONFIG_DIR = this.configDir
+      process.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
+      process.env.EEDSH_CONFIG_DIR = this.configDir
+      const dshHome = this.env.DSH_HOME
+      if (dshHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = dshHome
+      const evaluator = await createEvaluator()
+      this.server = evaluator.server
+      this.evaluateRaw = evaluator.evaluate
+      if (this.options.oneShot !== true) {
+        this.stdout(
+          `eedsh repl (profile selection: ${this.options.profile === undefined ? 'config default' : JSON.stringify(this.options.profile)}; sync: ${this.syncEnabled ? 'on' : 'off'})`,
+        )
+        this.stdout(`config: ${this.configPath}`)
+        this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
+        if (this.options.cacheRoot === undefined) {
+          await cleanupPreviews(this.cacheRoot, { now: this.now }).catch(() => undefined)
+        }
+      }
+      await this.loadAndSelect()
+      if (this.options.watchConfig !== false) await this.startWatching()
+    } catch (error) {
+      await this.close()
+      throw error
+    }
+  }
+
+  private bind(): void {
+    const context = this.server.context as Record<string, unknown>
+    Object.assign(context, this.authoring.module, {
+      config: this.config,
+      profiles: this.config.profiles,
+      plan: this.plan,
+      profile: this.profileName,
+    })
+  }
+
+  private async loadCandidate(): Promise<{
+    config: EedshConfig
+    plan: ProfilePlan
+    name: string
+    traces: ResolutionTrace[]
+  }> {
+    clearTrace()
+    this.evaluationNonce += 1
+    const exit = await Effect.runPromiseExit(
+      this.loadConfig(this.configPath, String(this.evaluationNonce)),
+    )
+    const traces = takeTrace()
+    if (Exit.isFailure(exit)) {
+      if (Cause.hasInterruptsOnly(exit.cause)) throw new Error('interrupted')
+      throw Cause.squash(exit.cause)
+    }
+    const selected = selectedPlan(exit.value, this.options.profile)
+    return { config: exit.value, plan: selected.plan, name: selected.name, traces }
+  }
+
+  private async loadAndSelect(): Promise<void> {
+    const loaded = await this.loadCandidate()
+    this.config = loaded.config
+    this.plan = loaded.plan
+    this.profileName = loaded.name
+    this.bind()
+    this.printTraces(loaded.traces)
+    await this.printComposition()
+  }
+
+  private printTraces(traces: readonly ResolutionTrace[]): void {
+    if (this.options.oneShot === true) return
+    for (const trace of traces) {
+      const source =
+        trace.origin === 'preview'
+          ? 'the session preview'
+          : trace.origin === 'profile'
+            ? `profile ${JSON.stringify(trace.profile ?? '')}`
+            : trace.origin === 'packageDir'
+              ? 'an explicit package directory'
+              : 'the pinned installation'
+      this.stdout(
+        `resolved ${trace.bundle} from ${source} at ${trace.packageDir} (${trace.version})`,
+      )
+    }
+  }
+
+  private async printComposition(): Promise<void> {
+    if (this.options.oneShot === true) return
+    const profileDir = this.effectiveProfileDir()
+    let summary: CompositionResult
+    try {
+      summary = await this.compose(this.plan, profileDir)
+    } catch (error) {
+      this.stderr(`composition failed: ${messageOf(error)}`)
+      return
+    }
+    if (summary.error !== undefined) {
+      this.stderr(`composition unavailable: ${summary.error}`)
+      return
+    }
+    this.stdout(
+      `composition: ${summary.rowCount} row${summary.rowCount === 1 ? '' : 's'}, ${summary.warnings.length} warning${summary.warnings.length === 1 ? '' : 's'}`,
+    )
+    for (const warning of summary.warnings) this.stderr(`preflight: ${warning}`)
+  }
+
+  private effectiveProfileDir(): string {
+    return this.preview?.dir ?? profileDirectory(this.profileName, this.env)
+  }
+
+  private applyPreviewEnv(): void {
+    const override =
+      this.preview === undefined ? this.previousEnv.override : JSON.stringify(this.preview.override)
+    if (override === undefined) delete process.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    else process.env.EEDSH_PROFILE_ROOT_OVERRIDE = override
+  }
+
+  private clearPreviewEnv(): void {
+    if (this.previousEnv.override === undefined) delete process.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    else process.env.EEDSH_PROFILE_ROOT_OVERRIDE = this.previousEnv.override
+  }
+
+  private fingerprint(): string {
+    return canonicalJson(this.plan)
+  }
+
+  /** Re-evaluate the config and report the diff against the last good plan. */
+  async reload(): Promise<void> {
+    const previous = planMap(this.config)
+    const previousFingerprint = this.fingerprint()
+    let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
+    try {
+      loaded = await this.loadCandidate()
+    } catch (error) {
+      this.reportFailure('reload failed', error)
+      return
+    }
+    const next = planMap(loaded.config)
+    const diff = diffPlans(previous, next)
+    if (diff.length === 0) this.stdout('reload: no changes')
+    else for (const line of diff) this.stdout(line)
+    this.config = loaded.config
+    this.plan = loaded.plan
+    this.profileName = loaded.name
+    this.bind()
+    this.printTraces(loaded.traces)
+    await this.printComposition()
+    if (!this.syncEnabled) return
+    const nextFingerprint = this.fingerprint()
+    if (nextFingerprint === previousFingerprint) return
+    if (this.pausedFingerprint === nextFingerprint) {
+      this.stdout('sync: still paused after the previous failure; waiting for a changed save')
+      return
+    }
+    await this.syncNow()
+  }
+
+  /** Queue a reload so a burst of watcher callbacks cannot overlap evaluations. */
+  private enqueueReload(): Promise<void> {
+    this.reloadQueue = this.reloadQueue
+      .then(() => this.reload())
+      .catch((error: unknown) => {
+        this.reportFailure('reload failed', error)
+      })
+    return this.reloadQueue
+  }
+
+  private async startWatching(): Promise<void> {
+    try {
+      this.watcher =
+        this.options.watch === undefined
+          ? await watchConfigDirectory({
+              dir: this.configDir,
+              onChange: () => void this.enqueueReload(),
+            })
+          : await this.options.watch(this.configDir, () => void this.enqueueReload())
+    } catch (cause) {
+      throw new ReplSessionError({
+        code: 'repl.watch_failed',
+        message: `cannot watch ${this.configDir}: ${messageOf(cause)}`,
+      })
+    }
+  }
+
+  private reportFailure(prefix: string, error: unknown): void {
+    const lines = errorLines(error)
+    this.stderr(`${prefix}: ${lines[0] ?? messageOf(error)}`)
+    for (const line of lines.slice(1)) this.stderr(line)
+  }
+
+  /** Evaluate one TypeScript expression. */
+  async evaluate(code: string): Promise<unknown> {
+    clearTrace()
+    try {
+      const value = await this.evaluateRaw(code)
+      this.printTraces(takeTrace())
+      return value
+    } catch (error) {
+      this.printTraces(takeTrace())
+      throw error
+    }
+  }
+
+  /** Evaluate without throwing, for prompt loops that must stay alive. */
+  async evaluateOutcome(
+    code: string,
+  ): Promise<
+    { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: unknown }
+  > {
+    try {
+      return { ok: true, value: await this.evaluate(code) }
+    } catch (error) {
+      return { ok: false, error }
+    }
+  }
+
+  /** Print an evaluated value through the session sink. */
+  printValue(value: unknown): void {
+    this.stdout(inspect(value, { colors: false, depth: 6, breakLength: 100 }))
+  }
+
+  /** Run one dot command. Returns true when the session should exit. */
+  async command(line: string): Promise<boolean> {
+    const trimmed = line.trim()
+    const [word = '', ...args] = trimmed.split(/\s+/)
+    switch (word) {
+      case '.help':
+        for (const help of HELP_LINES) this.stdout(help)
+        return false
+      case '.reload':
+        await this.enqueueReload()
+        return false
+      case '.exit':
+        return true
+      case '.clear':
+        this.stdout('\u001b[2J\u001b[H')
+        return false
+      case '.resolve':
+        if (args.length === 0) {
+          this.stderr('usage: .resolve <name>@<exact-version>')
+          return false
+        }
+        await this.resolve(args)
+        return false
+      case '.sync': {
+        if (args.length === 0) {
+          await this.syncNow()
+          return false
+        }
+        if (args.length !== 1 || (args[0] !== 'on' && args[0] !== 'off')) {
+          this.stderr('usage: .sync [on|off]')
+          return false
+        }
+        this.syncEnabled = args[0] === 'on'
+        this.pausedFingerprint = undefined
+        this.stdout(`sync: ${this.syncEnabled ? 'on' : 'off'}`)
+        return false
+      }
+      default:
+        if (word.startsWith('.')) {
+          this.stderr(`invalid command: ${word}; run .help to list commands`)
+          return false
+        }
+        return false
+    }
+  }
+
+  private parseSpecs(raw: readonly string[]): PreviewSpec[] {
+    const specs: PreviewSpec[] = []
+    for (const value of raw) {
+      const at = value.lastIndexOf('@')
+      if (at <= 0) {
+        throw new PreviewError({
+          code: 'preview.invalid_spec',
+          message: `${JSON.stringify(value)} is not <name>@<exact-version>`,
+        })
+      }
+      const name = value.slice(0, at)
+      const version = value.slice(at + 1)
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+        throw new PreviewError({
+          code: 'preview.inexact_version',
+          message: `${JSON.stringify(value)} must name an exact version, not ${JSON.stringify(version)}`,
+        })
+      }
+      specs.push({ name, version })
+    }
+    return specs
+  }
+
+  /** Prepare a preview and re-evaluate the config against it. */
+  async resolve(rawSpecs: readonly string[]): Promise<void> {
+    if (this.config === undefined) return
+    let specs: PreviewSpec[]
+    try {
+      specs = this.parseSpecs(rawSpecs)
+    } catch (error) {
+      this.reportFailure('preview not ready', error)
+      return
+    }
+    const profileDir = profileDirectory(this.profileName, this.env)
+    const merged = new Map(this.previewSpecs.map((spec) => [spec.name, spec]))
+    for (const spec of specs) merged.set(spec.name, spec)
+    specs = [...merged.values()]
+    let prepared: PreparedPreview
+    try {
+      prepared = await preparePreview({
+        profileName: this.profileName,
+        profileDir,
+        dshPin: this.config.dsh,
+        specs,
+        env: this.env,
+        ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),
+        ...(this.installPreview === undefined ? {} : { install: this.installPreview }),
+        now: this.now,
+      })
+    } catch (error) {
+      this.reportFailure('preview not ready', error)
+      return
+    }
+    const previous = {
+      preview: this.preview,
+      specs: this.previewSpecs,
+      config: this.config,
+      plan: this.plan,
+      profileName: this.profileName,
+    }
+    this.preview = prepared
+    this.previewSpecs = [...specs]
+    this.applyPreviewEnv()
+    let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
+    try {
+      loaded = await this.loadCandidate()
+      this.config = loaded.config
+      this.plan = loaded.plan
+      this.profileName = loaded.name
+      this.bind()
+    } catch (error) {
+      this.preview = previous.preview
+      this.previewSpecs = previous.specs
+      this.config = previous.config
+      this.plan = previous.plan
+      this.profileName = previous.profileName
+      this.applyPreviewEnv()
+      this.reportFailure('preview not ready', error)
+      return
+    }
+    this.stdout(
+      `preview: ${specs.map((spec) => `${spec.name}@${spec.version}`).join(', ')} at ${prepared.dir}${prepared.reused ? ' (reused)' : ''}`,
+    )
+    this.stdout(`profile-root override: ${JSON.stringify({ [this.profileName]: prepared.dir })}`)
+    this.printTraces(loaded.traces)
+    await this.printComposition()
+  }
+
+  /** Publish the current evaluation, or report why publication did not happen. */
+  async syncNow(): Promise<SyncOutcome | undefined> {
+    if (this.syncPlan === undefined) {
+      this.stderr('sync: this session has no publication runner')
+      return undefined
+    }
+    const plan = this.plan
+    try {
+      const outcome = await this.syncPlan(plan)
+      for (const warning of outcome.warnings ?? []) this.stderr(`warning: ${warning}`)
+      for (const notice of outcome.notices ?? []) this.stderr(notice)
+      this.stdout(
+        outcome.changed
+          ? `published profile ${JSON.stringify(plan.profile.name)} (generation ${outcome.generationId.slice(0, 12)})`
+          : `profile ${JSON.stringify(plan.profile.name)} is up to date (generation ${outcome.generationId.slice(0, 12)})`,
+      )
+      if (outcome.changed && outcome.restartRequired === true) {
+        this.stdout('restart required: the published bundle or package set changed')
+      }
+      this.pausedFingerprint = undefined
+      if (this.preview !== undefined && outcome.changed) await this.verifyPreview(plan)
+      return outcome
+    } catch (error) {
+      this.pausedFingerprint = this.fingerprint()
+      this.reportFailure('sync failed', error)
+      if (this.preview !== undefined)
+        this.stderr('preview: still active; fix the failure and run .sync again')
+      return undefined
+    }
+  }
+
+  private async verifyPreview(published: ProfilePlan): Promise<void> {
+    const preview = this.preview
+    if (preview === undefined) return
+    this.clearPreviewEnv()
+    try {
+      const loaded = await this.loadCandidate()
+      if (canonicalJson(loaded.plan) === canonicalJson(published)) {
+        await removePreview(preview.dir)
+        this.preview = undefined
+        this.previewSpecs = []
+        this.retainedPreviewDir = undefined
+        this.config = loaded.config
+        this.plan = loaded.plan
+        this.profileName = loaded.name
+        this.bind()
+        this.stdout(
+          'bootstrap complete: the real install reproduces the published plan; preview deleted',
+        )
+        return
+      }
+      this.preview = undefined
+      this.previewSpecs = []
+      this.retainedPreviewDir = preview.dir
+      this.config = loaded.config
+      this.plan = loaded.plan
+      this.profileName = loaded.name
+      this.bind()
+      this.stdout('preview divergence: the real install does not reproduce the published plan')
+      this.stdout(
+        `kept preview at ${preview.dir}; the real evaluation is active for the next .sync`,
+      )
+      this.printTraces(loaded.traces)
+    } catch (error) {
+      this.applyPreviewEnv()
+      this.preview = preview
+      this.reportFailure('preview verification failed; preview kept', error)
+    }
+  }
+
+  /** Stop watching, close the evaluator, and restore the process environment. */
+  async close(): Promise<void> {
+    await this.watcher?.close().catch(() => undefined)
+    this.watcher = undefined
+    if (this.server !== undefined) this.server.close()
+    this.clearPreviewEnv()
+    if (this.previousEnv.anchor === undefined) delete process.env.EEDSH_DSH_ANCHOR
+    else process.env.EEDSH_DSH_ANCHOR = this.previousEnv.anchor
+    if (this.previousEnv.configDir === undefined) delete process.env.EEDSH_CONFIG_DIR
+    else process.env.EEDSH_CONFIG_DIR = this.previousEnv.configDir
+    if (this.previousEnv.dshHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = this.previousEnv.dshHome
+    if (this.retainedPreviewDir !== undefined) {
+      this.stdout(`preview retained at ${this.retainedPreviewDir}`)
+    }
+  }
+}
+
+/** Format an error for the interactive prompt without ending the session. */
+export function formatSessionError(error: unknown): string[] {
+  return errorLines(error)
+}
+
+/** Split an interactive input line into an optional dot command. */
+export function isDotCommand(line: string): boolean {
+  return line.trim().startsWith('.')
+}

@@ -1,15 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import {
-  presets,
-  ResolutionError,
-  resolveBundle,
-  row,
-  rows,
-  takeResolutionTrace,
-} from '../src'
 import { loadConfig } from '../../cli/src/config'
+import { presets, ResolutionError, resolveBundle, row, rows, takeResolutionTrace } from '../src'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/config/.tmp')

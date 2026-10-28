@@ -75,6 +75,8 @@ export interface MaterializeResult {
   /** Structured reconciliation diagnostics. */
   notices: Diagnostic[]
   createdProfile: boolean
+  /** Whether the published bundle or package set changed, requiring a restart. */
+  restartRequired: boolean
 }
 
 const profileManifestSchema = Schema.Record(Schema.String, Schema.Unknown)
@@ -278,8 +280,19 @@ export function materialize(
           warnings: [],
           notices: [...baseline.notices, ...reconciled.notices],
           createdProfile: false,
+          restartRequired: false,
         }
       }
+
+      const previousBundles = Option.isNone(baseline.previous)
+        ? []
+        : [...baseline.previous.value.bundles].sort()
+      const previousPackages = Option.isNone(baseline.previous)
+        ? {}
+        : baseline.previous.value.packages
+      const restartRequired =
+        canonicalJson([...reconciled.managedBundles].sort()) !== canonicalJson(previousBundles) ||
+        canonicalJson(reconciled.managedPackages) !== canonicalJson(previousPackages)
 
       const published = yield* publishProfile({
         plan: options.plan,
@@ -298,6 +311,7 @@ export function materialize(
         warnings: published.warnings,
         notices: [...baseline.notices, ...published.notices],
         createdProfile: Option.isNone(existingManifest),
+        restartRequired,
       }
     }),
   )

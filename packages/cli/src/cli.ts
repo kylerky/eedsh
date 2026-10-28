@@ -56,6 +56,8 @@ import { readVersion } from './internal/schema-readers'
 import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
+import { runReplLoop } from './repl/prompt'
+import { ReplSession } from './repl/session'
 import {
   AmbiguousProfile,
   describeProfileSelection,
@@ -88,7 +90,10 @@ export interface CliRunOptions {
   stdout?: (line: string) => void
   stderr?: (line: string) => void
   /** Replace config evaluation. */
-  loadConfig?: (configPath: string) => Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError>
+  loadConfig?: (
+    configPath: string,
+    evaluationNonce?: string,
+  ) => Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace the file system `doctor` inspects. */
@@ -97,6 +102,10 @@ export interface CliRunOptions {
   spawn?: SpawnLike
   /** Replace the config-directory watcher. */
   watch?: WatchFactory
+  /** Input stream for the interactive REPL (default: process.stdin). */
+  replInput?: NodeJS.ReadableStream
+  /** Output stream for REPL prompts and values (default: process.stdout). */
+  replOutput?: NodeJS.WritableStream
   /** Stop watch mode when aborted. */
   signal?: AbortSignal
   /** Replace the narrow services `init` needs. */
@@ -229,6 +238,12 @@ function describeError(error: unknown): string[] {
       case 'DshResolveFailure':
         return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
       case 'InitError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'ReplSessionError':
+        return Array.isArray(tagged.lines) ? tagged.lines.map(String) : [String(tagged.message)]
+      case 'ResolutionError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'PreviewError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       default:
         break
@@ -769,6 +784,98 @@ function runDoctorCommand(
   })
 }
 
+interface ReplCommandInput {
+  configPath: Option.Option<string>
+  profile: Option.Option<string>
+  sync: boolean
+  eval: Option.Option<string>
+}
+
+/** Open the config REPL, or evaluate one expression with --eval. */
+function runReplCommand(
+  input: ReplCommandInput,
+  runtime: CommandRuntime,
+): Effect.Effect<number, unknown> {
+  return Effect.gen(function* () {
+    runtime.setFailureContext(undefined)
+    const configPath = resolveConfigPath(input.configPath, runtime)
+    if (Option.isNone(configPath)) return EXIT_FAILURE
+    const profile = Option.getOrUndefined(input.profile)
+    const syncPlan = async (plan: ProfilePlan) => {
+      const exit = await Effect.runPromiseExit(
+        Effect.suspend(() =>
+          syncProgram(runtime.env, plan, false, false, false).pipe(
+            Effect.provide(serviceLayerFor(runtime.options)),
+          ),
+        ),
+      )
+      if (Exit.isFailure(exit)) {
+        return Promise.reject(
+          Cause.hasInterruptsOnly(exit.cause) ? new Error('interrupted') : Cause.squash(exit.cause),
+        )
+      }
+      return {
+        changed: exit.value.changed,
+        generationId: exit.value.generationId,
+        restartRequired: exit.value.restartRequired,
+        warnings: exit.value.warnings,
+        notices: exit.value.notices.map((notice) => `${notice.severity}: ${notice.message}`),
+      }
+    }
+    const session = yield* Effect.promise(() =>
+      ReplSession.create({
+        configPath: configPath.value,
+        ...(profile === undefined ? {} : { profile }),
+        sync: input.sync,
+        env: runtime.env,
+        stdout: runtime.stdout,
+        stderr: runtime.stderr,
+        ...(runtime.options.loadConfig === undefined
+          ? {}
+          : { loadConfig: runtime.options.loadConfig }),
+        ...(runtime.options.watch === undefined ? {} : { watch: runtime.options.watch }),
+        syncPlan,
+        watchConfig: Option.isNone(input.eval),
+        oneShot: Option.isSome(input.eval),
+      }),
+    )
+
+    const evalExpression = Option.getOrUndefined(input.eval)
+    if (evalExpression !== undefined) {
+      const evaluated = yield* Effect.exit(
+        Effect.tryPromise({
+          try: () => session.evaluate(evalExpression),
+          catch: (cause) => cause,
+        }),
+      )
+      yield* Effect.promise(() => session.close())
+      if (Exit.isFailure(evaluated)) {
+        if (Cause.hasInterruptsOnly(evaluated.cause)) return EXIT_FAILURE
+        report(runtime.stderr, Cause.squash(evaluated.cause))
+        return EXIT_FAILURE
+      }
+      session.printValue(evaluated.value)
+      return EXIT_OK
+    }
+
+    const inputStream = runtime.options.replInput ?? process.stdin
+    const outputStream = runtime.options.replOutput ?? process.stdout
+    const loop = yield* Effect.exit(
+      Effect.tryPromise({
+        try: () => runReplLoop(session, { input: inputStream, output: outputStream }),
+        catch: (cause) => cause,
+      }),
+    )
+    yield* Effect.promise(() => session.close())
+    if (Exit.isFailure(loop)) {
+      if (Cause.hasInterruptsOnly(loop.cause)) return EXIT_FAILURE
+      report(runtime.stderr, Cause.squash(loop.cause))
+      return EXIT_FAILURE
+    }
+    return EXIT_OK
+  })
+}
+
 interface InitCommandInput {
   noInstall: boolean
 }
@@ -893,6 +1000,14 @@ export async function runEedsh(
     Flag.withDescription('exit 1 when there is at least one warning'),
     Flag.withDefault(false),
   )
+  const replSyncFlag = Flag.Boolean('sync').pipe(
+    Flag.withDescription('sync the selected profile after each successful save'),
+    Flag.withDefault(false),
+  )
+  const evalFlag = Flag.String('eval').pipe(
+    Flag.withDescription('evaluate one expression, print its value, and exit'),
+    Flag.optional,
+  )
 
   const initCommandLine = Command.make('init', { noInstall: noInstallFlag }, (parsed) =>
     Effect.gen(function* () {
@@ -975,6 +1090,32 @@ export async function runEedsh(
       }),
   ).pipe(Command.withDescription('inspect a published profile without changing it'))
 
+  const replCommandLine = Command.make(
+    'repl',
+    {
+      config: configFlag,
+      profile: profileFlag,
+      sync: replSyncFlag,
+      eval: evalFlag,
+    },
+    (parsed) =>
+      Effect.gen(function* () {
+        exitCode = yield* runReplCommand(
+          {
+            configPath: parsed.config,
+            profile: parsed.profile,
+            sync: parsed.sync,
+            eval: parsed.eval,
+          },
+          runtime,
+        )
+      }),
+  ).pipe(
+    Command.withDescription(
+      'evaluate the config interactively, watch it for changes, and publish on request',
+    ),
+  )
+
   const rootCommand = Command.make('eedsh').pipe(
     Command.withDescription('typed configuration for DeepSeek Harness profiles'),
     Command.withSubcommands([
@@ -983,6 +1124,7 @@ export async function runEedsh(
       runCommandLine,
       checkCommandLine,
       doctorCommandLine,
+      replCommandLine,
     ]),
   )
 

@@ -1,0 +1,455 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
+import { bundle, defineConfig, defineProfile, generated, insert, layer } from '@eedsh/config'
+import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
+import { Effect } from 'effect'
+import * as Result from 'effect/Result'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { ConfigError } from '../../src/config'
+import { runReplLoop } from '../../src/repl/prompt'
+import { ReplSession, ReplSessionError, type SyncOutcome } from '../../src/repl/session'
+import { waitFor } from '../support/async'
+
+const root = process.cwd()
+const tempRoot = join(root, 'packages/cli/.tmp')
+let work = ''
+const sessions: ReplSession[] = []
+
+function configWith(rows: readonly string[], defaultProfile?: 'work'): EedshConfig {
+  const result = defineConfig({
+    dsh: '0.2.1-rc.2',
+    ...(defaultProfile === undefined ? {} : { defaultProfile }),
+    profiles: {
+      work: defineProfile({
+        bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+        layers: [layer('work', [insert(rows.map((id) => ({ id, name: `@scope/${id}` })))])],
+      }),
+    },
+  })
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
+
+function configWithProfiles(names: readonly string[], defaultProfile?: string): EedshConfig {
+  const profiles: Record<string, ReturnType<typeof defineProfile>> = {}
+  for (const name of names) profiles[name] = defineProfile({ bundles: [generated()] })
+  const result = defineConfig({
+    dsh: '0.2.1-rc.2',
+    ...(defaultProfile === undefined ? {} : { defaultProfile }),
+    profiles,
+  })
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
+
+function rowsOf(plan: ProfilePlan): number {
+  let count = 0
+  for (const item of plan.layers) {
+    for (const patch of item.patches) {
+      if (Array.isArray(patch.insert)) count += patch.insert.length
+    }
+  }
+  return count
+}
+
+const authoring = {
+  module: { marker: 42, presets: () => [] },
+  packagePath: '/fake/@eedsh/config/package.json',
+  entryPath: '/fake/@eedsh/config/index.js',
+  version: '0.0.0',
+}
+
+interface Harness {
+  session: ReplSession
+  out: string[]
+  err: string[]
+  setConfig: (config: EedshConfig) => void
+  setFailure: (error: ConfigError) => void
+  syncs: ProfilePlan[]
+}
+
+async function session(
+  options: {
+    config?: EedshConfig
+    profile?: string
+    sync?: boolean
+    syncPlan?: (plan: ProfilePlan) => Promise<SyncOutcome>
+    watch?: (dir: string, onChange: () => void) => Promise<{ close(): Promise<void> }>
+    installPreview?: (dir: string) => Promise<void>
+    watchConfig?: boolean
+  } = {},
+): Promise<Harness> {
+  let current = options.config ?? configWith(['a'])
+  let failure: ConfigError | undefined
+  const out: string[] = []
+  const err: string[] = []
+  const syncs: ProfilePlan[] = []
+  const created = await ReplSession.create({
+    configPath: join(work, 'config.ts'),
+    ...(options.profile === undefined ? {} : { profile: options.profile }),
+    sync: options.sync ?? false,
+    env: { DSH_HOME: join(work, 'home') },
+    stdout: (line) => out.push(line),
+    stderr: (line) => err.push(line),
+    loadConfig: () => (failure === undefined ? Effect.succeed(current) : Effect.fail(failure)),
+    compose: async (plan) => ({ rowCount: rowsOf(plan), warnings: [] }),
+    syncPlan:
+      options.syncPlan ??
+      (async (plan) => {
+        syncs.push(plan)
+        return { changed: true, generationId: 'abcdef0123456789' }
+      }),
+    ...(options.watch === undefined ? {} : { watch: options.watch }),
+    ...(options.installPreview === undefined ? {} : { installPreview: options.installPreview }),
+    cacheRoot: join(work, 'cache'),
+    authoring,
+    watchConfig: options.watchConfig ?? false,
+  })
+  sessions.push(created)
+  return {
+    session: created,
+    out,
+    err,
+    setConfig: (config) => {
+      current = config
+      failure = undefined
+    },
+    setFailure: (error) => {
+      failure = error
+    },
+    syncs,
+  }
+}
+
+beforeEach(async () => {
+  await mkdir(tempRoot, { recursive: true })
+  work = await mkdtemp(join(tempRoot, 'session-'))
+  await mkdir(join(work, 'home', 'profiles', 'work'), { recursive: true })
+  await writeFile(
+    join(work, 'home', 'profiles', 'work', 'package.json'),
+    JSON.stringify({ name: 'dsh-profile-work', private: true }),
+  )
+})
+
+afterEach(async () => {
+  await Promise.all(sessions.splice(0).map((item) => item.close()))
+  await rm(work, { recursive: true, force: true })
+})
+
+describe('session evaluation', () => {
+  it('evaluates annotated and awaited expressions and keeps bindings', async () => {
+    const h = await session()
+    expect(await h.session.evaluate('const x: number = 2; x')).toBe(2)
+    expect(await h.session.evaluate('x + 5')).toBe(7)
+    expect(await h.session.evaluate('await Promise.resolve(9)')).toBe(9)
+    expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
+    expect(await h.session.evaluate('marker')).toBe(42)
+  })
+
+  it('selects the default profile and reports ambiguity or an unknown name', async () => {
+    const defaulted = await session({
+      config: configWithProfiles(['work', 'home'], 'home'),
+    })
+    expect(defaulted.session.profile).toBe('home')
+
+    await expect(
+      ReplSession.create({
+        configPath: join(work, 'config.ts'),
+        env: { DSH_HOME: join(work, 'home') },
+        stdout: () => {},
+        stderr: () => {},
+        loadConfig: () => Effect.succeed(configWithProfiles(['work', 'home'])),
+        authoring,
+        watchConfig: false,
+      }),
+    ).rejects.toMatchObject({ code: 'repl.profile_selection' })
+
+    await expect(
+      ReplSession.create({
+        configPath: join(work, 'config.ts'),
+        profile: 'missing',
+        env: { DSH_HOME: join(work, 'home') },
+        stdout: () => {},
+        stderr: () => {},
+        loadConfig: () => Effect.succeed(configWithProfiles(['work'])),
+        authoring,
+        watchConfig: false,
+      }),
+    ).rejects.toBeInstanceOf(ReplSessionError)
+  })
+
+  it('loads the authoring package installed in the config project', async () => {
+    const configDir = await mkdtemp(join(tempRoot, 'authoring-'))
+    const packageDir = join(configDir, 'node_modules', '@eedsh', 'config')
+    await mkdir(packageDir, { recursive: true })
+    await writeFile(
+      join(packageDir, 'package.json'),
+      JSON.stringify({
+        name: '@eedsh/config',
+        version: '9.9.9',
+        type: 'module',
+        exports: { '.': './index.js', './package.json': './package.json' },
+      }),
+    )
+    await writeFile(join(packageDir, 'index.js'), 'export const marker = 99\n')
+    const created = await ReplSession.create({
+      configPath: join(configDir, 'config.ts'),
+      env: { DSH_HOME: join(work, 'home') },
+      stdout: () => {},
+      stderr: () => {},
+      loadConfig: () => Effect.succeed(configWith(['a'])),
+      compose: async () => ({ rowCount: 1, warnings: [] }),
+      watchConfig: false,
+    })
+    sessions.push(created)
+    expect(created.authoring.version).toBe('9.9.9')
+    expect(created.authoring.entryPath).toBe(join(packageDir, 'index.js'))
+    expect(await created.evaluate('marker')).toBe(99)
+    await rm(configDir, { recursive: true, force: true })
+  })
+
+  it('fails structurally when the config project has no authoring package', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'eedsh-authoring-missing-'))
+    try {
+      await expect(
+        ReplSession.create({
+          configPath: join(configDir, 'config.ts'),
+          env: { DSH_HOME: join(work, 'home') },
+          stdout: () => {},
+          stderr: () => {},
+          loadConfig: () => Effect.succeed(configWith(['a'])),
+          watchConfig: false,
+        }),
+      ).rejects.toMatchObject({ code: 'repl.authoring_package_missing' })
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('reload and diff', () => {
+  it('reports an added row and the new composition size', async () => {
+    const h = await session()
+    h.setConfig(configWith(['a', 'b']))
+    await h.session.reload()
+    expect(h.out.join('\n')).toContain('+ row "b"')
+    expect(h.out.join('\n')).toContain('composition: 2 rows, 0 warnings')
+  })
+
+  it('keeps the previous plan after an invalid save and retries with .reload', async () => {
+    const h = await session()
+    const before = h.session.currentPlan
+    h.setFailure(new ConfigError('config.import_failed', 'bad save'))
+    await h.session.reload()
+    expect(h.err.join('\n')).toContain('reload failed')
+    expect(h.session.currentPlan).toBe(before)
+    h.setConfig(configWith(['a', 'b']))
+    await h.session.command('.reload')
+    expect(h.session.currentPlan).not.toBe(before)
+    expect(h.out.join('\n')).toContain('+ row "b"')
+  })
+})
+
+describe('session sync', () => {
+  it('reports changed and unchanged publications and restart requirements', async () => {
+    let changed = true
+    const restart = true
+    const h = await session({
+      syncPlan: async () => ({
+        changed,
+        generationId: 'abcdef0123456789',
+        restartRequired: restart,
+      }),
+    })
+    await h.session.command('.sync')
+    expect(h.out.join('\n')).toContain('published profile "work"')
+    expect(h.out.join('\n')).toContain('restart required')
+    changed = false
+    await h.session.command('.sync')
+    expect(h.out.join('\n')).toContain('is up to date')
+    expect(h.out.join('\n').split('restart required')).toHaveLength(2)
+  })
+
+  it('keeps the prompt usable after a sync failure', async () => {
+    const h = await session({
+      syncPlan: async () => {
+        throw { _tag: 'SyncLocked', message: 'another sync holds the lock' }
+      },
+    })
+    await h.session.command('.sync')
+    expect(h.err.join('\n')).toContain('sync failed')
+    expect(await h.session.evaluate('1 + 1')).toBe(2)
+  })
+
+  it('runs the same reload and sync path from the watcher', async () => {
+    let onChange: (() => void) | undefined
+    let calls = 0
+    const h = await session({
+      sync: true,
+      watchConfig: true,
+      watch: async (_dir, callback) => {
+        onChange = callback
+        return { close: async () => {} }
+      },
+      syncPlan: async () => {
+        calls += 1
+        return { changed: true, generationId: 'abcdef0123456789' }
+      },
+    })
+    h.setConfig(configWith(['a', 'b']))
+    onChange?.()
+    expect(await waitFor(() => calls === 1)).toBe(true)
+    expect(h.out.join('\n')).toContain('+ row "b"')
+  })
+
+  it('syncs changed saves in continuous mode, skips invalid saves, and pauses failures', async () => {
+    let fail = false
+    let calls = 0
+    const h = await session({
+      sync: true,
+      syncPlan: async () => {
+        calls += 1
+        if (fail) throw new Error('install broke')
+        return { changed: true, generationId: 'abcdef0123456789' }
+      },
+    })
+    h.setConfig(configWith(['a', 'b']))
+    await h.session.reload()
+    expect(calls).toBe(1)
+    expect(h.out.join('\n')).toContain('sync: on')
+
+    h.setFailure(new ConfigError('config.import_failed', 'bad save'))
+    await h.session.reload()
+    expect(calls).toBe(1)
+
+    fail = true
+    h.setConfig(configWith(['a', 'b', 'c']))
+    await h.session.reload()
+    expect(calls).toBe(2)
+    await h.session.reload()
+    expect(calls).toBe(2)
+
+    fail = false
+    h.setConfig(configWith(['a', 'b', 'c', 'd']))
+    await h.session.reload()
+    expect(calls).toBe(3)
+
+    await h.session.command('.sync off')
+    h.setConfig(configWith(['a', 'b', 'c', 'd', 'e']))
+    await h.session.reload()
+    expect(calls).toBe(3)
+  })
+})
+
+describe('preview integration', () => {
+  async function installPreview(dir: string): Promise<void> {
+    await mkdir(join(dir, 'node_modules', '@acme', 'x'), { recursive: true })
+    await writeFile(
+      join(dir, 'node_modules', '@acme', 'x', 'package.json'),
+      JSON.stringify({ name: '@acme/x', version: '1.2.3' }),
+    )
+  }
+
+  function previewDir(out: readonly string[]): string | undefined {
+    const line = out.find((entry) => entry.startsWith('preview:'))
+    return line?.match(/ at (.*?)(?: \(reused\))?$/)?.[1]
+  }
+
+  it('prints the override, evaluates, and never touches the profile', async () => {
+    const h = await session({ installPreview })
+    const profileManifest = join(work, 'home', 'profiles', 'work', 'package.json')
+    const before = await readFile(profileManifest, 'utf8')
+    await h.session.resolve(['@acme/x@1.2.3'])
+    expect(h.session.previewActive).toBe(true)
+    expect(h.out.join('\n')).toContain('profile-root override:')
+    expect(h.out.join('\n')).toContain('preview: @acme/x@1.2.3')
+    expect(previewDir(h.out)).toBeDefined()
+    expect(await readFile(profileManifest, 'utf8')).toBe(before)
+  })
+
+  it('deletes the preview when the real install reproduces the plan', async () => {
+    const h = await session({
+      installPreview,
+      syncPlan: async () => ({ changed: true, generationId: 'abcdef0123456789' }),
+    })
+    await h.session.resolve(['@acme/x@1.2.3'])
+    const dir = previewDir(h.out)
+    expect(dir).toBeDefined()
+    await h.session.command('.sync')
+    expect(h.out.join('\n')).toContain('bootstrap complete')
+    expect(h.session.previewActive).toBe(false)
+    await expect(readFile(join(dir as string, 'package.json'), 'utf8')).rejects.toThrow()
+  })
+
+  it('keeps the preview when the real install diverges', async () => {
+    let h!: Harness
+    h = await session({
+      installPreview,
+      syncPlan: async () => {
+        h.setConfig(configWith(['different']))
+        return { changed: true, generationId: 'abcdef0123456789' }
+      },
+    })
+    await h.session.resolve(['@acme/x@1.2.3'])
+    const dir = previewDir(h.out)
+    expect(dir).toBeDefined()
+    await h.session.command('.sync')
+    expect(h.out.join('\n')).toContain('preview divergence')
+    expect(h.session.previewActive).toBe(false)
+    expect(h.session.currentPlan.layers[0]?.patches[0]).toMatchObject({
+      insert: [{ id: 'different' }],
+    })
+    expect(await readFile(join(dir as string, 'package.json'), 'utf8')).toContain('@acme/x')
+  })
+
+  it('keeps the previous evaluation when the preview install fails', async () => {
+    const h = await session({
+      installPreview: async () => {
+        throw new Error('registry unavailable')
+      },
+    })
+    const before = h.session.currentPlan
+    await h.session.resolve(['@acme/x@1.2.3'])
+    expect(h.err.join('\n')).toContain('preview not ready')
+    expect(h.session.previewActive).toBe(false)
+    expect(h.session.currentPlan).toBe(before)
+  })
+})
+
+describe('shell commands', () => {
+  it('lists commands, rejects unknown dot words, and exits', async () => {
+    const h = await session()
+    await h.session.command('.help')
+    expect(h.out.join('\n')).toContain('.resolve')
+    expect(h.out.join('\n')).toContain('.exit')
+    await h.session.command('.bogus')
+    expect(h.err.join('\n')).toContain('invalid command')
+    expect(await h.session.command('.exit')).toBe(true)
+  })
+
+  it('runs a non-TTY loop without prompts', async () => {
+    const out: string[] = []
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const chunks: string[] = []
+    output.on('data', (chunk: Buffer) => chunks.push(chunk.toString()))
+    const configured = await ReplSession.create({
+      configPath: join(work, 'config.ts'),
+      env: { DSH_HOME: join(work, 'home') },
+      stdout: (line) => out.push(line),
+      stderr: () => {},
+      loadConfig: () => Effect.succeed(configWith(['a'])),
+      compose: async () => ({ rowCount: 1, warnings: [] }),
+      authoring,
+      watchConfig: false,
+    })
+    sessions.push(configured)
+    const running = runReplLoop(configured, { input, output })
+    input.write('.help\n.exit\n')
+    await running
+    expect(out.join('\n')).toContain('.reload')
+    expect(chunks.join('')).not.toContain('eedsh>')
+  })
+})
