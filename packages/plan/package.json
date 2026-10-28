@@ -2,7 +2,7 @@
   "name": "@eedsh/plan",
   "version": "0.0.0",
   "private": true,
-  "description": "The eedsh profile plan contract: schema, validation, config envelopes, and canonical JSON",
+  "description": "The shared eedsh profile plan contract: schema, validation, config envelopes, and canonical JSON",
   "type": "module",
   "exports": {
     ".": {

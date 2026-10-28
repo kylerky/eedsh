@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const packages = ['config', 'cli', 'runtime'] as const
+const packages = ['plan', 'config', 'cli', 'runtime'] as const
 
 type PackageName = (typeof packages)[number]
 
@@ -81,6 +81,25 @@ function exceptionViolations(): { file: string; sites: string[] }[] {
 
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
+/** Packages that must share one exact Effect version. */
+const EFFECT_PACKAGES = ['plan', 'config', 'cli'] as const
+
+/** The exact Effect version every consumer pins. */
+const EFFECT_VERSION = '4.0.6'
+
+/** The only Effect modules the plan and authoring packages may import. */
+const ALLOWED_EFFECT_MODULES = ['effect/Schema', 'effect/Result']
+
+/** Effect-free DSH helpers the authoring package may import. */
+const ALLOWED_DSH_HELPERS = ['@deepseek-ai/dsh-app-boot']
+
+/** Source imports that match a predicate, rendered as `path: specifier`. */
+function offendingImports(name: PackageName, predicate: (specifier: string) => boolean): string[] {
+  return sourceImports(name)
+    .filter(({ specifier }) => predicate(specifier))
+    .map(({ file, specifier }) => `${relative(root, file).replaceAll('\\', '/')}: ${specifier}`)
+}
+
 function declaresEffect(name: PackageName): boolean {
   return dependencyNames(name).includes('effect')
 }
@@ -109,6 +128,42 @@ describe('package boundaries', () => {
     expect(importsEffect('runtime'), '@eedsh/runtime must not import effect').toBe(false)
   })
 
+  it('pins one exact Effect version across plan, config, and cli', () => {
+    for (const name of EFFECT_PACKAGES) {
+      const declared = [
+        manifest(name).dependencies?.effect,
+        manifest(name).devDependencies?.effect,
+        manifest(name).peerDependencies?.effect,
+      ].filter((version): version is string => typeof version === 'string')
+      expect(declared.length, `@eedsh/${name} must declare effect`).toBeGreaterThan(0)
+      for (const version of declared) {
+        expect(version, `@eedsh/${name} must pin effect exactly`).toBe(EFFECT_VERSION)
+      }
+    }
+    const lockfile = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')
+    const resolved = new Set(
+      [...lockfile.matchAll(/^ {2}effect@([0-9][^:\s(]*):/gm)].map((match) => match[1]),
+    )
+    expect([...resolved], 'the workspace must resolve exactly one Effect version').toEqual([
+      EFFECT_VERSION,
+    ])
+  })
+
+  it('limits @eedsh/plan to the schema and result modules', () => {
+    const offenders = offendingImports(
+      'plan',
+      (specifier) =>
+        (specifier === 'effect' || specifier.startsWith('effect/')) &&
+        !ALLOWED_EFFECT_MODULES.includes(specifier),
+    )
+    expect(offenders, '@eedsh/plan may import only effect/Schema and effect/Result').toEqual([])
+  })
+
+  it('keeps Node builtins out of @eedsh/plan', () => {
+    const offenders = offendingImports('plan', (specifier) => specifier.startsWith('node:'))
+    expect(offenders, '@eedsh/plan must stay usable without Node builtins').toEqual([])
+  })
+
   it('keeps runtime plan validators out of @eedsh/config', async () => {
     const config = await import('@eedsh/config')
     for (const symbol of [
@@ -133,12 +188,28 @@ describe('package boundaries', () => {
     expect(specifiers, '@eedsh/cli must import @eedsh/plan').toContain('@eedsh/plan')
   })
 
-  it('confines the DSH runtime dependency to @eedsh/cli and @eedsh/runtime types', () => {
+  it('limits the authoring package to the schema and result Effect modules', () => {
+    const offenders = offendingImports(
+      'config',
+      (specifier) =>
+        (specifier === 'effect' || specifier.startsWith('effect/')) &&
+        !ALLOWED_EFFECT_MODULES.includes(specifier),
+    )
+    expect(offenders, '@eedsh/config may import only effect/Schema and effect/Result').toEqual([])
+  })
+
+  it('limits authoring DSH imports to Effect-free helpers', () => {
+    const offenders = offendingImports(
+      'config',
+      (specifier) =>
+        specifier.startsWith('@deepseek-ai/') && !ALLOWED_DSH_HELPERS.includes(specifier),
+    )
+    expect(offenders, '@eedsh/config may import only Effect-free DSH helpers').toEqual([])
     for (const dependency of dependencyNames('config')) {
-      expect(
-        dependency.startsWith('@deepseek-ai/'),
-        `@eedsh/config must not depend on ${dependency}`,
-      ).toBe(false)
+      if (!dependency.startsWith('@deepseek-ai/')) continue
+      expect(ALLOWED_DSH_HELPERS, `@eedsh/config must not depend on ${dependency}`).toContain(
+        dependency,
+      )
     }
   })
 

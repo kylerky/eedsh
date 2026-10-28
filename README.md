@@ -348,23 +348,26 @@ TypeScript config alone reloads nothing; only a published generation does.
 
 | Package | Role |
 |---|---|
-| `@eedsh/config` | Public typed authoring API (`defineConfig`, `defineProfile`, and patch helpers), the multi-profile config shape, the versioned JSON plan, the Effect Schema contracts, Effect-native validation, and canonical hashing. |
-| `@eedsh/cli` | The `eedsh` command: XDG config resolution, `init`, tsx-based evaluation, profile selection, `check`, Effect-based materialization, preflight, atomic publication, all-profile `sync --watch`, and `run`. Also depends on Effect and the TypeScript toolchain, which `@eedsh/runtime` does not. |
+| `@eedsh/plan` | The shared plan contract: the Effect Schema and derived plan types, strict `validatePlan`/`validateConfigValue`, the multi-profile config envelope, and canonical JSON. Imports Effect only through `effect/Schema` and `effect/Result`, and no Node builtins. |
+| `@eedsh/config` | Public typed authoring API (`defineConfig`, `defineProfile`, and patch helpers) built on `@eedsh/plan`. Synchronous, no Effect runtime, and re-exports plan types only. |
+| `@eedsh/cli` | The `eedsh` command: XDG config resolution, `init`, tsx-based evaluation, profile selection, `check`, Effect-based materialization, preflight, atomic publication, all-profile `sync --watch`, and `run`. Also depends on Effect, `@eedsh/plan` at runtime, and the TypeScript toolchain, which `@eedsh/runtime` does not; it resolves `@eedsh/config` only for the init manifest. |
 | `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
 
 ### Effect boundaries
 
-Effect is the default in `@eedsh/config` and `@eedsh/cli`, and both pin
-`effect@4.0.6`. `@eedsh/config` uses an Effect Schema as the plan's single validator
-and type source, and its validation API is `Result<ProfilePlan, Schema.SchemaError>`:
-failures are Effect's native, multi-line, path-stamped schema errors. `@eedsh/cli`
-takes the command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`
-for Node services, and uses the same Effect runtime for materialization: tagged
-domain failures plus the core `FileSystem` and `ChildProcessSpawner` services, with
-`NodeServices.layer` supplying the live implementations. `@eedsh/runtime` remains a
-plain Cordis plugin because DSH's HMR service owns its lifecycle, and
-`defineProfile` and `defineConfig` remain synchronous because a config module must
-default-export data. `defineProfile` returns a plain descriptor and `defineConfig`
+Effect is the default in `@eedsh/plan`, `@eedsh/config`, and `@eedsh/cli`, and all
+three pin `effect@4.0.6`. `@eedsh/plan` owns the Effect Schema that is the plan's
+single validator and type source, plus the config envelope; its validation API is
+`Result<ProfilePlan, Schema.SchemaError>` with Effect's native, multi-line,
+path-stamped schema errors. `@eedsh/config` composes those primitives for authoring
+and may import Effect only through `effect/Schema` and `effect/Result`.
+`@eedsh/cli` takes the command surface from `effect/cli`, declares
+`@effect/platform-node@4.0.6` for Node services, and uses the same Effect runtime for
+materialization: tagged domain failures plus the core `FileSystem` and
+`ChildProcessSpawner` services, with `NodeServices.layer` supplying the live
+implementations. `@eedsh/runtime` remains a plain Cordis plugin because DSH's HMR
+service owns its lifecycle, and `defineProfile` and `defineConfig` remain synchronous
+because a config module must default-export data. `defineProfile` returns a plain descriptor and `defineConfig`
 returns `Result<EedshConfig, Schema.SchemaError>` with one validation Result per
 profile; a config may export that Result, a plain config object, or a config-valued
 `Result`.
@@ -375,7 +378,7 @@ absence is `Option`: readers, command inputs, findings, and reconciliation or
 publication inputs carry `Option` rather than `undefined`, so callers choose a
 fallback where absence matters. `undefined` remains at JavaScript and JSON
 boundaries, in `process.env` values, in third-party option bags and callbacks, and
-in internal mutable state. The config package's JSON/cycle walker and the
+in internal mutable state. The plan package's JSON/cycle walker and the
 Effect-free `@eedsh/runtime` remain exceptions.
 
 Each CLI invocation is one Effect program observed by one `Effect.runPromiseExit`.
@@ -386,11 +389,13 @@ new JavaScript `throw`, `try`, and `.catch` sites in production config and CLI
 source outside the one allowlisted impossible-state branch in the generated YAML
 emitter.
 
-`test/architecture.test.ts` enforces the boundary: `@eedsh/config` may import only
-`effect/Schema` and `effect/Result`, may not depend on DSH, and must use the same
-Effect version as `@eedsh/cli`; the workspace declares no separate `@effect/cli`,
-`@effect/platform`, or `@effect/printer*` packages and no source imports one;
-`@eedsh/runtime` may not depend on or import Effect or the TypeScript toolchain.
+`test/architecture.test.ts` enforces the boundary: `@eedsh/plan` may import only
+`effect/Schema` and `effect/Result` and no Node builtins; `@eedsh/config` may import
+only those Effect modules and Effect-free DSH helpers, and re-exports plan types
+only; plan, config, and CLI must use the same exact Effect version; the workspace
+declares no separate `@effect/cli`, `@effect/platform`, or `@effect/printer*`
+packages and no source imports one; `@eedsh/runtime` may not depend on or import
+Effect or the TypeScript toolchain.
 
 ## Build from source
 
@@ -428,9 +433,10 @@ configuration files, and every package `tsdown.config.ts`. `pnpm typecheck` ther
 fails on a type error anywhere, including in a config fixture.
 
 Each package builds with `tsdown` to one bundled ESM entry under `lib/`:
-`@eedsh/config` and `@eedsh/runtime` emit `lib/index.js` with `lib/index.d.ts` and
-source maps, while `@eedsh/cli` emits only the executable `lib/bin.js` and has no
-library entry. Dependencies and workspace packages stay external to the bundles.
+`@eedsh/config`, `@eedsh/plan`, and `@eedsh/runtime` emit `lib/index.js` with
+`lib/index.d.ts` and source maps, while `@eedsh/cli` emits only the executable
+`lib/bin.js` and has no library entry. Dependencies and workspace packages stay
+external to the bundles.
 Relative imports in `packages/*/src` and `packages/*/test` are extensionless;
 `tsdown` and Vitest resolve them, and `tsc` typechecks them with bundler resolution.
 
@@ -454,6 +460,7 @@ CI runs `pnpm verify` on Node 26 only.
 ## Repository layout
 
 ```
+packages/plan     @eedsh/plan
 packages/config   @eedsh/config
 packages/cli      @eedsh/cli (bin: eedsh)
 packages/runtime  @eedsh/runtime (DSH bundle + HMR watcher)

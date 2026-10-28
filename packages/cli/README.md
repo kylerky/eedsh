@@ -14,9 +14,10 @@ package installation, DSH resolution, preflight, and sync locking, plus one scop
 service layer per watch session. `effect/cli` parses the command surface; its generated
 help and usage errors are rendered through an injected Console with ANSI escapes stripped, and the
 CLI binds only the narrow Node file-system, path, and terminal layers. Node `fs` and
-`spawn` live only in the live service layer. `@eedsh/config` also uses Effect for the
-plan schema and validation, while `@eedsh/runtime` stays a plain Cordis plugin;
-`defineProfile` and `defineConfig` remain synchronous at the config boundary.
+`spawn` live only in the live service layer. `@eedsh/plan` owns the plan schema and
+validation, `@eedsh/config` composes it for synchronous authoring, while
+`@eedsh/runtime` stays a plain Cordis plugin; `defineProfile` and `defineConfig`
+remain synchronous at the config boundary.
 
 ## Commands
 
