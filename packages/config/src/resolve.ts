@@ -81,6 +81,9 @@ export type ResolutionErrorCode =
   | 'resolution.not_a_bundle'
   | 'resolution.patch_invalid'
   | 'resolution.row_not_found'
+  | 'resolution.preset_not_found'
+  | 'resolution.rooted_query'
+  | 'resolution.invalid_target'
   | 'resolution.profile_override_invalid'
 
 /** A structured author-time resolution failure. */
@@ -477,84 +480,3 @@ export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBun
   })
 }
 
-/** A frozen preset summary that can target the row without carrying its plugin tree. */
-export interface PresetSummary {
-  /** The inserted Loader row id. */
-  readonly rowId: string
-  /** The preset's own id from its config. */
-  readonly id: string
-  /** The preset order, when declared. */
-  readonly order?: number
-  /** The preset display name, when declared. */
-  readonly name?: string
-  /** The row's disabled flag, when boolean. */
-  readonly disabled?: boolean
-}
-
-function isPresetRow(entry: PlanEntry): boolean {
-  if (entry.name === '@deepseek-ai/dsh-agent-preset') return true
-  const id = typeof entry.id === 'string' ? entry.id : undefined
-  const config = isRecord(entry.config) ? entry.config : undefined
-  return id?.startsWith('preset-') === true && typeof config?.id === 'string'
-}
-
-/**
- * List the preset rows a bundle declares as compact, frozen summaries.
- * @param bundle - bundle package name.
- * @param root - optional explicit root.
- * @returns preset summaries in bundle row order.
- */
-export function presets(bundle: string, root: QueryRoot = {}): readonly PresetSummary[] {
-  const resolved = resolveBundle(bundle, root)
-  const summaries: PresetSummary[] = []
-  for (const entry of resolved.rows) {
-    if (!isPresetRow(entry)) continue
-    const rowId = typeof entry.id === 'string' ? entry.id : undefined
-    const config = isRecord(entry.config) ? entry.config : undefined
-    const presetId = typeof config?.id === 'string' ? config.id : undefined
-    if (rowId === undefined || presetId === undefined) continue
-    const summary: {
-      rowId: string
-      id: string
-      order?: number
-      name?: string
-      disabled?: boolean
-    } = { rowId, id: presetId }
-    if (typeof config?.order === 'number') summary.order = config.order
-    if (typeof config?.name === 'string') summary.name = config.name
-    else if (typeof entry.name === 'string') summary.name = entry.name
-    if (typeof entry.disabled === 'boolean') summary.disabled = entry.disabled
-    summaries.push(summary)
-  }
-  return deepFreeze(summaries)
-}
-
-/**
- * Return every declared row a bundle contributes.
- * @param bundle - bundle package name.
- * @param root - optional explicit root.
- * @returns frozen rows in bundle order.
- */
-export function rows(bundle: string, root: QueryRoot = {}): readonly PlanEntry[] {
-  return resolveBundle(bundle, root).rows
-}
-
-/**
- * Return one declared row by its Loader id.
- * @param bundle - bundle package name.
- * @param rowId - the Loader row id.
- * @param root - optional explicit root.
- * @returns the frozen row.
- */
-export function row(bundle: string, rowId: string, root: QueryRoot = {}): PlanEntry {
-  const resolved = resolveBundle(bundle, root)
-  const found = resolved.rows.find((entry) => entry.id === rowId)
-  if (found === undefined) {
-    throw new ResolutionError({
-      code: 'resolution.row_not_found',
-      bundle,
-      message: `bundle ${JSON.stringify(bundle)} declares no row ${JSON.stringify(rowId)}`,
-    })
-  }
-  return found
-}

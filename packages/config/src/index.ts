@@ -12,6 +12,20 @@ export type {
   PlanPatch,
   ProfilePlan,
 } from '@eedsh/plan'
-export * from './api'
-export * from './config'
-export * from './resolve'
+export * from './authoring'
+export * from './builders'
+export * from './query'
+export {
+  clearResolutionTrace,
+  CONFIG_DIR_ENV,
+  DSH_ANCHOR_ENV,
+  PROFILE_ROOT_OVERRIDE_ENV,
+  type QueryRoot,
+  ResolutionError,
+  type ResolutionErrorCode,
+  type ResolutionOrigin,
+  type ResolutionTrace,
+  type ResolvedBundle,
+  resolutionTrace,
+  takeResolutionTrace,
+} from './resolve'

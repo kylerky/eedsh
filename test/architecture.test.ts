@@ -53,13 +53,14 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 /**
  * The only production exception sites the architecture check permits. The
  * malformed-expression branch is unreachable after plan validation, and the
- * Effect-free runtime is outside this scan. Author-time resolution throws
- * structured failures at a synchronous API boundary; the REPL owns Node's
- * exception-shaped I/O (dynamic imports, REPL evaluation, preview installs)
- * and converts those failures to printable session state.
+ * Effect-free runtime is outside this scan. Author-time resolution and the
+ * typed query handles throw structured failures at a synchronous API boundary;
+ * the REPL owns Node's exception-shaped I/O (dynamic imports, REPL evaluation,
+ * preview installs) and converts those failures to printable session state.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
+  'packages/config/src/query.ts',
   'packages/config/src/resolve.ts',
   'packages/cli/src/repl/preview.ts',
   'packages/cli/src/repl/session.ts',
@@ -181,6 +182,27 @@ describe('package boundaries', () => {
       'EedshConfigSchema',
     ]) {
       expect(symbol in config, `@eedsh/config must not export ${symbol}`).toBe(false)
+    }
+  })
+
+  it('exposes the typed authoring surface without the legacy free helpers', async () => {
+    const config = (await import('@eedsh/config')) as Record<string, unknown>
+    for (const symbol of [
+      'rows',
+      'presets',
+      'row',
+      'defineProfile',
+      'insert',
+      'disable',
+      'enable',
+      'override',
+      'layer',
+      'raw',
+    ]) {
+      expect(symbol in config, `@eedsh/config must not export ${symbol}`).toBe(false)
+    }
+    for (const symbol of ['defineConfig', 'bundle', 'js', 'group']) {
+      expect(typeof config[symbol], `@eedsh/config must export ${symbol}`).toBe('function')
     }
   })
 
