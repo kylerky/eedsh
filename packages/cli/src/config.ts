@@ -9,6 +9,7 @@
 import { statSync } from 'node:fs'
 import { dirname, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { type ConfigProvenance, clearProvenance, configProvenance } from '@eedsh/config'
 import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
@@ -44,6 +45,16 @@ function errorMessage(error: unknown): string {
 /** Every failure config evaluation can report. */
 export type ConfigLoadFailure = ConfigError | Schema.SchemaError | AuthoringError
 
+/** One successful config evaluation, with the provenance it recorded. */
+export interface LoadedConfig {
+  /** The validated multi-profile config. */
+  readonly config: EedshConfig
+  /** The most recent evaluation's recorded provenance, when it has any. */
+  readonly provenance: ConfigProvenance | undefined
+  /** Absolute directory of the evaluated config file. */
+  readonly configDir: string
+}
+
 /** Read a config's default export as a validated multi-profile config. */
 function exportedConfig(
   exported: unknown,
@@ -66,6 +77,10 @@ const nativeImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<{ default?: unknown }>
 
+// tsx preserves the config's source map; Node must map stack frames so
+// provenance records the original config line rather than the transformed one.
+process.setSourceMapsEnabled(true)
+
 /** The tsconfig tsx resolves imports against: a path, or false for none. */
 type TsxConfigSelection = string | false
 
@@ -76,6 +91,7 @@ interface TsxLoader {
 
 let loaderHandle: TsxLoader | undefined
 let loaderQueue: Promise<void> = Promise.resolve()
+let evaluationSequence = 0
 
 async function createLoader(selection: TsxConfigSelection): Promise<TsxLoader> {
   const [esmApi, cjsApi] = await Promise.all([import('tsx/esm/api'), import('tsx/cjs/api')])
@@ -179,13 +195,13 @@ function importEnvironment(configPath: string): () => void {
  * directory. The module URL carries the file's modification time so a watch
  * rerun re-evaluates an edited config instead of reusing the module cache.
  * @param configPath - absolute config path.
- * @returns an Effect carrying the validated config, a config failure, or the
- * native schema error for an invalid envelope or export.
+ * @returns an Effect carrying the validated config and its recorded provenance,
+ * a config failure, or the native schema error for an invalid envelope or export.
  */
 export function loadConfig(
   configPath: string,
   evaluationNonce?: string,
-): Effect.Effect<EedshConfig, ConfigLoadFailure> {
+): Effect.Effect<LoadedConfig, ConfigLoadFailure> {
   return Effect.gen(function* () {
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
@@ -209,10 +225,14 @@ export function loadConfig(
     })
 
     const url = pathToFileURL(configPath)
-    url.search =
-      evaluationNonce === undefined
-        ? `?eedsh=${stamp}`
-        : `?eedsh=${stamp}&evaluation=${encodeURIComponent(evaluationNonce)}`
+    let evaluation = evaluationNonce
+    if (evaluation === undefined) {
+      evaluationSequence += 1
+      evaluation = String(evaluationSequence)
+    }
+    url.search = `?eedsh=${stamp}&evaluation=${encodeURIComponent(evaluation)}`
+    process.setSourceMapsEnabled(true)
+    clearProvenance()
     const imported = yield* Effect.tryPromise({
       try: async () => {
         const restore = importEnvironment(configPath)
@@ -240,6 +260,10 @@ export function loadConfig(
     }
     const result = exportedConfig(exported)
     if (Result.isFailure(result)) return yield* Effect.fail(result.failure)
-    return result.success
+    return {
+      config: result.success,
+      provenance: configProvenance(),
+      configDir: dirname(configPath),
+    }
   })
 }

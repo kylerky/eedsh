@@ -153,7 +153,7 @@ async function makeSession(
     env: { DSH_HOME: join(work, 'home') },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
-    loadConfig: () => Effect.succeed(current),
+    loadConfig: () => Effect.succeed({ config: current, provenance: undefined, configDir: work }),
     ...(options.useDefaultCompose === true
       ? {}
       : {

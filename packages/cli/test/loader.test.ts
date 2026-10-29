@@ -44,11 +44,29 @@ export default defineConfig()
   return configPath
 }
 
+async function writeProvenanceProject(prefix: string): Promise<string> {
+  const dir = await project(prefix)
+  const configPath = join(dir, 'config.ts')
+  await writeFile(
+    configPath,
+    `import { defineConfig } from '@eedsh/config'
+
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('provenance-profile', (profile) => {
+    profile.layer((layer) => layer.insert({ id: 'row', name: '@scope/row' }))
+  })
+  .build()
+`,
+  )
+  return configPath
+}
+
 describe('config loader resolution', () => {
   it('resolves path mappings from the config project tsconfig', async () => {
     const configPath = await writeMappedProject('loader-paths-', 'mapped-profile')
-    const config = await Effect.runPromise(loadConfig(configPath))
-    expect(Object.keys(config.profiles)).toEqual(['mapped-profile'])
+    const loaded = await Effect.runPromise(loadConfig(configPath))
+    expect(Object.keys(loaded.config.profiles)).toEqual(['mapped-profile'])
   })
 
   it('ignores caller working-directory path mappings', async () => {
@@ -94,8 +112,8 @@ export default defineConfig()
     const previous = process.cwd()
     process.chdir(callerDir)
     try {
-      const config = await Effect.runPromise(loadConfig(configPath))
-      expect(Object.keys(config.profiles)).toEqual(['config-project'])
+      const loaded = await Effect.runPromise(loadConfig(configPath))
+      expect(Object.keys(loaded.config.profiles)).toEqual(['config-project'])
     } finally {
       process.chdir(previous)
     }
@@ -135,19 +153,29 @@ export default defineConfig()
     const previous = process.cwd()
     process.chdir(callerDir)
     try {
-      const config = await Effect.runPromise(loadConfig(configPath))
-      expect(Object.keys(config.profiles)).toEqual(['relative-profile'])
+      const loaded = await Effect.runPromise(loadConfig(configPath))
+      expect(Object.keys(loaded.config.profiles)).toEqual(['relative-profile'])
     } finally {
       process.chdir(previous)
     }
+  })
+
+  it('reports the latest evaluation provenance in one process', async () => {
+    const first = await writeProvenanceProject('loader-prov-a-')
+    const second = await writeProvenanceProject('loader-prov-b-')
+    const firstLoaded = await Effect.runPromise(loadConfig(first))
+    const secondLoaded = await Effect.runPromise(loadConfig(second))
+    const site = secondLoaded.provenance?.profiles['provenance-profile']?.[0]?.sites[0]
+    expect(firstLoaded.provenance?.profiles['provenance-profile']?.[0]?.sites[0]?.file).toBe(first)
+    expect(site?.file).toBe(second)
   })
 
   it('re-resolves the tsconfig when the config project changes', async () => {
     const first = await writeMappedProject('loader-a-', 'profile-a')
     const second = await writeMappedProject('loader-b-', 'profile-b')
     const firstConfig = await Effect.runPromise(loadConfig(first))
-    expect(Object.keys(firstConfig.profiles)).toEqual(['profile-a'])
+    expect(Object.keys(firstConfig.config.profiles)).toEqual(['profile-a'])
     const secondConfig = await Effect.runPromise(loadConfig(second))
-    expect(Object.keys(secondConfig.profiles)).toEqual(['profile-b'])
+    expect(Object.keys(secondConfig.config.profiles)).toEqual(['profile-b'])
   })
 })

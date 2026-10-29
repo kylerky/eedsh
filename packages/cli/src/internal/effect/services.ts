@@ -5,6 +5,7 @@
  * `effect/process` spawner, so the pipeline has no hand-written Node seam.
  * @module @eedsh/cli/internal/effect/services
  */
+import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Context, type Effect } from 'effect'
 import type * as PlatformError from 'effect/PlatformError'
@@ -61,8 +62,12 @@ export interface PreflightInput {
   profileDir: string
   generated: GeneratedBundle
   strict: boolean
-  /** Attribute warnings to their source layers. */
+  /** Attribute warnings to their source groups and authoring sites. */
   explain: boolean
+  /** The evaluated config's recorded provenance, when it has any. */
+  provenance?: ConfigProvenance
+  /** Absolute directory of the evaluated config file, for relative sites. */
+  configDir?: string
 }
 
 /** Preflight output. */

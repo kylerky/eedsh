@@ -108,6 +108,8 @@ function frameSite(line: string): AuthoringSite | undefined {
   if (match === null) return undefined
   let file = match[1] as string
   if (file.startsWith('file://')) file = decodeURIComponent(file.slice('file://'.length))
+  // A cache-busting query on an evaluated module URL is not part of the path.
+  file = file.replace(/\?eedsh=[^#]*$/, '')
   if (!isAbsolutePath(file)) return undefined
   if (isInside(file, MODULE_DIR)) return undefined
   const lineNumber = Number(match[2])

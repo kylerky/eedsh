@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import type { ConfigProvenance } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -12,7 +13,7 @@ import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readmeExample } from '../../../test/support/readme'
 import { runEedsh } from '../src/cli'
-import { ConfigError } from '../src/config'
+import { ConfigError, type LoadedConfig } from '../src/config'
 import { DshResolveFailure } from '../src/internal/effect/errors'
 import {
   DshInstallation,
@@ -30,13 +31,18 @@ import {
   memoryFileSystem,
 } from './support/fakes'
 import { planOf } from './support/plan'
-import { bundle, generated, insert, layer } from './support/plan-parts'
+import { bundle, generated, insert, layer, override } from './support/plan-parts'
 import { fakeSpawner } from './support/process'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
 const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
+
+/** Wrap one validated config for the injected loader seam. */
+function loaded(config: EedshConfig, provenance?: ConfigProvenance) {
+  return { config, provenance, configDir: join(root, 'packages/cli/test/fixtures') }
+}
 
 /** Wrap validated plans in a config for the injected loader seam. */
 function configWith(...plans: ProfilePlan[]): EedshConfig {
@@ -948,7 +954,8 @@ describe('strict mode', () => {
     const code = await runEedsh(['sync', '--explain', '--config', fixture('unmatched')], h.options)
     expect(code).toBe(0)
     const errors = h.err.join('\n')
-    expect(errors).toContain('generated #1 [missing-row]:')
+    expect(errors).toContain('generated #1 "cli" (config.ts:')
+    expect(errors).toContain('[missing-row]:')
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('--explain')
     expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(true)
@@ -973,10 +980,30 @@ describe('strict mode', () => {
     )
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('generated #1 [missing-row]:')
+    expect(errors).toContain('generated #1 "cli" (config.ts:')
+    expect(errors).toContain('[missing-row]:')
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('--explain')
     expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(false)
+  })
+
+  it('syncs a plain plan without provenance using positional attribution', async () => {
+    const h = harness({ basePatches, realPreflight: true })
+    const plan = planOf({
+      name: 'cli-unmatched',
+      dsh: '0.2.1-rc.2',
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [{ patches: [override('missing-row', { interval: 1 })] }],
+    })
+    const code = await runEedsh(['sync', '--explain', '--config', fixture('unmatched')], {
+      ...h.options,
+      loadConfig: () => Effect.succeed(loaded(configWith(plan))),
+    })
+    expect(code).toBe(0)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('generated #1 [missing-row]:')
+    expect(errors).not.toContain('(config.ts:')
+    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(true)
   })
 
   it('warns on an empty generated layer and fails strict without committing', async () => {
@@ -998,7 +1025,7 @@ export default defineConfig()
     const warned = harness({ basePatches, realPreflight: true })
     expect(await runEedsh(['sync', '--config', configPath], warned.options)).toBe(0)
     const warnings = warned.err.join('\n')
-    expect(warnings).toContain('generated #1: contains no patches')
+    expect(warnings).toContain('generated #1 "empty": contains no patches')
     expect(warnings).toContain('--explain')
     expect(warned.fs.files.has(manifest)).toBe(true)
 
@@ -1308,12 +1335,12 @@ describe('eedsh sync --watch', () => {
       }
     }
     let call = 0
-    const loadConfig = (): Effect.Effect<EedshConfig, ConfigError> => {
+    const loadConfig = (): Effect.Effect<LoadedConfig, ConfigError> => {
       call += 1
       if (call === 2) {
         return Effect.fail(new ConfigError('config.import_failed', 'config compile failed'))
       }
-      return Effect.succeed(configWith(call === 1 ? planA : planB))
+      return Effect.succeed(loaded(configWith(call === 1 ? planA : planB)))
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
@@ -1505,9 +1532,9 @@ describe('eedsh sync --watch', () => {
       }
     }
     let calls = 0
-    const loadConfig = (): Effect.Effect<EedshConfig> => {
+    const loadConfig = (): Effect.Effect<LoadedConfig> => {
       calls += 1
-      return Effect.succeed(configWith(calls === 1 ? planA : planB))
+      return Effect.succeed(loaded(configWith(calls === 1 ? planA : planB)))
     }
     const controller = new AbortController()
     const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {

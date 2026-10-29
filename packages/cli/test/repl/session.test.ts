@@ -54,6 +54,10 @@ function configWithProfiles(names: readonly string[], defaultProfile?: string): 
   return result.success
 }
 
+function loaded(config: EedshConfig) {
+  return { config, provenance: undefined, configDir: work }
+}
+
 function rowsOf(plan: ProfilePlan): number {
   let count = 0
   for (const item of plan.layers) {
@@ -112,7 +116,7 @@ async function session(
     stderr: (line) => err.push(line),
     loadConfig: () => {
       loadCount += 1
-      return failure === undefined ? Effect.succeed(current) : Effect.fail(failure)
+      return failure === undefined ? Effect.succeed(loaded(current)) : Effect.fail(failure)
     },
     compose: async (plan) => ({ rowCount: rowsOf(plan), warnings: [] }),
     syncPlan:
@@ -187,7 +191,7 @@ describe('session evaluation', () => {
         env: { DSH_HOME: join(work, 'home') },
         stdout: () => {},
         stderr: () => {},
-        loadConfig: () => Effect.succeed(configWithProfiles(['work', 'home'])),
+        loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work', 'home']))),
         authoring,
         watchConfig: false,
       }),
@@ -200,7 +204,7 @@ describe('session evaluation', () => {
         env: { DSH_HOME: join(work, 'home') },
         stdout: () => {},
         stderr: () => {},
-        loadConfig: () => Effect.succeed(configWithProfiles(['work'])),
+        loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work']))),
         authoring,
         watchConfig: false,
       }),
@@ -229,7 +233,7 @@ describe('session evaluation', () => {
       env: { DSH_HOME: join(work, 'home') },
       stdout: () => {},
       stderr: () => {},
-      loadConfig: () => Effect.succeed(configWith(['a'])),
+      loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       watchConfig: false,
     })
@@ -250,7 +254,7 @@ describe('session evaluation', () => {
           env: { DSH_HOME: join(work, 'home') },
           stdout: () => {},
           stderr: () => {},
-          loadConfig: () => Effect.succeed(configWith(['a'])),
+          loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
           watchConfig: false,
         }),
       ).rejects.toMatchObject({ code: 'repl.authoring_package_missing' })
@@ -645,7 +649,7 @@ describe('shell commands', () => {
       env: { DSH_HOME: join(work, 'home') },
       stdout: (line) => out.push(line),
       stderr: () => {},
-      loadConfig: () => Effect.succeed(configWith(['a'])),
+      loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       authoring,
       watchConfig: false,

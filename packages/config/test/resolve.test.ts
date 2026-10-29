@@ -214,7 +214,7 @@ export default defineConfig()
     const installation = resolveDshInstallation()
     if (Result.isFailure(installation)) throw installation.failure
     expect(await readFile(marker, 'utf8')).toBe(installation.success.installAnchor)
-    expect(loaded.dsh).toBe('0.2.1-rc.2')
+    expect(loaded.config.dsh).toBe('0.2.1-rc.2')
     expect(process.env.EEDSH_DSH_ANCHOR).toBeUndefined()
     expect(process.env.EEDSH_CONFIG_DIR).toBeUndefined()
   })

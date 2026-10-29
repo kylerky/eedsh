@@ -6,7 +6,7 @@
  */
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
-import type { AuthoringSite } from '@eedsh/config'
+import type { AuthoringSite, PatchGroupProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
@@ -284,14 +284,22 @@ function checkNoPlanExpression(
   return Result.succeed(undefined)
 }
 
+/** Authoring provenance for the generated groups of one profile. */
+export interface ParseGeneratedLayersOptions {
+  /** Groups in plan order, aligned with the emitted files. */
+  readonly groups?: readonly PatchGroupProvenance[]
+}
+
 /**
  * Parse the emitted generated group files back into DSH patch lists.
  * @param generated - the generated bundle.
+ * @param options - the evaluated profile's recorded provenance.
  * @returns one preflight layer per emitted file in application order, or a
  * preflight failure for malformed content.
  */
 export function parseGeneratedLayers(
   generated: GeneratedBundle,
+  options: ParseGeneratedLayersOptions = {},
 ): Result.Result<PreflightLayer[], PreflightFailure> {
   const files = generated.files.filter((file) => file.path.endsWith('.yml'))
   const layers: PreflightLayer[] = []
@@ -318,10 +326,11 @@ export function parseGeneratedLayers(
       const checked = checkNoPlanExpression(entry, group)
       if (Result.isFailure(checked)) return Result.fail(checked.failure)
     }
+    const recorded = options.groups?.[index]
     layers.push({
       label: group,
       patches: entries,
-      generated: { position, label: undefined, sites: [] },
+      generated: { position, label: recorded?.label, sites: recorded?.sites ?? [] },
     })
   }
   return Result.succeed(layers)
@@ -368,7 +377,10 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
       const dsh = yield* DshInstallation
       const check: PreflightShape['check'] = (input) =>
         Effect.gen(function* () {
-          const generatedLayers = yield* Effect.fromResult(parseGeneratedLayers(input.generated))
+          const groups = input.provenance?.profiles[input.plan.profile.name] ?? []
+          const generatedLayers = yield* Effect.fromResult(
+            parseGeneratedLayers(input.generated, { groups }),
+          )
           const layers = yield* bundleLayers(input.plan, input.profileDir, generatedLayers).pipe(
             Effect.provideService(DshInstallation, dsh),
           )
@@ -376,9 +388,11 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
           const raw = composition.warnings
           const messages =
             input.explain && raw.length > 0
-              ? attributePreflightWarnings(layers, raw).map(
-                  (warning) => `${warning.layer}: ${warning.message}`,
-                )
+              ? attributePreflightWarnings(
+                  layers,
+                  raw,
+                  input.configDir === undefined ? {} : { configDir: input.configDir },
+                ).map((warning) => `${warning.layer}: ${warning.message}`)
               : raw
           if (composition.duplicateInsertIds.length > 0) {
             return yield* Effect.fail(

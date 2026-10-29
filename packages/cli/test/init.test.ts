@@ -220,7 +220,7 @@ describe('init on a real filesystem', () => {
       stderr: () => {},
     })
     expect(code).toBe(0)
-    const config = await Effect.runPromise(loadConfig(join(home, 'eedsh', 'config.ts')))
+    const { config } = await Effect.runPromise(loadConfig(join(home, 'eedsh', 'config.ts')))
     expect(config.dsh).toBe('0.2.1-rc.2')
     expect(Object.keys(config.profiles)).toEqual(['default'])
     const profile = config.profiles.default

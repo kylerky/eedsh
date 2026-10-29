@@ -11,7 +11,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { type EedshConfig, isSafeProfileName, type ProfilePlan } from '@eedsh/plan'
+import type { ConfigProvenance } from '@eedsh/config'
+import { isSafeProfileName, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
@@ -22,7 +23,13 @@ import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
-import { ConfigError, type ConfigLoadFailure, loadConfig, validateConfigPath } from './config'
+import {
+  ConfigError,
+  type ConfigLoadFailure,
+  type LoadedConfig,
+  loadConfig,
+  validateConfigPath,
+} from './config'
 import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
@@ -94,7 +101,7 @@ export interface CliRunOptions {
   loadConfig?: (
     configPath: string,
     evaluationNonce?: string,
-  ) => Effect.Effect<EedshConfig, ConfigLoadFailure>
+  ) => Effect.Effect<LoadedConfig, ConfigLoadFailure>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace the file system `doctor` inspects. */
@@ -304,6 +311,10 @@ interface CommandRuntime {
 interface CommandContext extends CommandRuntime {
   configPath: string
   plan: ProfilePlan
+  /** The evaluated config's recorded provenance, when it has any. */
+  provenance: ConfigProvenance | undefined
+  /** Absolute directory of the evaluated config file. */
+  configDir: string
   /** The `--profile` value the run was started with, for watch reruns. */
   profile: Option.Option<string>
 }
@@ -330,6 +341,8 @@ function programFor(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
+  provenance: ConfigProvenance | undefined,
+  configDir: string,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
   return Effect.gen(function* () {
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
@@ -342,6 +355,8 @@ function programFor(
       strict,
       explain,
       adoptOwnership,
+      ...(provenance === undefined ? {} : { provenance }),
+      configDir,
     })
   })
 }
@@ -358,8 +373,10 @@ function syncProgram(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
+  provenance: ConfigProvenance | undefined,
+  configDir: string,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
-  return programFor(env, plan, strict, explain, adoptOwnership)
+  return programFor(env, plan, strict, explain, adoptOwnership, provenance, configDir)
 }
 
 /** Run one one-shot materialization with its own service layer. */
@@ -370,9 +387,15 @@ function syncOnce(
   adoptOwnership: boolean,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshResolveFailure> {
   return Effect.suspend(() =>
-    syncProgram(context.env, context.plan, strict, explain, adoptOwnership).pipe(
-      Effect.provide(serviceLayerFor(context.options)),
-    ),
+    syncProgram(
+      context.env,
+      context.plan,
+      strict,
+      explain,
+      adoptOwnership,
+      context.provenance,
+      context.configDir,
+    ).pipe(Effect.provide(serviceLayerFor(context.options))),
   )
 }
 
@@ -420,7 +443,7 @@ function runWatchSelection(
       return
     }
 
-    const selection = selectSyncProfiles(loaded.value, context.profile)
+    const selection = selectSyncProfiles(loaded.value.config, context.profile)
     if (Result.isFailure(selection)) {
       yield* Effect.sync(() => {
         for (const line of describeError(selection.failure)) context.stderr(`eedsh: ${line}`)
@@ -441,7 +464,15 @@ function runWatchSelection(
         if (multiple) context.stdout(`eedsh: profile "${entry.name}"`)
       })
       const runExit = yield* Effect.exit(
-        syncProgram(context.env, plan, strict, explain, adoptOwnership),
+        syncProgram(
+          context.env,
+          plan,
+          strict,
+          explain,
+          adoptOwnership,
+          loaded.value.provenance,
+          loaded.value.configDir,
+        ),
       )
       if (Exit.isFailure(runExit)) {
         if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
@@ -587,7 +618,7 @@ function resolveConfigPath(
 function loadConfigValue(
   configPath: string,
   runtime: CommandRuntime,
-): Effect.Effect<EedshConfig, ConfigLoadFailure> {
+): Effect.Effect<LoadedConfig, ConfigLoadFailure> {
   return (runtime.options.loadConfig ?? loadConfig)(configPath)
 }
 
@@ -638,8 +669,8 @@ function runSyncCommand(
       return EXIT_OK
     }
 
-    const config = yield* loadConfigValue(path, runtime)
-    const selection = selectSyncProfiles(config, input.profile)
+    const loaded = yield* loadConfigValue(path, runtime)
+    const selection = selectSyncProfiles(loaded.config, input.profile)
     if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
     const entries = selection.success
 
@@ -657,6 +688,8 @@ function runSyncCommand(
         ...runtime,
         configPath: path,
         plan,
+        provenance: loaded.provenance,
+        configDir: loaded.configDir,
         profile: input.profile,
       }
       const runExit = yield* Effect.exit(
@@ -694,8 +727,8 @@ function runRunCommand(
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const config = yield* loadConfigValue(configPath.value, runtime)
-    const selection = selectProfile(config, input.profile)
+    const loaded = yield* loadConfigValue(configPath.value, runtime)
+    const selection = selectProfile(loaded.config, input.profile)
     if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
     const entry = selection.success
     if (Result.isFailure(entry.plan)) {
@@ -707,6 +740,8 @@ function runRunCommand(
       ...runtime,
       configPath: configPath.value,
       plan,
+      provenance: loaded.provenance,
+      configDir: loaded.configDir,
       profile: input.profile,
     }
     if (!input.noSync) {
@@ -771,8 +806,8 @@ function runDoctorCommand(
     } else {
       const configPath = resolveConfigPath(input.configPath, runtime)
       if (Option.isNone(configPath)) return EXIT_FAILURE
-      const config = yield* loadConfigValue(configPath.value, runtime)
-      const selection = selectProfile(config, Option.none())
+      const loaded = yield* loadConfigValue(configPath.value, runtime)
+      const selection = selectProfile(loaded.config, Option.none())
       if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
       profileName = selection.success.name
     }
@@ -801,10 +836,11 @@ function runReplCommand(
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const profile = Option.getOrUndefined(input.profile)
-    const syncPlan = async (plan: ProfilePlan) => {
+    const configDir = dirname(configPath.value)
+    const syncPlan = async (plan: ProfilePlan, provenance: ConfigProvenance | undefined) => {
       const exit = await Effect.runPromiseExit(
         Effect.suspend(() =>
-          syncProgram(runtime.env, plan, false, false, false).pipe(
+          syncProgram(runtime.env, plan, false, false, false, provenance, configDir).pipe(
             Effect.provide(serviceLayerFor(runtime.options)),
           ),
         ),

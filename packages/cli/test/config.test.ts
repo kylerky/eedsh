@@ -158,7 +158,7 @@ describe('config path validation', () => {
 describe('config loading', () => {
   it('loads a fluently built multi-profile config Result', async () => {
     const dir = await configDir(multiProfileSource)
-    const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     expect(config.dsh).toBe('0.2.1-rc.2')
     expect(config.defaultProfile).toBe('home')
     expect(Object.keys(config.profiles)).toEqual(['work', 'home'])
@@ -170,14 +170,14 @@ describe('config loading', () => {
 
   it('loads a sole-profile fluent config without a default', async () => {
     const dir = await configDir(soleProfileSource)
-    const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     expect(config.defaultProfile).toBeUndefined()
     expect(Object.keys(config.profiles)).toEqual(['solo'])
   })
 
   it('loads a plain config value and validates its profiles', async () => {
     const dir = await configDir(plainConfigSource)
-    const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     expect(Object.keys(config.profiles)).toEqual(['plain-export'])
     const profile = config.profiles['plain-export']
     expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
@@ -196,7 +196,7 @@ describe('config loading', () => {
 
   it('keeps an invalid profile as data instead of failing the config', async () => {
     const dir = await configDir(invalidSiblingSource)
-    const config = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
     const work = config.profiles.work
     expect(work !== undefined && Result.isSuccess(work)).toBe(true)
     const home = config.profiles.home

@@ -254,6 +254,8 @@ export function publishProfile(
         generated: input.generated,
         strict: input.strict,
         explain: input.explain,
+        ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
+        ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
       }),
       restore,
     )

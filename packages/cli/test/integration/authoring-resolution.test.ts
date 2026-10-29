@@ -91,7 +91,7 @@ export default defineConfig()
 `,
     )
 
-    const config = await Effect.runPromise(loadConfig(configPath))
+    const { config } = await Effect.runPromise(loadConfig(configPath))
     const plan = config.profiles.work
     expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
     if (plan === undefined || Result.isFailure(plan)) return
@@ -155,7 +155,7 @@ export default defineConfig()
 `,
     )
 
-    const config = await Effect.runPromise(loadConfig(configPath))
+    const { config } = await Effect.runPromise(loadConfig(configPath))
     const plan = config.profiles.work
     expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
     if (plan === undefined || Result.isFailure(plan)) return

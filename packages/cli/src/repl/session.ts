@@ -12,12 +12,16 @@ import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
 import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
-import { bundle as defaultBundle } from '@eedsh/config'
+import { type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
 import * as Result from 'effect/Result'
-import { type ConfigLoadFailure, loadConfig as defaultLoadConfig } from '../config'
+import {
+  type ConfigLoadFailure,
+  loadConfig as defaultLoadConfig,
+  type LoadedConfig,
+} from '../config'
 import { type DoctorResult, doctor } from '../doctor'
 import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
 import { presetDefinitionErrorLines } from '../internal/authoring-error'
@@ -69,7 +73,10 @@ export interface SyncOutcome {
 }
 
 /** A publication runner supplied by the command or a test. */
-export type SyncPlan = (plan: ProfilePlan) => Promise<SyncOutcome>
+export type SyncPlan = (
+  plan: ProfilePlan,
+  provenance: ConfigProvenance | undefined,
+) => Promise<SyncOutcome>
 
 /** One preflight composition summary. */
 export interface CompositionResult {
@@ -113,7 +120,7 @@ export interface ReplSessionOptions {
   readonly loadConfig?: (
     path: string,
     evaluationNonce?: string,
-  ) => Effect.Effect<EedshConfig, ReplConfigFailure>
+  ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
   readonly watch?: (dir: string, onChange: () => void) => Promise<WatchSession>
   readonly compose?: ComposePlan
   readonly syncPlan?: SyncPlan
@@ -485,7 +492,7 @@ export class ReplSession {
   private readonly loadConfig: (
     path: string,
     evaluationNonce?: string,
-  ) => Effect.Effect<EedshConfig, ReplConfigFailure>
+  ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
   private readonly compose: ComposePlan
   private readonly runDoctor: (profileDir: string) => Promise<DoctorResult>
   private readonly syncPlan: SyncPlan | undefined
@@ -496,6 +503,7 @@ export class ReplSession {
   private evaluateRaw!: (code: string) => Promise<unknown>
   private config!: EedshConfig
   private plan!: ProfilePlan
+  private provenance: ConfigProvenance | undefined
   private profileName!: string
   private configView!: ConfigView
   private selectedProfileView!: ProfileView
@@ -645,10 +653,12 @@ export class ReplSession {
     config: EedshConfig,
     plan: ProfilePlan,
     name: string,
+    provenance: ConfigProvenance | undefined,
   ): Promise<void> {
     this.config = config
     this.plan = plan
     this.profileName = name
+    this.provenance = provenance
     await this.refreshViews()
   }
 
@@ -962,6 +972,7 @@ export class ReplSession {
     plan: ProfilePlan
     name: string
     traces: ResolutionTrace[]
+    provenance: ConfigProvenance | undefined
   }> {
     clearTrace()
     this.evaluationNonce += 1
@@ -973,13 +984,19 @@ export class ReplSession {
       if (Cause.hasInterruptsOnly(exit.cause)) throw new Error('interrupted')
       throw Cause.squash(exit.cause)
     }
-    const selected = selectedPlan(exit.value, this.options.profile)
-    return { config: exit.value, plan: selected.plan, name: selected.name, traces }
+    const selected = selectedPlan(exit.value.config, this.options.profile)
+    return {
+      config: exit.value.config,
+      plan: selected.plan,
+      name: selected.name,
+      traces,
+      provenance: exit.value.provenance,
+    }
   }
 
   private async loadAndSelect(): Promise<void> {
     const loaded = await this.loadCandidate()
-    await this.applySelection(loaded.config, loaded.plan, loaded.name)
+    await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
     this.bind()
     this.printTraces(loaded.traces)
     this.printComposition()
@@ -1051,7 +1068,7 @@ export class ReplSession {
     const diff = diffPlans(previous, next)
     if (diff.length === 0) this.stdout('reload: no changes')
     else for (const line of diff) this.stdout(line)
-    await this.applySelection(loaded.config, loaded.plan, loaded.name)
+    await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
     this.bind()
     this.printTraces(loaded.traces)
     this.printComposition()
@@ -1274,6 +1291,7 @@ export class ReplSession {
       config: this.config,
       plan: this.plan,
       profileName: this.profileName,
+      provenance: this.provenance,
     }
     this.preview = prepared
     this.previewSpecs = [...specs]
@@ -1281,12 +1299,17 @@ export class ReplSession {
     let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
     try {
       loaded = await this.loadCandidate()
-      await this.applySelection(loaded.config, loaded.plan, loaded.name)
+      await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
       this.bind()
     } catch (error) {
       this.preview = previous.preview
       this.previewSpecs = previous.specs
-      await this.applySelection(previous.config, previous.plan, previous.profileName)
+      await this.applySelection(
+        previous.config,
+        previous.plan,
+        previous.profileName,
+        previous.provenance,
+      )
       this.applyPreviewEnv()
       this.reportFailure('preview not ready', error)
       return
@@ -1307,7 +1330,7 @@ export class ReplSession {
     }
     const plan = this.plan
     try {
-      const outcome = await this.syncPlan(plan)
+      const outcome = await this.syncPlan(plan, this.provenance)
       for (const warning of outcome.warnings ?? []) this.stderr(`warning: ${warning}`)
       for (const notice of outcome.notices ?? []) this.stderr(notice)
       this.stdout(
@@ -1343,7 +1366,7 @@ export class ReplSession {
         this.preview = undefined
         this.previewSpecs = []
         this.retainedPreviewDir = undefined
-        await this.applySelection(loaded.config, loaded.plan, loaded.name)
+        await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
         this.bind()
         this.stdout(
           'bootstrap complete: the real install reproduces the published plan; preview deleted',
@@ -1356,6 +1379,7 @@ export class ReplSession {
       this.config = loaded.config
       this.plan = loaded.plan
       this.profileName = loaded.name
+      this.provenance = loaded.provenance
       this.bind()
       this.stdout('preview divergence: the real install does not reproduce the published plan')
       this.stdout(
