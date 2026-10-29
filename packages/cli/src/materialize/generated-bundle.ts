@@ -27,7 +27,12 @@ export const GENERATION_VERSION = 1
 
 /** Schema for one emitted layer file. */
 export const GenerationLayerSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
+  /**
+   * @deprecated Legacy record data accepted without a format-version change;
+   * new records identify patch files by position and emit only `file` and
+   * `hash`. Readers ignore this field.
+   */
+  id: Schema.optional(Schema.NonEmptyString),
   /** Package-relative patch file path. */
   file: Schema.NonEmptyString,
   /** SHA-256 of the emitted YAML content. */
@@ -153,12 +158,12 @@ export interface BuildGeneratedBundleInput {
  */
 export function generationIdFor(input: {
   planHash: string
-  layers: readonly { id: string; hash: string }[]
+  layers: readonly { hash: string }[]
 }): string {
   return sha256(
     canonicalJson({
       planHash: input.planHash,
-      layers: input.layers.map((layer) => ({ id: layer.id, hash: layer.hash })),
+      layers: input.layers.map((layer) => layer.hash),
     }),
   )
 }
@@ -177,7 +182,6 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
   const hashes = emitted.map((item) => ({ id: item.id, hash: sha256(item.content) }))
   const generationId = generationIdFor({ planHash, layers: hashes })
   const layers: GenerationLayer[] = hashes.map((item) => ({
-    id: item.id,
     file: `patches/${generationId}/${item.id}.yml`,
     hash: item.hash,
   }))

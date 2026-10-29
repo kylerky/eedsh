@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { describe, expect, it } from 'vitest'
 import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
+import { classifyGenerationRecord } from '../../src/materialize/generation-record'
 import { emitPatchesYaml } from '../../src/materialize/yaml'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, js, layer, override } from '../support/plan-parts'
@@ -80,15 +81,58 @@ describe('generated bundle', () => {
     expect(metadata.dshVersion).toBe('0.2.1-rc.2')
     expect(metadata.bundles).toEqual(managedBundles)
     expect(metadata.packages).toEqual(packages)
-    expect(metadata.layers.map((entry: { id: string }) => entry.id)).toEqual([
-      'base',
-      'overrides',
-      'expressions',
+    expect(metadata.layers.map((entry) => entry.file)).toEqual([
+      `patches/${result.generationId}/base.yml`,
+      `patches/${result.generationId}/overrides.yml`,
+      `patches/${result.generationId}/expressions.yml`,
     ])
     for (const entry of metadata.layers) {
       expect(entry.file).toMatch(/^patches\/[0-9a-f]{64}\/[a-z0-9-]+\.yml$/)
       expect(entry.hash).toMatch(/^[0-9a-f]{64}$/)
     }
+  })
+
+  it('records layer files without an identifier', () => {
+    const result = build()
+    for (const entry of result.generation.layers) {
+      expect('id' in entry).toBe(false)
+    }
+  })
+
+  it('still classifies a legacy record whose layers carry an id', () => {
+    const result = build()
+    const legacy = {
+      ...result.manifest,
+      eedsh: {
+        ...result.manifest.eedsh,
+        layers: result.manifest.eedsh.layers.map((entry, index) => ({
+          id: ['base', 'overrides', 'expressions'][index],
+          file: entry.file,
+          hash: entry.hash,
+        })),
+      },
+    }
+    const classified = classifyGenerationRecord(legacy, '/profile/.eedsh/generated/package.json')
+    expect(classified._tag).toBe('valid')
+    if (classified._tag !== 'valid') return
+    expect(classified.record.layers.map((entry) => entry.file)).toEqual(
+      result.generation.layers.map((entry) => entry.file),
+    )
+  })
+
+  it('rejects a record whose layer has no file', () => {
+    const result = build()
+    const malformed = {
+      ...result.manifest,
+      eedsh: {
+        ...result.manifest.eedsh,
+        layers: result.manifest.eedsh.layers.map(({ file: _file, ...rest }) => rest),
+      },
+    }
+    const classified = classifyGenerationRecord(malformed, '/profile/.eedsh/generated/package.json')
+    expect(classified._tag).toBe('invalid')
+    if (classified._tag !== 'invalid') return
+    expect(classified.reason).toBe('layers')
   })
 
   it('writes the generated package manifest last', () => {
@@ -142,10 +186,11 @@ describe('generated bundle', () => {
     const before = build(original)
     const after = build(changed)
     expect(after.generationId).not.toBe(before.generationId)
-    const beforeHashes = new Map(before.generation.layers.map((entry) => [entry.id, entry.hash]))
-    const afterHashes = new Map(after.generation.layers.map((entry) => [entry.id, entry.hash]))
-    expect(afterHashes.get('overrides')).not.toBe(beforeHashes.get('overrides'))
-    expect(afterHashes.get('base')).toBe(beforeHashes.get('base'))
+    const beforeHashes = before.generation.layers.map((entry) => entry.hash)
+    const afterHashes = after.generation.layers.map((entry) => entry.hash)
+    expect(afterHashes[1]).not.toBe(beforeHashes[1])
+    expect(afterHashes[0]).toBe(beforeHashes[0])
+    expect(afterHashes[2]).toBe(beforeHashes[2])
   })
 
   it('computes the generation id from the plan hash and layer hashes', () => {

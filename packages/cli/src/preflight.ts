@@ -4,6 +4,7 @@
  * plan that cannot compose never becomes the published profile.
  * @module @eedsh/cli/preflight
  */
+import { basename } from 'node:path'
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { ProfilePlan } from '@eedsh/plan'
@@ -236,7 +237,7 @@ export function parseGeneratedLayers(
   const files = generated.files.filter((file) => file.path.endsWith('.yml'))
   const layers: PreflightLayer[] = []
   for (const [index, file] of files.entries()) {
-    const id = generated.generation.layers[index]?.id ?? file.path
+    const id = generated.generation.layers[index]?.id ?? basename(file.path, '.yml')
     const parsed = Result.try({
       try: () => yaml.load(file.content, { schema: entryListSchema }),
       catch: (cause) => fail(`cannot parse generated layer ${id}: ${String(cause)}`),
