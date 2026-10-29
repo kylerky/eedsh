@@ -156,7 +156,7 @@ interface ResolutionTrace {
 
 const TRACE_KEY = Symbol.for('@eedsh/config.resolution-trace')
 /** The curated authoring factories bound into the prompt. */
-const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'group', 'js'] as const
+const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'definePreset', 'group', 'js'] as const
 
 /** The typed view names the prompt owns; an authoring export must not shadow one. */
 const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const

@@ -59,7 +59,15 @@ export interface CompletionResult {
   readonly hits: readonly string[]
 }
 
-type MethodKind = 'bundle' | 'bundle-query' | 'row' | 'preset' | 'config' | 'profile' | 'plan'
+type MethodKind =
+  | 'bundle'
+  | 'bundle-query'
+  | 'row'
+  | 'preset'
+  | 'preset-definition'
+  | 'config'
+  | 'profile'
+  | 'plan'
 
 const METHODS: Record<MethodKind, readonly string[]> = {
   bundle: [
@@ -86,6 +94,16 @@ const METHODS: Record<MethodKind, readonly string[]> = {
     'name',
     'order',
     'override',
+    'rowId',
+    'toJSON',
+  ],
+  'preset-definition': [
+    'children',
+    'description',
+    'from',
+    'id',
+    'name',
+    'order',
     'rowId',
     'toJSON',
   ],
@@ -208,6 +226,7 @@ function chainInfo(text: string): ChainInfo {
   const base = /^([A-Za-z_$][\w$]*)/.exec(trimmed)?.[1]
   let kind: MethodKind | undefined
   if (base === 'bundle') kind = 'bundle'
+  else if (base === 'definePreset') kind = 'preset-definition'
   else if (base === 'config') kind = 'config'
   else if (base === 'selectedProfile') kind = 'profile'
   else if (base === 'plan') kind = 'plan'

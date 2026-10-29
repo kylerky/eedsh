@@ -2,7 +2,8 @@
 
 The typed authoring and query surface for eedsh. `defineConfig()` starts a
 synchronous fluent builder, `bundle(name)` returns a handle that is both a plan
-selection and a query root, and layers, rows, and presets are typed objects.
+selection and a query root, `definePreset(id)` authors an adapted agent preset,
+and layers, rows, and presets are typed objects.
 Typed objects normalize to plain plan data only at `build()`, so the persisted
 plan stays strict JSON.
 
@@ -86,6 +87,9 @@ than once returns independent equivalent values.
 - `.override(target, config)` replaces a row's whole config; DSH does not merge.
 - `.disable(target)` / `.enable(target)` toggle a row.
 - `.raw(entry)` preserves any Loader patch field the builders do not name.
+- `.selectPreset(selected, { default })` writes the complete
+  `agent-preset-registry` config from two preset references; the deployment
+  default is required and never inferred.
 
 Each method appends a patch and returns the layer. A patch target may be a Loader
 row id, a `Row`, or a `Preset`; a `Preset` targets its own Loader row id.
@@ -136,6 +140,70 @@ Failures are `ResolutionError` values with a stable `code`, the queried
 `bundle`, and a message. A failed resolution, missing row or preset, or invalid
 root fails rather than returning partial data.
 
+Rows and presets are plan-shaped. A runtime expression parsed from DSH's
+`!!js` scalars is exposed as the plan node `{ $eedsh: { expr } }`, never as the
+DSH-internal `__jsExpr` marker, so a query result is directly insertable and its
+nested expressions round-trip through the emitted patch.
+
+## Preset authoring
+
+`definePreset(id, { rowId? })` returns a mutable `PresetDefinition`. It
+normalizes to an ordinary `@deepseek-ai/dsh-agent-preset` row whose config
+carries `id`, the optional name, description, and order, and the top-level child
+list as `plugins`. The Loader row id defaults to `preset-<id>`.
+
+```ts
+import { bundle, defineConfig, definePreset } from '@eedsh/config'
+
+const installed = bundle('@deepseek-ai/dsh-web-app').preset('ptc')
+const standard = bundle('@deepseek-ai/dsh-web-app').preset('standard')
+
+const adapted = definePreset('ptc-fresh')
+  .from(installed) // copies only installed.config.plugins
+  .name('Adapted PTC')
+  .description('PTC for personal use')
+  .order(2)
+  .children((children) => {
+    children.child('tool-todo').disable()
+    children.child('tool-web').disable()
+    children.append({ id: 'tool-lsp', name: '@deepseek-ai/dsh-tool-lsp' })
+  })
+
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated()
+      .layer('presets', (layer) => layer.insert(adapted))
+      .layer('registry', (layer) => layer.selectPreset(adapted, { default: standard }))
+  })
+  .build()
+```
+
+- `.from(installed)` copies only the child list; identity and metadata stay with
+  the definition, and the installed handle is never mutated or aliased.
+- `.children(build)` is a callback scope: `child(id)` returns a short-lived
+  handle with `.disable()`, `.enable()`, `.remove()`, and
+  `.replaceWith(entry)`; the scope offers `.append(entry)`, `.prepend(entry)`,
+  `.insertBefore(anchor, entry)`, and `.insertAfter(anchor, entry)`. Every
+  operation is single-target, the callback return value is ignored, and the scope
+  returns the definition.
+- Only top-level children are addressable. A group is appended, replaced, or
+  removed as one entry.
+- A missing or duplicate child or anchor fails with a `PresetDefinitionError`
+  carrying `code` (`preset.child_not_found` or `preset.child_ambiguous`),
+  `presetId`, `rowId`, and `childId`; the lookup happens before any mutation.
+- An invalid preset id fails with `preset.invalid_id`; a non-preset selection
+  reference fails with `preset.invalid_selection`.
+
+`LayerBuilder.selectPreset(selected, { default })` accepts an installed
+`Preset` or an authored `PresetDefinition` for both values and writes
+`{ id: 'agent-preset-registry', config: { default, selectedDefault } }`. It
+writes the complete config, never merges the existing row, and never infers the
+deployment default; a profile with no registry row gets the ordinary preflight
+unmatched-target warning.
+
 ## Normalization
 
 Typed objects carry a global brand symbol and implement `.toJSON()`.
@@ -167,8 +235,9 @@ valid sibling is unaffected.
 
 The public surface is the typed authoring API: `defineConfig`, `ConfigBuilder`,
 `ProfileBuilder`, `LayerBuilder`, `bundle`, `Bundle`, `BundleQuery`,
-`Row`, `Preset`, `group`, `js`, `ResolutionError`, the resolution-trace
-helpers, and the re-exported plan types. The legacy free helpers (`rows`,
+`Row`, `Preset`, `definePreset`, `PresetDefinition`, `PresetChildren`,
+`PresetChild`, `PresetDefinitionError`, `group`, `js`, `ResolutionError`, the
+resolution-trace helpers, and the re-exported plan types. The legacy free helpers (`rows`,
 `presets`, `row`, `defineProfile`, `insert`, `override`, `disable`,
 `enable`, `layer`, `raw`) are not exported.
 

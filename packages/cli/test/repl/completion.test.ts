@@ -73,6 +73,24 @@ describe('chain method completion', () => {
     expect(byDir.hits).not.toContain('fromPackageDir')
   })
 
+  it('offers the preset-definition methods and their arguments', () => {
+    const result = at("definePreset('ptc-fresh').")
+    for (const method of [
+      'children',
+      'description',
+      'from',
+      'id',
+      'name',
+      'order',
+      'rowId',
+      'toJSON',
+    ]) {
+      expect(result.hits).toContain(method)
+    }
+    expect(at("definePreset('ptc-fresh').ch").hits).toEqual(['children'])
+    expect(at("definePreset('ptc-fresh').from(installed).").hits).toContain('toJSON')
+  })
+
   it('offers methods for rows, presets, the config view, and the profile view', () => {
     const row = at("bundle('@deepseek-ai/dsh-base').row('timer').")
     expect(row.hits).toContain('disable')

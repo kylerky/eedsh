@@ -67,6 +67,7 @@ function rowsOf(plan: ProfilePlan): number {
 const authoring = {
   module: {
     defineConfig: () => 'bound-define-config',
+    definePreset: () => 'bound-define-preset',
     marker: 42,
   },
   packagePath: '/fake/@eedsh/config/package.json',
@@ -170,6 +171,8 @@ describe('session evaluation', () => {
     expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
     expect(await h.session.evaluate('typeof marker')).toBe('undefined')
     expect(await h.session.evaluate('typeof defineConfig')).toBe('function')
+    expect(await h.session.evaluate('typeof definePreset')).toBe('function')
+    expect(await h.session.evaluate('definePreset()')).toBe('bound-define-preset')
   })
 
   it('selects the default profile and reports ambiguity or an unknown name', async () => {
@@ -281,6 +284,16 @@ describe('typed domain bindings', () => {
     expect(await h.session.evaluate('1 + 1')).toBe(2)
   })
 
+  it('binds definePreset only when the authoring package exports it', async () => {
+    const without = await session({ authoringModule: { defineConfig: () => undefined } })
+    expect(await without.session.evaluate('typeof definePreset')).toBe('undefined')
+    const withIt = await session({
+      authoringModule: { defineConfig: () => undefined, definePreset: () => 'bound' },
+    })
+    expect(await withIt.session.evaluate('typeof definePreset')).toBe('function')
+    expect(await withIt.session.evaluate('definePreset()')).toBe('bound')
+  })
+
   it('keeps bindings current after reload', async () => {
     const h = await session()
     h.setConfig(configWith(['a', 'b']))
@@ -293,13 +306,27 @@ describe('typed domain bindings', () => {
 
   it('fails loudly when the authoring module collides with a binding', async () => {
     await expect(
-      session({ authoringModule: { config: {}, defineConfig: () => undefined } }),
+      session({
+        authoringModule: {
+          config: {},
+          defineConfig: () => undefined,
+          definePreset: () => undefined,
+        },
+      }),
     ).rejects.toMatchObject({ code: 'repl.binding_collision' })
     await expect(
-      session({ authoringModule: { selectedProfile: {}, defineConfig: () => undefined } }),
+      session({
+        authoringModule: {
+          selectedProfile: {},
+          defineConfig: () => undefined,
+          definePreset: () => undefined,
+        },
+      }),
     ).rejects.toMatchObject({ code: 'repl.binding_collision' })
     await expect(
-      session({ authoringModule: { plan: {}, defineConfig: () => undefined } }),
+      session({
+        authoringModule: { plan: {}, defineConfig: () => undefined, definePreset: () => undefined },
+      }),
     ).rejects.toMatchObject({ code: 'repl.binding_collision' })
   })
 })

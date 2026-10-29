@@ -101,8 +101,8 @@ eedsh --help | --version
   lock; `--profile` publishes exactly that profile. An invalid, locked, or failed
   profile is reported and does not stop its valid siblings, and the command exits
   `1` if any selected profile failed.
-- `--strict` turns unmatched patch targets into a failure for that profile and skips
-  its publication.
+- `--strict` turns preflight warnings (unmatched patch targets and empty generated
+  layers) into a failure for that profile and skips its publication.
 - `--watch` re-evaluates the config and the same selection on every change; a
   compile, validation, or profile failure is reported and the session stays active,
   keeping the last published generation.
@@ -143,7 +143,7 @@ eedsh --help | --version
   `defaultProfile`, `profiles()`), `selectedProfile` is the selected profile view
   (`name`, `plan()`, `bundles()`, `layers()`, `packages()`, `entries()`,
   `published()`), and `plan` is `selectedProfile.plan()`. The curated authoring
-  factories `bundle`, `defineConfig`, `group`, and `js` are bound; the legacy
+  factories `bundle`, `defineConfig`, `definePreset`, `group`, and `js` are bound; the legacy
   `profile` string and raw `profiles` map are not. Tab completes commands, chain
   methods, and profile, bundle, row, preset, and package names; a second Tab lists
   ambiguous matches. Dot commands are
@@ -213,13 +213,15 @@ row; methods never reach the persisted plan.
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
 | `ProfileBuilder.layer(id, build)` | Declare an ordered patch layer scoped to its callback. |
 | `ProfileBuilder.package(name, spec)` | Add a profile-local package dependency. |
-| `LayerBuilder.insert(entries)` | Insert Loader entries, typed rows, or typed presets. |
+| `LayerBuilder.insert(entries)` | Insert Loader entries, typed rows, presets, or preset definitions. |
 | `LayerBuilder.override(target, config)` | Replace a row's whole config; no merge. |
 | `LayerBuilder.disable(target)` / `.enable(target)` | Toggle a row or preset by id or typed handle. |
 | `LayerBuilder.raw(entry)` | Preserve a raw Loader patch entry, including unnamed fields. |
 | `group(id, fields, children)` | Build a group entry for `insert`, with fields, an optional isolate map, and ordered children. |
 | `js(source)` | Emit a `!!js` runtime expression evaluated at activation. |
 | `bundle(name)` | Select a bundle and query handle; `.fromProfile()` and `.fromPackageDir()` root it. |
+| `definePreset(id, options?)` | Author a mutable agent-preset definition; `.from()`, `.name()`, `.description()`, `.order()`, and `.children()` chain and `.toJSON()` is an ordinary agent-preset row. |
+| `LayerBuilder.selectPreset(selected, { default })` | Write the complete `agent-preset-registry` config from two installed or authored preset references. |
 
 ## Authoring queries and the config REPL
 
@@ -285,6 +287,67 @@ non-bundle packages, unreadable patches, and unknown row or preset ids fail
 instead of returning partial data. The prompt and a config file run the same
 query code.
 
+### Authoring a preset from an installed one
+
+`definePreset(id, { rowId? })` returns a mutable definition that normalizes to
+an ordinary `@deepseek-ai/dsh-agent-preset` row. The row id defaults to
+`preset-<id>`; an explicit `rowId` overrides it. `.from(installed)` copies only
+the installed preset's child list, so identity and metadata stay explicit:
+
+```ts
+import { bundle, defineConfig, definePreset } from '@eedsh/config'
+
+const installed = bundle('@deepseek-ai/dsh-web-app').preset('ptc')
+const standard = bundle('@deepseek-ai/dsh-web-app').preset('standard')
+
+const adapted = definePreset('ptc-fresh') // Loader row id: preset-ptc-fresh
+  .from(installed)
+  .name('Adapted PTC')
+  .description('PTC for personal use')
+  .order(2)
+  .children((children) => {
+    children.child('tool-todo').disable()
+    children.child('tool-web').disable()
+    children.append({ id: 'tool-lsp', name: '@deepseek-ai/dsh-tool-lsp' })
+  })
+
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-web-app')
+      .generated()
+      .layer('presets', (layer) => {
+        layer.insert(adapted)
+      })
+      .layer('registry', (layer) => {
+        layer.selectPreset(adapted, { default: standard })
+      })
+  })
+  .build()
+```
+
+Every child operation names one child or one anchor. `child(id)` returns a
+short-lived handle with `.disable()`, `.enable()`, `.remove()`, and
+`.replaceWith(entry)`; the scope offers `.append(entry)`, `.prepend(entry)`,
+`.insertBefore(anchor, entry)`, and `.insertAfter(anchor, entry)`. The callback
+return value is ignored and `.children()` returns the definition. Only
+top-level children are addressable; a group is edited or replaced as one entry.
+A missing or duplicate child id throws `PresetDefinitionError` with `presetId`,
+`rowId`, and `childId` before anything mutates, and config loading preserves
+that tagged failure instead of reporting a generic import failure.
+
+Query rows already carry plan expression nodes (`{ $eedsh: { expr } }`), not
+DSH's internal `__jsExpr` marker, so a copied child that used `!!js` is
+directly insertable and the emitted patch keeps the `!!js` scalar.
+
+`selectPreset(selected, { default })` writes the complete
+`agent-preset-registry` config from two preset references (an installed
+`Preset` or an authored definition): `selectedDefault` is the selected preset
+and `default` is the required deployment default. It never reads or merges the
+existing registry row and never infers the deployment default. When the
+profile's composition has no registry row, preflight reports the unmatched
+target as a warning (fatal with `--strict`).
 ```sh
 eedsh repl
 eedsh repl --profile work --sync
@@ -295,7 +358,7 @@ The prompt evaluates TypeScript, including type annotations and top-level
 `await`, and keeps bindings across entries. `config` is the config view,
 `selectedProfile` is the selected profile view, and `plan` is
 `selectedProfile.plan()`. The curated authoring factories `bundle`,
-`defineConfig`, `group`, and `js` are bound from the config project's
+`defineConfig`, `definePreset`, `group`, and `js` are bound from the config project's
 `@eedsh/config`; an export that collides with a view binding fails the session
 loudly. The legacy `profile` string and raw `profiles` map are gone: use
 `.profile <name>` to switch the selected profile without re-importing, and
@@ -405,6 +468,8 @@ persisted plan format is unchanged, so published profiles are not stranded.
 | `rows(bundle, root)` / `row(bundle, id, root)` / `presets(bundle, root)` | `bundle(name).rows()` / `.row(id)` / `.presets()`, rooted with `.fromProfile()` or `.fromPackageDir()` |
 | REPL `profile` string / `profiles` map | `selectedProfile` view / `config.profiles()`; `.profile <name>` switches |
 | Query results were frozen plain rows | Query handles are typed; pass them to `insert` or call `.toJSON()` |
+| A user-written `__jsExpr` walk before inserting a queried preset | Query results already carry plan `{ $eedsh: { expr } }` expression nodes |
+| `bundle(name, { source })` / `.bundle(name, { source })` | `.bundle(name)` for the patch layer, plus `.package(name, spec)` when the profile also needs the dependency |
 | `defineProfile` and `assertPlan` exports | Removed; `validatePlan` remains in `@eedsh/plan` |
 
 `defineConfig().build()` is synchronous and returns Effect's native
