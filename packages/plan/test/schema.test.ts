@@ -142,7 +142,7 @@ describe('plan schema decoding', () => {
       [withoutDsh, ['dsh']],
       [withoutBundles, ['bundles']],
       [{ profile: {} }, ['profile', 'name']],
-      [{ layers: [{ patches: [] }] }, ['layers', 0, 'id']],
+      [{ layers: [{ id: 'base' }] }, ['layers', 0, 'patches']],
     ]
     for (const [value, path] of cases) {
       const issues = issuesOf(value)
@@ -184,16 +184,19 @@ describe('plan policy', () => {
     }
   })
 
-  it('rejects empty, unsafe, and duplicate layer ids', () => {
-    for (const id of ['base', 'plugins-2']) {
-      expect(Result.isSuccess(decode(plan({ layers: [layer(id)] })))).toBe(true)
-    }
-    for (const id of ['', ' ', '../escape', 'Base', 'base--x', '-base', 'base-']) {
-      expectRejected(plan({ layers: [layer(id)] }), ['layers', 0, 'id'])
-    }
-    const issues = issuesOf(plan({ layers: [layer('base'), layer('base')] }))
-    expect(issues.map((issue) => issue.path)).toContainEqual(['layers', 1, 'id'])
-    expect(issues.some((issue) => issue.message.includes('layers[0].id'))).toBe(true)
+  it('accepts a layer without an id', () => {
+    expect(Result.isSuccess(decode(plan({ layers: [{ patches: [] }] })))).toBe(true)
+  })
+
+  it('accepts two layers carrying the same legacy id', () => {
+    const result = decode(plan({ layers: [layer('base'), layer('base')] }))
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.layers.map((item) => item.patches)).toEqual([[], []])
+  })
+
+  it('rejects a legacy layer id that is not a string', () => {
+    expectRejected(plan({ layers: [{ id: 42, patches: [] }] }), ['layers', 0, 'id'])
   })
 
   it('rejects duplicate bundle names', () => {

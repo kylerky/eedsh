@@ -102,6 +102,15 @@ describe('validatePlan', () => {
     expect(detached.nested.enabled).toBe(true)
   })
 
+  it('accepts anonymous layers and duplicate legacy layer ids', () => {
+    expect(Result.isSuccess(validatePlan(plan({ layers: [{ patches: [] }] })))).toBe(true)
+    expect(
+      Result.isSuccess(validatePlan(plan({ layers: [layer('base'), layer('base')] }))),
+    ).toBe(true)
+    const issues = issuesOf(plan({ layers: [{ id: 42, patches: [] }] }))
+    expect(issues.map((issue) => issue.path)).toContainEqual(['layers', 0, 'id'])
+  })
+
   it('uses an empty path array for a root failure', () => {
     const issues = issuesOf('not-a-plan')
     expect(issues.length).toBeGreaterThan(0)

@@ -170,8 +170,8 @@ export function generationIdFor(input: {
  */
 export function buildGeneratedBundle(input: BuildGeneratedBundleInput): GeneratedBundle {
   const planHash = hashPlan(input.plan)
-  const emitted = input.plan.layers.map((item) => ({
-    id: item.id,
+  const emitted = input.plan.layers.map((item, index) => ({
+    id: item.id ?? String(index + 1),
     content: emitPatchesYaml(item.patches),
   }))
   const hashes = emitted.map((item) => ({ id: item.id, hash: sha256(item.content) }))

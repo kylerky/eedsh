@@ -13,9 +13,6 @@ export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/gene
 
 const RESERVED = new Set(RESERVED_NAMES)
 
-/** Layer ids double as patch file names, so they stay safe kebab-case. */
-const SAFE_LAYER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
 /** An exact DSH runtime pin such as `0.2.1-rc.2`. */
 const DSH_PIN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 
@@ -69,13 +66,6 @@ export const ProfileNameSchema = refine(
 export const DshPinSchema = refine(
   Schema.NonEmptyString,
   (dsh) => DSH_PIN.test(dsh) || `"${dsh}" is not an exact version`,
-)
-
-/** A layer id that is safe to use as a patch file name. */
-const LayerIdSchema = refine(Schema.NonEmptyString, (id) =>
-  id.trim() === ''
-    ? 'layer id must be a non-empty string'
-    : SAFE_LAYER_ID.test(id) || `layer id "${id}" must be kebab-case (a-z, 0-9, single dashes)`,
 )
 
 /** A bundle name the materializer does not already own. */
@@ -186,34 +176,22 @@ function patchIssues(patch: PatchInput): Schema.FilterIssue[] {
 /** One Loader patch entry with the patch rules applied. */
 export const PlanPatchSchema = refine(PlanPatchBaseSchema, patchIssues)
 
-/** One ordered generated layer. */
+/** One ordered generated layer; its identity is its position. */
 export const PlanLayerSchema = plain(
   Schema.Struct({
-    id: LayerIdSchema,
+    /**
+     * @deprecated Legacy plan data accepted without a version change; new
+     * authoring emits anonymous groups identified by position. The
+     * materializer ignores this field.
+     */
+    id: Schema.optional(Schema.String),
     patches: Schema.Array(PlanPatchSchema),
   }),
   'layer must be a JSON object',
 )
 
-function layerIssues(layers: ReadonlyArray<PlanLayer>): Schema.FilterIssue[] {
-  const issues: Schema.FilterIssue[] = []
-  const seen = new Map<string, number>()
-  layers.forEach((layer, index) => {
-    const previous = seen.get(layer.id)
-    if (previous === undefined) seen.set(layer.id, index)
-    else
-      issues.push({
-        path: [index, 'id'],
-        issue: `duplicate layer id "${layer.id}" (also declared at layers[${previous}].id)`,
-      })
-  })
-  return issues
-}
-
-const PlanLayerListBaseSchema = Schema.Array(PlanLayerSchema)
-
-/** Ordered layers with unique ids. */
-const PlanLayerListSchema = refine(PlanLayerListBaseSchema, layerIssues)
+/** Ordered layers whose identity is their position. */
+const PlanLayerListSchema = Schema.Array(PlanLayerSchema)
 
 const PackagesBaseSchema = Schema.Record(Schema.String, Schema.String)
 

@@ -76,6 +76,10 @@ function diffLayerPatches(
   return lines
 }
 
+function layerKey(layer: { readonly id?: string | undefined }, index: number): string {
+  return layer.id ?? `#${index}`
+}
+
 function diffPlan(profile: string, before: ProfilePlan, after: ProfilePlan): string[] {
   const lines: string[] = []
   if (before.dsh !== after.dsh)
@@ -115,8 +119,8 @@ function diffPlan(profile: string, before: ProfilePlan, after: ProfilePlan): str
     if (!Object.hasOwn(afterPackages, name)) lines.push(`- package ${quote(name)}`)
   }
 
-  const beforeLayers = new Map(before.layers.map((item) => [item.id, item]))
-  const afterLayers = new Map(after.layers.map((item) => [item.id, item]))
+  const beforeLayers = new Map(before.layers.map((item, index) => [layerKey(item, index), item]))
+  const afterLayers = new Map(after.layers.map((item, index) => [layerKey(item, index), item]))
   for (const [id, item] of afterLayers) {
     const old = beforeLayers.get(id)
     if (old === undefined) {
