@@ -14,6 +14,7 @@ export type {
 } from '@eedsh/plan'
 export * from './authoring'
 export * from './builders'
+export * from './preset'
 export * from './query'
 export {
   CONFIG_DIR_ENV,

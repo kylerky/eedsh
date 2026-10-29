@@ -20,6 +20,7 @@ import {
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import { normalizeAuthoring } from './authoring'
+import type { PresetDefinition } from './preset'
 import {
   type Bundle,
   bundleSelection,
@@ -33,7 +34,7 @@ import {
 export type PlanEntry = JsonObject
 
 /** A value `LayerBuilder.insert()` accepts. */
-export type LayerEntry = PlanEntry | Row | Preset
+export type LayerEntry = PlanEntry | Row | Preset | PresetDefinition
 
 /**
  * One mutable generated patch layer. Patch methods append in call order and

@@ -158,7 +158,10 @@ describe('resolved expressions', () => {
     const plan = built.success.profiles.work
     expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
     if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
-    const inserted = plan.success.layers[0]?.patches[0]?.insert?.[0] as Record<string, unknown>
+    const patch = plan.success.layers[0]?.patches[0] as
+      | { insert?: readonly Record<string, unknown>[] }
+      | undefined
+    const inserted = patch?.insert?.[0] as Record<string, unknown>
     expect(inserted.config).toMatchObject({
       plugins: [
         { id: 'tool-web', disabled: { $eedsh: { expr: "!ctx.get('profileContext')" } } },

@@ -10,7 +10,7 @@
 export const AUTHORING_KIND = Symbol.for('@eedsh/config.authoring')
 
 /** The kinds of object that normalize to plan data. */
-export type AuthoringKind = 'bundle' | 'row' | 'preset'
+export type AuthoringKind = 'bundle' | 'row' | 'preset' | 'preset-definition'
 
 /** A typed authoring object that knows its plain-plan representation. */
 export interface AuthoringObject {
