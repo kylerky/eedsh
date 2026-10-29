@@ -257,7 +257,12 @@ function readPlan(
   })
 }
 
-/** Verify that the record's managed sets agree with the authoritative plan. */
+/**
+ * Verify that the record's managed sets agree with the authoritative plan.
+ * The advisory provenance sidecar is deliberately outside this check: it is not
+ * required for a profile to be correct or bootable, so an absent, unreadable, or
+ * generation-mismatched sidecar must never produce a finding or affect exit status.
+ */
 function checkConsistency(
   record: GenerationRecord,
   plan: ProfilePlan,
@@ -311,7 +316,10 @@ function checkConsistency(
   }
 }
 
-/** Verify that the stable mirror carries the authoritative plan. */
+/**
+ * Verify that the stable mirror carries the authoritative plan. The provenance
+ * sidecar next to it is not consulted here.
+ */
 function checkMirror(
   fs: FileSystem.FileSystem,
   profileDir: string,

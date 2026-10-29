@@ -118,6 +118,57 @@ function planPath(h: Awaited<ReturnType<typeof published>>): string {
   return `${PROFILE_DIR}/.eedsh/generated/plans/${recordOf(h).eedsh.generationId}.json`
 }
 
+describe('doctor provenance sidecar', () => {
+  const PROVENANCE_PATH = `${PROFILE_DIR}/.eedsh/provenance.json`
+
+  function sidecarFor(h: Awaited<ReturnType<typeof published>>, generationId?: string): string {
+    return `${JSON.stringify(
+      {
+        format: 'eedsh/provenance',
+        version: 1,
+        generationId: generationId ?? recordOf(h).eedsh.generationId,
+        groups: [],
+      },
+      null,
+      2,
+    )}\n`
+  }
+
+  it('reports no finding for a missing sidecar and keeps exit 0 under --strict', async () => {
+    const h = await published()
+    h.fs.files.delete(PROVENANCE_PATH)
+    const result = await diagnose(h.fs.fs)
+    expect(result.findings.some((item) => item.check === 'provenance')).toBe(false)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('reports no finding for a malformed sidecar and keeps exit 0 under --strict', async () => {
+    const h = await published()
+    h.fs.files.set(PROVENANCE_PATH, '{ not a sidecar')
+    const result = await diagnose(h.fs.fs)
+    expect(result.findings.some((item) => item.check === 'provenance')).toBe(false)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('reports no finding for a generation-mismatched sidecar', async () => {
+    const h = await published()
+    h.fs.files.set(PROVENANCE_PATH, sidecarFor(h, 'b'.repeat(64)))
+    const result = await diagnose(h.fs.fs)
+    expect(result.findings.some((item) => item.check === 'provenance')).toBe(false)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('leaves a healthy profile with a sidecar unchanged', async () => {
+    const h = await published()
+    const before = await diagnose(h.fs.fs)
+    h.fs.files.set(PROVENANCE_PATH, sidecarFor(h))
+    const after = await diagnose(h.fs.fs)
+    expect(after).toEqual(before)
+    expect(after.errors).toBe(0)
+    expect(doctorExitCode(after, true)).toBe(0)
+  })
+})
+
 describe('doctor record checks', () => {
   it('reports a missing generation record as an error', async () => {
     const h = await published()
