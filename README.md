@@ -53,7 +53,7 @@ export default defineConfig()
       .bundle('@deepseek-ai/dsh-base')
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
-      .layer('overrides', (layer) => {
+      .layer((layer) => {
         layer
           .override('agent-default-model', {
             provider: 'deepseek',
@@ -106,10 +106,14 @@ eedsh --help | --version
 - `--watch` re-evaluates the config and the same selection on every change; a
   compile, validation, or profile failure is reported and the session stays active,
   keeping the last published generation.
-- `--explain` attributes each preflight warning as `<layer>: <message>`. Without it,
-  preflight warnings are raw DSH messages followed by a one-line hint pointing at
-  `--explain`. It is sync-only; `run`, `check`, and `doctor` reject it as a usage
-  error.
+- `--explain` attributes each preflight warning as `<group>: <message>`. The
+  group is `generated #<n>` in application order, followed by the optional
+  authoring label, the authoring site (`config.ts:9:5`), and the row ids the
+  patch touches; a warning from a bundle keeps its `bundle:<name>` label. An
+  empty generated group is reported with the same positional prefix. Without
+  `--explain`, preflight warnings are raw DSH messages followed by a one-line
+  hint pointing at `--explain`. It is sync-only; `run`, `check`, and `doctor`
+  reject it as a usage error.
 - `--adopt-ownership` re-baselines ownership from the current manifest when the
   generation record cannot be read. Without it, sync fails closed on an eedsh-managed
   profile instead of silently treating managed entries as user-owned. It is not for
@@ -117,7 +121,10 @@ eedsh --help | --version
 - `doctor` inspects a published profile without changing it. It verifies the
   generation record, the authoritative `plans/<generationId>.json`, the
   `.eedsh/plan.json` mirror, managed bundles and dependencies, dependency-section
-  conflicts, scaffolding, the lockfile, and installed package resolution. It takes no
+  conflicts, scaffolding, the lockfile, and installed package resolution. The
+  advisory `.eedsh/provenance.json` sidecar is outside every check: it may be
+  absent, malformed, or from another generation without affecting findings or
+  exit status. It takes no
   lock and never repairs; findings point at `eedsh sync` or
   `eedsh sync --adopt-ownership`. `--profile` selects a profile under `DSH_HOME`
   without evaluating a config; without it, doctor evaluates the config only to take
@@ -174,14 +181,16 @@ export default defineConfig()
       .package('@scope/my-plugin', 'link:../packages/my-plugin')
       .bundle('@deepseek-ai/dsh-base')
       .bundle('@deepseek-ai/dsh-web-app')
-      .generated() // generated layers sit here: after web-app, before nothing else
-      .layer('plugins', (layer) => {
+      .generated() // generated patch groups sit here: after web-app, before nothing else
+      .layer((layer) => {
         // `insert` adds new rows; `disable` targets an existing row by id.
+        // A group is anonymous and identified by its position; `.layer(label, build)`
+        // adds a non-unique display label when you want one in diagnostics.
         layer
           .insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } })
           .disable('repeat-tool-reminder')
       })
-      .layer('overrides', (layer) => {
+      .layer((layer) => {
         // `override` replaces the row's whole config, exactly like a DSH Loader patch.
         layer
           .override('agent-default-model', {
@@ -211,7 +220,7 @@ row; methods never reach the persisted plan.
 | `ConfigBuilder.build()` | Normalize typed objects, validate the envelope and every profile, and return `Result<EedshConfig, Schema.SchemaError>`. |
 | `ProfileBuilder.bundle(name \| Bundle)` | Add an ordered bundle selection. A rooted query is rejected. Bundle selection never declares a dependency; a local bundle that is both calls `.bundle(name)` and `.package(name, spec)`. |
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
-| `ProfileBuilder.layer(id, build)` | Declare an ordered patch layer scoped to its callback. |
+| `ProfileBuilder.layer(build)` | Declare an ordered, anonymous patch group scoped to its callback; identity is position. `.layer(label, build)` attaches an optional non-unique display label. |
 | `ProfileBuilder.package(name, spec)` | Add a profile-local package dependency. |
 | `LayerBuilder.insert(entries)` | Insert Loader entries, typed rows, presets, or preset definitions. |
 | `LayerBuilder.override(target, config)` | Replace a row's whole config; no merge. |
@@ -251,11 +260,11 @@ export default defineConfig()
       .bundle('@deepseek-ai/dsh-base')
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
-      .layer('presets', (layer) => {
+      .layer((layer) => {
         // standard is a Preset: disable() targets its Loader row id.
         layer.disable(standard ?? 'preset-minimal')
       })
-      .layer('plugins', (layer) => {
+      .layer((layer) => {
         layer.insert([...installed, vendored, pinned])
       })
   })
@@ -317,10 +326,10 @@ export default defineConfig()
     profile
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
-      .layer('presets', (layer) => {
+      .layer((layer) => {
         layer.insert(adapted)
       })
-      .layer('registry', (layer) => {
+      .layer((layer) => {
         layer.selectPreset(adapted, { default: standard })
       })
   })
@@ -379,13 +388,14 @@ switch, preview change, and successful sync:
 | `selectedProfile` / `config.profile(name)` | `name`, `valid`, `error`, `plan()`, `bundles()`, `layers()`, `packages()`, `entries()`, `published()`. |
 | A bundle view | Plan selection data plus `rows()`, `presets()`, `row()`, `preset()`, `version()`, `packageDir()`, `origin()`. |
 | `packages()` | Declared plan packages, managed runtime/generated packages, and installed manifest versions. |
-| `entries()` | Composed rows with the last layer or bundle that touched each id. |
+| `entries()` | Composed rows with the last authoring site, group position, or bundle that touched each id. |
 | `published()` | Manifest, generation record, authoritative plan path, and doctor findings; a missing profile is `exists: false`, not an error. |
 
 After a save the prompt re-evaluates, debounces bursts of edits, prints a plan
-diff (profile, bundle, package, layer, patch, and row changes), and prints the
-composed row count and preflight warnings. A bad save keeps the previous
-evaluation; `.reload` retries.
+diff (profile, bundle, package, patch group, patch, and row changes), and
+prints the composed row count and preflight warnings. Patch groups are matched
+by their patch content, so inserting or removing a group reports only that
+group. A bad save keeps the previous evaluation; `.reload` retries.
 
 For a custom bundle the selected profile has not installed, prepare a
 session-local preview:
@@ -463,7 +473,8 @@ persisted plan format is unchanged, so published profiles are not stranded.
 |---|---|
 | `defineConfig({ dsh, profiles: { work: defineProfile({...}) } })` | `defineConfig().dsh(pin).defaultProfile(name).profile('work', (profile) => ...).build()` |
 | `defineProfile({ bundles, layers, packages })` | the `.profile(name, (profile) => ...)` callback: `.bundle()`, `.generated()`, `.layer()`, `.package()` |
-| `layer(id, [insert(...), disable('x')])` | `.layer(id, (layer) => layer.insert(...).disable('x'))` |
+| `layer(id, [insert(...), disable('x')])` | `.layer((layer) => layer.insert(...).disable('x'))`; a group is anonymous and identified by position |
+| `.layer('label', build)` | the string is now an optional, non-unique display label, not an identifier |
 | `insert(entries)` / `override(id, config)` / `disable(id)` / `enable(id)` / `raw(entry)` | `layer.insert()` / `.override()` / `.disable()` / `.enable()` / `.raw()` |
 | `rows(bundle, root)` / `row(bundle, id, root)` / `presets(bundle, root)` | `bundle(name).rows()` / `.row(id)` / `.presets()`, rooted with `.fromProfile()` or `.fromPackageDir()` |
 | REPL `profile` string / `profiles` map | `selectedProfile` view / `config.profiles()`; `.profile <name>` switches |
@@ -482,15 +493,26 @@ The REPL no longer binds `profile` or `profiles`.
 
 A DSH profile is an ordered stack of bundle patch layers followed by the profile's
 own `cordis.patch.yml`, the harness-home patch, and invocation overlays. eedsh adds
-one thing: a **generated bundle** whose patch files are the `.layer(...)` blocks
+one thing: a **generated bundle** whose patch files are the `.layer(...)` groups
 in your profile builder.
 
 - `bundles` keeps your authored order.
+- Each `.layer(...)` call declares an anonymous, ordered patch group. Its identity
+  is its 1-based position; no identifier is authored, emitted, or hashed.
+  `.layer(label, build)` attaches an optional, non-unique display label used only
+  in diagnostics and the provenance sidecar.
 - `.generated()` is a single positional marker. Bundles listed after it override
   generated defaults; the profile patch still has the final word.
 - Without a marker the generated bundle follows every managed bundle.
 - `@eedsh/runtime` is inserted immediately before `@eedsh/generated`. Both names are
   reserved.
+
+While the config is evaluated, the authoring API records the first call site
+outside the authoring package for every patch: the file, line, and column in
+`config.ts` (or a helper it delegates to), plus the group label. `eedsh sync`
+publishes that record as the advisory `.eedsh/provenance.json` sidecar. DSH
+never reads it, and it affects neither composition, the plan hash, nor the
+generation identifier.
 
 The typed layer builders mirror Loader semantics one-to-one: `insert`, `override`
 (whole-config replacement, no merge), `disable`, `enable`, and `raw` (any
@@ -508,23 +530,27 @@ $DSH_HOME/profiles/<name>/
   cordis.patch.yml                               your layer; created empty only when missing
   pnpm-workspace.yaml                            pnpm settings DSH expects
   .eedsh/plan.json                               plan mirror, written immediately before the commit point
+  .eedsh/provenance.json                         advisory authoring provenance (labels, per-patch sites)
   .eedsh/generated/package.json                  generation record — the publication commit point
   .eedsh/generated/plans/<generationId>.json     authoritative validated plan (canonical JSON)
-  .eedsh/generated/patches/<generationId>/<layerId>.yml
+  .eedsh/generated/patches/<generationId>/0001.yml  patch groups in order, named by 1-based position
 ```
 
 Publication is atomic and idempotent:
 
 - patch files, the authoritative `plans/<generationId>.json`, and the profile manifest
-  are written first; the plan mirror and then the generated package manifest are last;
+  are written first; the plan mirror, the provenance sidecar, and then the
+  generated package manifest are last;
 - an unchanged plan with intact plan artifacts changes nothing (same generation id,
-  same bytes);
-- the generation id covers the plan hash and every emitted layer hash, so the record's
-  `planHash` locates and verifies `plans/<generationId>.json`;
+  same bytes) and does not write a sidecar; the next real publication repairs a
+  missing sidecar;
+- the generation id covers the plan hash and every emitted patch-group hash, so the
+  record's `planHash` locates and verifies `plans/<generationId>.json`;
 - a stale `.eedsh/plan.json` or a missing/mismatched authoritative plan is repaired by
   the next successful sync with the same generation id, without reinstalling;
-- a failed install, preflight, mirror write, or commit leaves the previous generation
-  published and restores the profile manifest, lockfile, and plan mirror.
+- a failed install, preflight, mirror write, sidecar write, or commit leaves the
+  previous generation published and restores the profile manifest, lockfile, plan
+  mirror, and provenance sidecar.
 
 ### Coexist contract
 

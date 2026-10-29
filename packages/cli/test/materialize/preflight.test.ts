@@ -93,7 +93,7 @@ describe('preflight composition', () => {
     expect(result.entries).toEqual(basePatches[0]!.insert)
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toContain('"missing-row"')
-    expect(result.warnings[0]).not.toContain('generated:overrides:')
+    expect(result.warnings[0]).not.toContain('generated #')
   })
 
   it('attributes warnings from the first, middle, and last layers in raw order', () => {
@@ -432,7 +432,7 @@ describe('preflight checks', () => {
     if (result._tag !== 'Success') return
     expect(result.success.warnings).toHaveLength(1)
     expect(result.success.warnings[0]).toContain('missing-row')
-    expect(result.success.warnings[0]).not.toContain('generated:overrides:')
+    expect(result.success.warnings[0]).not.toContain('generated #')
   })
 
   it('attributes warnings when explain is enabled', async () => {
@@ -471,7 +471,7 @@ describe('preflight checks', () => {
     expect(result.failure._tag).toBe('PreflightFailure')
     expect(result.failure.warnings).toHaveLength(1)
     expect(result.failure.warnings[0]).toContain('missing-row')
-    expect(result.failure.warnings[0]).not.toContain('generated:overrides:')
+    expect(result.failure.warnings[0]).not.toContain('generated #')
   })
 
   it('fails with attributed warnings in strict mode when explain is enabled', async () => {

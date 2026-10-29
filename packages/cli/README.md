@@ -45,11 +45,14 @@ eedsh --help | --version
   publication transaction. An invalid, locked, or failed profile is reported with its
   name and does not stop its valid siblings; the command exits `1` if any selected
   profile failed or was invalid.
-- Preflight warnings are raw DSH messages by default, without a source-layer prefix.
+- Preflight warnings are raw DSH messages by default, without a group prefix.
   In a multi-profile run each profile gets a header before its warnings and results.
   Raw warnings are followed by a one-line hint pointing at `--explain`.
-- `--explain` attributes each preflight warning as `<layer>: <message>`. It is
-  sync-only; `run`, `check`, and `doctor` reject it as a usage error.
+- `--explain` attributes each preflight warning as `<group>: <message>`. The
+  group is `generated #<n>` with the optional label, the authoring site, and the
+  touched row ids when they are known; a bundle warning keeps `bundle:<name>`.
+  Empty generated groups use the same positional prefix. It is sync-only; `run`,
+  `check`, and `doctor` reject it as a usage error.
 - `--strict` makes unmatched id-targeted patches a failure for the affected profile;
   strict failures stay raw unless `--explain` is also supplied, and that profile's
   generation record is not updated.
@@ -166,8 +169,9 @@ cordis.yml                                  empty root config
 cordis.patch.yml                            user layer; created empty only when missing, never rewritten
 pnpm-workspace.yaml                         pnpm settings out-of-tree plugins need
 .eedsh/plan.json                            inspectable plan mirror
+.eedsh/provenance.json                      advisory authoring provenance (labels, per-patch sites)
 .eedsh/generated/plans/<generationId>.json  authoritative validated plan (canonical JSON)
-.eedsh/generated/patches/<generationId>/<layerId>.yml
+.eedsh/generated/patches/<generationId>/0001.yml  patch groups in order, named by 1-based position
 .eedsh/generated/package.json               generation record + dsh.bundle.patch; the commit point
 ```
 
@@ -189,19 +193,21 @@ a conflict because it may change the resolved version.
 - Every profile file is replaced atomically: a failed write or rename leaves the
   target with its previous content and no temporary file behind.
 - Patch files, the authoritative `plans/<generationId>.json`, and the profile
-  manifest are written first. The `.eedsh/plan.json` mirror is written immediately
-  before the generated package manifest, which is the commit point; a reader never
-  sees a partial generation.
-- The generation id covers the canonical plan and every emitted layer hash, so an
-  unchanged plan with intact artifacts is a no-op, while an emitter change produces
-  a new generation.
+  manifest are written first. The `.eedsh/plan.json` mirror, then the advisory
+  `.eedsh/provenance.json` sidecar, then the generated package manifest (the
+  commit point) are written last; a reader never sees a partial generation. An
+  unchanged materialization writes no sidecar.
+- The generation id covers the canonical plan and every emitted patch-group hash,
+  so an unchanged plan with intact artifacts is a no-op, while an emitter change
+  produces a new generation.
 - A stale plan mirror, or a missing or mismatched authoritative plan, is repaired by
   the next successful sync with the same generation id, without reinstalling.
-- The profile manifest, `pnpm-lock.yaml`, and plan mirror are snapshotted before
-  publication. A failed install, preflight, mirror write, or commit restores them,
-  so the previous generation stays published and no partial dependency set or stale
-  mirror remains. Extra packages left in `node_modules` are harmless because the
-  restored manifest does not select them.
+- The profile manifest, `pnpm-lock.yaml`, plan mirror, and provenance sidecar are
+  snapshotted before publication. A failed install, preflight, mirror write,
+  sidecar write, or commit restores them, so the previous generation stays
+  published and no partial dependency set or stale mirror remains. Extra packages
+  left in `node_modules` are harmless because the restored manifest does not
+  select them.
 - A kernel-held profile lock serializes concurrent syncs; see [Sync locking](#sync-locking).
 
 ## Sync locking
@@ -237,17 +243,21 @@ publication.
 
 Before publication the CLI resolves every selected bundle from the pinned DSH
 installation and the profile, reads its patch files, and composes them with the
-generated layers once through `composeEntries` — the same algorithm boot uses. That
+generated groups once through `composeEntries` — the same algorithm boot uses. That
 composition returns the entries, the raw unmatched-target warnings, and duplicate
-ids inserted by generated layers.
+ids inserted by generated groups.
 
-Warnings stay raw by default. `sync --explain` attributes them by recomposing only
-layer prefixes and pairing each warning with the layer that introduced it; attribution
-stops once every raw warning is placed, never recomposes the full stack, and never
-runs without the flag or when there are no warnings.
+Warnings stay raw by default. `sync --explain` attributes them by recomposing
+prefixes over the flat patch list and pairing each warning with the patch that
+introduced it; the patch maps back to its 1-based group position, optional label,
+recorded authoring site, and touched row ids. Attribution stops once every raw
+warning is placed, never recomposes the full stack, and never runs without the
+flag or when there are no warnings. An empty generated group is reported with the
+same positional prefix.
 
-Preflight rejects duplicate ids inserted by generated layers, rejects malformed patch
-files, and evaluates nothing (plugin config schemas run only at Loader activation).
+Preflight rejects duplicate ids inserted by generated groups, rejects malformed
+patch files, and evaluates nothing (plugin config schemas run only at Loader
+activation).
 
 ## Limitations
 

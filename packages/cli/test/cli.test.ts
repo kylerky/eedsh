@@ -2034,7 +2034,8 @@ describe('documentation', () => {
       { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
       { kind: 'generated' },
     ])
-    expect(plan.layers.map((item) => item.id)).toEqual(['overrides'])
+    expect(plan.layers).toHaveLength(1)
+    expect(plan.layers[0]?.patches).toHaveLength(2)
   })
 
   it('keeps the Example configuration a full valid plan', async () => {
@@ -2047,7 +2048,10 @@ describe('documentation', () => {
       { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
       { kind: 'generated' },
     ])
-    expect(plan.layers.map((item) => item.id)).toEqual(['plugins', 'overrides'])
+    expect(plan.layers).toHaveLength(2)
+    expect(plan.layers[0]?.patches).toHaveLength(2)
+    expect(plan.layers[1]?.patches).toHaveLength(2)
+    expect(plan.layers.some((item) => 'id' in item)).toBe(false)
   })
 })
 
