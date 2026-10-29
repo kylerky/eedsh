@@ -97,13 +97,16 @@ export default defineConfig()
     if (plan === undefined || Result.isFailure(plan)) return
     const insert = plan.success.layers[0]?.patches[0]?.insert
     expect(Array.isArray(insert) ? insert.length : 0).toBe(3)
-    const layers = plan.success.layers.map((item) => ({
-      label: `generated:${item.id}`,
+    const layers = plan.success.layers.map((item, index) => ({
+      label: `generated #${index + 1}`,
       patches: item.patches as Record<string, unknown>[],
+      generated: {
+        position: index + 1,
+        label: item.id,
+        sites: [] as [],
+      },
     }))
-    const composition = composePreflightLayers(layers, {
-      generatedLayerLabels: layers.map((item) => item.label),
-    })
+    const composition = composePreflightLayers(layers)
     expect(composition.entries.map((entry) => entry.id)).toEqual([
       'timer',
       'profile-row',
@@ -175,10 +178,7 @@ export default defineConfig()
     const parsed = parseGeneratedLayers(generated)
     expect(Result.isSuccess(parsed)).toBe(true)
     if (Result.isFailure(parsed)) return
-    const composition = composePreflightLayers(
-      parsed.success.map((layer) => ({ label: layer.label, patches: [...layer.patches] })),
-      { generatedLayerLabels: parsed.success.map((layer) => layer.label) },
-    )
+    const composition = composePreflightLayers(parsed.success)
     expect(composition.warnings).toEqual([])
     const inserted = composition.entries.find((entry) => entry.id === 'preset-expressive')
     expect(inserted).toMatchObject({

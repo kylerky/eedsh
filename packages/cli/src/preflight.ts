@@ -4,9 +4,9 @@
  * plan that cannot compose never becomes the published profile.
  * @module @eedsh/cli/preflight
  */
-import { basename } from 'node:path'
 import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
+import type { AuthoringSite } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
@@ -21,15 +21,28 @@ import {
 import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
 
-/** One preflight composition layer. */
-export interface PreflightLayer {
-  /** Source label used in diagnostics (`bundle:<name>` or `generated:<id>`). */
-  label: string
-  patches: Record<string, unknown>[]
+/** The recorded identity of one generated patch group. */
+export interface GeneratedGroup {
+  /** One-based position in `plan.layers`; a group's identity. */
+  readonly position: number
+  /** The optional display label supplied with `.layer(label, build)`. */
+  readonly label: string | undefined
+  /** The captured authoring site per patch, aligned with the patches. */
+  readonly sites: readonly (AuthoringSite | undefined)[]
 }
 
-/** One preflight diagnostic attributed to its layer. */
+/** One preflight composition layer. */
+export interface PreflightLayer {
+  /** Source label used for bundle layers (`bundle:<name>`). */
+  label: string
+  patches: Record<string, unknown>[]
+  /** Present for a generated patch group; a group's identity is its position. */
+  generated?: GeneratedGroup
+}
+
+/** One preflight diagnostic attributed to its group. */
 export interface PreflightWarning {
+  /** The group description, such as `bundle:<name>` or `generated #<n>`. */
   layer: string
   message: string
 }
@@ -42,18 +55,67 @@ export interface PreflightComposition {
   entries: Record<string, unknown>[]
   /**
    * Raw diagnostics: DSH composition warnings in patch application order,
-   * followed by one empty-layer warning per empty generated layer.
+   * followed by one empty-group warning per empty generated group.
    */
   warnings: string[]
-  /** Generated layers that contributed no patches, in layer order. */
+  /** Descriptions of the generated groups that contributed no patches. */
   emptyLayerLabels: string[]
-  /** Row ids inserted twice by generated layers. */
+  /** Row ids inserted twice by generated groups. */
   duplicateInsertIds: string[]
 }
 
-function emptyLayerWarning(label: string): string {
-  const id = label.startsWith('generated:') ? label.slice('generated:'.length) : label
-  return `generated layer ${JSON.stringify(id)} contains no patches`
+/** A site's file, relative to the config directory when it is below it. */
+function relativeFile(file: string, configDir: string | undefined): string {
+  if (configDir === undefined) return file
+  const prefix = configDir.endsWith('/') ? configDir : `${configDir}/`
+  return file.startsWith(prefix) ? file.slice(prefix.length) : file
+}
+
+function siteText(
+  site: AuthoringSite | undefined,
+  configDir: string | undefined,
+): string | undefined {
+  return site === undefined
+    ? undefined
+    : `${relativeFile(site.file, configDir)}:${site.line}:${site.column}`
+}
+
+/** Every row id a patch list touches, deduplicated in application order. */
+export function touchedRowIds(patches: readonly Record<string, unknown>[]): string[] {
+  const ids: string[] = []
+  const visitEntry = (entry: unknown): void => {
+    const record = readRecord(entry)
+    if (typeof record.id === 'string') ids.push(record.id)
+    if (record.group === true && Array.isArray(record.config)) record.config.forEach(visitEntry)
+  }
+  for (const patch of patches) {
+    if (typeof patch.id === 'string') ids.push(patch.id)
+    if (Array.isArray(patch.insert)) patch.insert.forEach(visitEntry)
+  }
+  return ids
+}
+
+/**
+ * Describe a generated group by position, label, authoring site, and touched
+ * row ids as each becomes available. With an offset, the description belongs to
+ * that patch; without one it introduces the group itself (for an empty group).
+ */
+function groupDescription(
+  layer: PreflightLayer,
+  offset: number | undefined,
+  configDir: string | undefined,
+): string {
+  const group = layer.generated
+  if (group === undefined) return layer.label
+  let text = `generated #${group.position}`
+  if (group.label !== undefined) text += ` ${JSON.stringify(group.label)}`
+  if (offset === undefined) return text
+  const site = siteText(group.sites[offset], configDir)
+  if (site !== undefined) text += ` (${site})`
+  const patch = layer.patches[offset]
+  const ids = patch === undefined ? [] : [...new Set(touchedRowIds([patch]))]
+  if (ids.length > 0) text += ` [${ids.join(', ')}]`
+  return text
 }
 
 /** Collect ids inserted by a layer, including nested group children. */
@@ -70,59 +132,43 @@ function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
   return ids
 }
 
-/**
- * Every row id a patch list touches, including inserted rows, nested group
- * children, and id-targeted patches, in application order.
- * @param patches - the patches to scan.
- * @returns the touched row ids, with repeats in patch order.
- */
-export function touchedRowIds(patches: readonly Record<string, unknown>[]): string[] {
-  const ids: string[] = []
-  const visitEntry = (entry: unknown): void => {
-    const record = readRecord(entry)
-    if (typeof record.id === 'string') ids.push(record.id)
-    if (record.group === true && Array.isArray(record.config)) record.config.forEach(visitEntry)
-  }
-  for (const patch of patches) {
-    if (typeof patch.id === 'string') ids.push(patch.id)
-    if (Array.isArray(patch.insert)) patch.insert.forEach(visitEntry)
-  }
-  return ids
+/** Compose one flat patch list and return its raw warnings. */
+function composeWarnings(patches: readonly Record<string, unknown>[]): string[] {
+  if (patches.length === 0) return []
+  const warnings: string[] = []
+  composeEntries([patches as PatchOptions[]], (message) => warnings.push(message))
+  return warnings
 }
 
 /**
  * Compose preflight layers in application order. Bundle layers are composed
  * first; the generated layers sit at the plan's marker position. Warnings are
- * kept raw, and duplicate ids inserted by generated layers are reported.
+ * kept raw, and duplicate ids inserted by generated groups are reported.
  * @param layers - layers in application order.
- * @param options - labels of the generated layers.
  * @returns the composed entries, raw warnings, and duplicate ids.
  */
-export function composePreflightLayers(
-  layers: readonly PreflightLayer[],
-  options: { generatedLayerLabels?: readonly string[] } = {},
-): PreflightComposition {
+export function composePreflightLayers(layers: readonly PreflightLayer[]): PreflightComposition {
   const warnings: string[] = []
   const entries = composeEntries(
     layers.map((layer) => layer.patches as PatchOptions[]),
     (message) => warnings.push(message),
   ) as unknown as Record<string, unknown>[]
 
-  const generatedLabels = new Set(options.generatedLayerLabels ?? [])
   const emptyLayerLabels: string[] = []
   for (const layer of layers) {
-    if (!generatedLabels.has(layer.label) || layer.patches.length > 0) continue
-    emptyLayerLabels.push(layer.label)
-    warnings.push(emptyLayerWarning(layer.label))
+    if (layer.generated === undefined || layer.patches.length > 0) continue
+    const description = groupDescription(layer, undefined, undefined)
+    emptyLayerLabels.push(description)
+    warnings.push(`${description}: contains no patches`)
   }
 
-  const seen = new Map<string, string>()
+  const seen = new Set<string>()
   const duplicates = new Set<string>()
   for (const layer of layers) {
-    if (!generatedLabels.has(layer.label)) continue
+    if (layer.generated === undefined) continue
     for (const id of insertedIds(layer.patches)) {
       if (seen.has(id)) duplicates.add(id)
-      else seen.set(id, layer.label)
+      else seen.add(id)
     }
   }
 
@@ -134,65 +180,80 @@ export function composePreflightLayers(
   }
 }
 
+interface FlatPatch {
+  readonly layer: PreflightLayer
+  readonly offset: number
+  readonly patch: Record<string, unknown>
+}
+
+/** Every patch in application order, with its group and offset. */
+function flattenPatches(layers: readonly PreflightLayer[]): FlatPatch[] {
+  const flat: FlatPatch[] = []
+  for (const layer of layers) {
+    for (const [offset, patch] of layer.patches.entries()) {
+      flat.push({ layer, offset, patch })
+    }
+  }
+  return flat
+}
+
 /**
- * Attribute raw warnings to the layer whose patches produced them. Composition
- * warnings are attributed by recomposing prefixes; empty-layer warnings are
- * synthetic and map to their generated layer by position. Prefixes are
- * recomposed only when warnings exist, and the full stack is never recomposed:
- * the last layer receives any remaining composition warnings.
+ * Attribute raw warnings to the patch whose application produced them.
+ * Composition warnings are attributed by recomposing prefixes over the flat
+ * patch list; empty-group warnings are synthetic and belong to their group.
+ * Prefixes are recomposed only when warnings exist.
  * @param layers - layers in application order.
  * @param warnings - the raw warning list from one-pass composition.
- * @param options - the generated layers that emitted an empty-layer warning.
- * @returns warnings paired with their source layer, in raw order.
+ * @param options - the config directory used to relativize authoring sites.
+ * @returns warnings paired with their group, in raw order.
  */
 export function attributePreflightWarnings(
   layers: readonly PreflightLayer[],
   warnings: readonly string[],
-  options: { readonly emptyLayerLabels?: readonly string[] } = {},
+  options: { readonly configDir?: string } = {},
 ): PreflightWarning[] {
   if (warnings.length === 0) return []
-  const first = layers[0]
-  if (first === undefined) return []
-  const emptyLabels = options.emptyLayerLabels ?? []
-  const syntheticCount = Math.min(emptyLabels.length, warnings.length)
-  const composeWarnings =
+  const emptyLayers = layers.filter(
+    (layer) => layer.generated !== undefined && layer.patches.length === 0,
+  )
+  const syntheticCount = Math.min(emptyLayers.length, warnings.length)
+  const composeWarningsRaw =
     syntheticCount === 0 ? warnings : warnings.slice(0, warnings.length - syntheticCount)
   const synthetic = syntheticCount === 0 ? [] : warnings.slice(warnings.length - syntheticCount)
 
   const attributed: PreflightWarning[] = []
-  if (composeWarnings.length > 0) {
-    if (layers.length === 1) {
-      for (const message of composeWarnings) attributed.push({ layer: first.label, message })
-    } else {
-      let placed = 0
-      for (
-        let index = 0;
-        index < layers.length - 1 && placed < composeWarnings.length;
-        index += 1
-      ) {
-        const prefixWarnings: string[] = []
-        composeEntries(
-          layers.slice(0, index + 1).map((layer) => layer.patches as PatchOptions[]),
-          (message) => prefixWarnings.push(message),
-        )
-        const added = Math.min(prefixWarnings.length - placed, composeWarnings.length - placed)
-        if (added <= 0) continue
-        for (const message of composeWarnings.slice(placed, placed + added)) {
-          attributed.push({ layer: layers[index]!.label, message })
-        }
-        placed += added
-      }
-
-      const last = layers[layers.length - 1]!
-      for (const message of composeWarnings.slice(placed)) {
-        attributed.push({ layer: last.label, message })
-      }
+  const flat = flattenPatches(layers)
+  let placed = 0
+  for (let index = 0; index < flat.length && placed < composeWarningsRaw.length; index += 1) {
+    const prefix = composeWarnings(flat.slice(0, index + 1).map((item) => item.patch))
+    const added = Math.min(prefix.length - placed, composeWarningsRaw.length - placed)
+    if (added <= 0) continue
+    const item = flat[index]!
+    const layer = groupDescription(item.layer, item.offset, options.configDir)
+    for (const message of composeWarningsRaw.slice(placed, placed + added)) {
+      attributed.push({ layer, message })
     }
+    placed += added
+  }
+  const last = flat.at(-1)
+  for (const message of composeWarningsRaw.slice(placed)) {
+    attributed.push({
+      layer:
+        last === undefined
+          ? (layers.at(-1)?.label ?? 'generated')
+          : groupDescription(last.layer, last.offset, options.configDir),
+      message,
+    })
   }
 
-  for (const [index, label] of emptyLabels.entries()) {
+  for (const [index, layer] of emptyLayers.entries()) {
     const message = synthetic[index]
-    if (message !== undefined) attributed.push({ layer: label, message })
+    if (message !== undefined) {
+      attributed.push({
+        layer: groupDescription(layer, undefined, undefined),
+        message: 'contains no patches',
+      })
+    }
   }
   return attributed
 }
@@ -203,30 +264,28 @@ function fail(message: string, warnings: readonly string[] = []): PreflightFailu
 
 function checkNoPlanExpression(
   value: unknown,
-  layerId: string,
+  group: string,
 ): Result.Result<void, PreflightFailure> {
   if (Array.isArray(value)) {
     for (const item of value) {
-      const checked = checkNoPlanExpression(item, layerId)
+      const checked = checkNoPlanExpression(item, group)
       if (Result.isFailure(checked)) return checked
     }
     return Result.succeed(undefined)
   }
   const record = readRecord(value)
   if ('$eedsh' in record) {
-    return Result.fail(
-      fail(`generated layer ${layerId} contains a plan expression node; emit !!js scalars instead`),
-    )
+    return Result.fail(fail(`${group} contains a plan expression node; emit !!js scalars instead`))
   }
   for (const item of Object.values(record)) {
-    const checked = checkNoPlanExpression(item, layerId)
+    const checked = checkNoPlanExpression(item, group)
     if (Result.isFailure(checked)) return checked
   }
   return Result.succeed(undefined)
 }
 
 /**
- * Parse the emitted generated layer files back into DSH patch lists.
+ * Parse the emitted generated group files back into DSH patch lists.
  * @param generated - the generated bundle.
  * @returns one preflight layer per emitted file in application order, or a
  * preflight failure for malformed content.
@@ -237,10 +296,11 @@ export function parseGeneratedLayers(
   const files = generated.files.filter((file) => file.path.endsWith('.yml'))
   const layers: PreflightLayer[] = []
   for (const [index, file] of files.entries()) {
-    const id = generated.generation.layers[index]?.id ?? basename(file.path, '.yml')
+    const position = index + 1
+    const group = `generated #${position}`
     const parsed = Result.try({
       try: () => yaml.load(file.content, { schema: entryListSchema }),
-      catch: (cause) => fail(`cannot parse generated layer ${id}: ${String(cause)}`),
+      catch: (cause) => fail(`cannot parse ${group}: ${String(cause)}`),
     })
     if (Result.isFailure(parsed)) return Result.fail(parsed.failure)
     const decoded = Schema.decodeUnknownOption(patchListSchema)(parsed.success)
@@ -248,19 +308,20 @@ export function parseGeneratedLayers(
       return Result.fail(
         fail(
           Array.isArray(parsed.success)
-            ? `generated layer ${id} contains a non-object patch entry`
-            : `generated layer ${id} must be a top-level YAML array of patch entries`,
+            ? `${group} contains a non-object patch entry`
+            : `${group} must be a top-level YAML array of patch entries`,
         ),
       )
     }
     const entries = decoded.value.map((entry) => readRecord(entry))
     for (const entry of entries) {
-      const checked = checkNoPlanExpression(entry, id)
+      const checked = checkNoPlanExpression(entry, group)
       if (Result.isFailure(checked)) return Result.fail(checked.failure)
     }
     layers.push({
-      label: `generated:${id}`,
+      label: group,
       patches: entries,
+      generated: { position, label: undefined, sites: [] },
     })
   }
   return Result.succeed(layers)
@@ -311,15 +372,13 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
           const layers = yield* bundleLayers(input.plan, input.profileDir, generatedLayers).pipe(
             Effect.provideService(DshInstallation, dsh),
           )
-          const composition = composePreflightLayers(layers, {
-            generatedLayerLabels: generatedLayers.map((layer) => layer.label),
-          })
+          const composition = composePreflightLayers(layers)
           const raw = composition.warnings
           const messages =
             input.explain && raw.length > 0
-              ? attributePreflightWarnings(layers, raw, {
-                  emptyLayerLabels: composition.emptyLayerLabels,
-                }).map((warning) => `${warning.layer}: ${warning.message}`)
+              ? attributePreflightWarnings(layers, raw).map(
+                  (warning) => `${warning.layer}: ${warning.message}`,
+                )
               : raw
           if (composition.duplicateInsertIds.length > 0) {
             return yield* Effect.fail(

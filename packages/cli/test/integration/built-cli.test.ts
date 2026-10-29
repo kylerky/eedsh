@@ -54,7 +54,7 @@ describe('built CLI integration', () => {
       { cwd: root, env: { ...process.env, DSH_HOME: home } },
     )
     const output = `${result.stdout}\n${result.stderr}`
-    expect(output).toContain('generated:cli:')
+    expect(output).toContain('generated #1 [missing-row]:')
     expect(output).toContain('missing-row')
     expect(output).not.toContain('add --explain')
   }, 180_000)

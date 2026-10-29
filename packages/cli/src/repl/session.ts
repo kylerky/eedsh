@@ -24,7 +24,7 @@ import { presetDefinitionErrorLines } from '../internal/authoring-error'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
-import { composePreflightLayers, touchedRowIds } from '../preflight'
+import { composePreflightLayers, type PreflightLayer, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import { type WatchSession, watchConfigDirectory } from '../watch'
 import {
@@ -416,14 +416,15 @@ async function defaultCompose(
   profileDir: string,
   installAnchor: string,
 ): Promise<CompositionResult> {
-  const layers: { label: string; patches: Record<string, unknown>[] }[] = []
+  const layers: PreflightLayer[] = []
   let generatedPlaced = false
   for (const item of plan.bundles) {
     if (item.kind === 'generated') {
-      for (const layer of plan.layers) {
+      for (const [index, layer] of plan.layers.entries()) {
         layers.push({
-          label: `generated:${layer.id}`,
+          label: `generated #${index + 1}`,
           patches: layer.patches as Record<string, unknown>[],
+          generated: { position: index + 1, label: layer.id, sites: [] },
         })
       }
       generatedPlaced = true
@@ -440,10 +441,11 @@ async function defaultCompose(
     layers.push({ label: `bundle:${item.name}`, patches: result.success })
   }
   if (!generatedPlaced) {
-    for (const layer of plan.layers) {
+    for (const [index, layer] of plan.layers.entries()) {
       layers.push({
-        label: `generated:${layer.id}`,
+        label: `generated #${index + 1}`,
         patches: layer.patches as Record<string, unknown>[],
+        generated: { position: index + 1, label: layer.id, sites: [] },
       })
     }
   }
@@ -451,11 +453,7 @@ async function defaultCompose(
   for (const layer of layers) {
     for (const id of touchedRowIds(layer.patches)) sources[id] = layer.label
   }
-  const composition = composePreflightLayers(layers, {
-    generatedLayerLabels: layers
-      .filter((layer) => layer.label.startsWith('generated:'))
-      .map((layer) => layer.label),
-  })
+  const composition = composePreflightLayers(layers)
   const warnings = [...composition.warnings]
   if (composition.duplicateInsertIds.length > 0) {
     warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)

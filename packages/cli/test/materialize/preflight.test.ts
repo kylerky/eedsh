@@ -1,4 +1,4 @@
-import { definePreset, LayerBuilder } from '@eedsh/config'
+import { type AuthoringSite, definePreset, LayerBuilder } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
@@ -50,6 +50,21 @@ function fixturePlan(layers: ProfilePlan['layers']): ProfilePlan {
 
 const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
 
+function groupLayer(
+  position: number,
+  patches: Record<string, unknown>[],
+  options: {
+    readonly label?: string
+    readonly sites?: readonly (AuthoringSite | undefined)[]
+  } = {},
+): PreflightLayer {
+  return {
+    label: `generated #${position}`,
+    patches,
+    generated: { position, label: options.label, sites: options.sites ?? [] },
+  }
+}
+
 function fakeDsh(resolve: DshInstallationShape['resolveBundlePatches']): DshInstallationShape {
   return {
     version: '0.2.1-rc.2',
@@ -72,14 +87,9 @@ describe('preflight composition', () => {
   it('composes once and reports raw unmatched targets', () => {
     const layers: PreflightLayer[] = [
       { label: 'bundle:@deepseek-ai/dsh-base', patches: basePatches },
-      {
-        label: 'generated:overrides',
-        patches: [{ id: 'missing-row', config: { interval: 1 } }],
-      },
+      groupLayer(1, [{ id: 'missing-row', config: { interval: 1 } }], { label: 'overrides' }),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:overrides'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.entries).toEqual(basePatches[0]!.insert)
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toContain('"missing-row"')
@@ -92,34 +102,90 @@ describe('preflight composition', () => {
         label: 'bundle:first',
         patches: [{ id: 'missing-first', config: {} }],
       },
-      {
-        label: 'generated:middle',
-        patches: [{ id: 'missing-middle', config: {} }],
-      },
+      groupLayer(1, [{ id: 'missing-middle', config: {} }], {
+        label: 'middle',
+        sites: [{ file: '/work/config.ts', line: 4, column: 7 }],
+      }),
       {
         label: 'bundle:last',
         patches: [{ id: 'missing-last', config: {} }],
       },
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:middle'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.warnings).toHaveLength(3)
     expect(result.warnings.join('\n')).toMatch(
       /missing-first[\s\S]*missing-middle[\s\S]*missing-last/,
     )
 
-    const attributed = attributePreflightWarnings(layers, result.warnings)
+    const attributed = attributePreflightWarnings(layers, result.warnings, {
+      configDir: '/work',
+    })
     expect(attributed.map((warning) => warning.layer)).toEqual([
       'bundle:first',
-      'generated:middle',
+      'generated #1 "middle" (config.ts:4:7) [missing-middle]',
       'bundle:last',
     ])
     expect(attributed.map((warning) => warning.message)).toEqual(result.warnings)
     expect(attributed.map((warning) => `${warning.layer}: ${warning.message}`)).toEqual([
       `bundle:first: ${result.warnings[0]}`,
-      `generated:middle: ${result.warnings[1]}`,
+      `generated #1 "middle" (config.ts:4:7) [missing-middle]: ${result.warnings[1]}`,
       `bundle:last: ${result.warnings[2]}`,
+    ])
+  })
+
+  it('attributes the offending patch by position, site, and touched row ids', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:base', patches: basePatches },
+      groupLayer(
+        2,
+        [
+          { insert: [{ id: 'ok-row', name: '@scope/ok' }] },
+          { insert: [{ id: 'nested-group', group: true, config: [] }] },
+          { id: 'missing-row', config: {} },
+        ],
+        {
+          label: 'lsp',
+          sites: [undefined, undefined, { file: '/work/config.ts', line: 9, column: 5 }],
+        },
+      ),
+    ]
+    const result = composePreflightLayers(layers)
+    expect(result.warnings).toHaveLength(1)
+    const attributed = attributePreflightWarnings(layers, result.warnings, {
+      configDir: '/work',
+    })
+    expect(attributed).toEqual([
+      {
+        layer: 'generated #2 "lsp" (config.ts:9:5) [missing-row]',
+        message: result.warnings[0],
+      },
+    ])
+  })
+
+  it('keeps a bundle label for a warning a bundle produced', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:@fixture/base', patches: [{ id: 'missing-from-bundle', config: {} }] },
+      groupLayer(1, basePatches),
+    ]
+    const result = composePreflightLayers(layers)
+    const attributed = attributePreflightWarnings(layers, result.warnings)
+    expect(attributed.map((warning) => warning.layer)).toEqual(['bundle:@fixture/base'])
+  })
+
+  it('attributes an empty generated group with the same prefix', () => {
+    const layers: PreflightLayer[] = [
+      groupLayer(1, []),
+      groupLayer(2, [{ id: 'missing-row', config: {} }]),
+    ]
+    const result = composePreflightLayers(layers)
+    const attributed = attributePreflightWarnings(layers, result.warnings)
+    expect(attributed.map((warning) => warning.layer)).toEqual([
+      'generated #2 [missing-row]',
+      'generated #1',
+    ])
+    expect(attributed.map((warning) => `${warning.layer}: ${warning.message}`)).toEqual([
+      `generated #2 [missing-row]: ${result.warnings[0]}`,
+      'generated #1: contains no patches',
     ])
   })
 
@@ -146,12 +212,10 @@ describe('preflight composition', () => {
           },
         ],
       },
-      { label: 'generated:middle', patches: [{ id: 'timer', config: { ms: 2 } }] },
+      groupLayer(1, [{ id: 'timer', config: { ms: 2 } }]),
       { label: 'bundle:second', patches: [{ id: 'timer', config: { ms: 3 } }] },
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:middle'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.entries).toEqual([
       { id: 'timer', name: '@deepseek-ai/cordis-plugin-timer', config: { ms: 3 } },
     ])
@@ -197,12 +261,10 @@ describe('preflight composition', () => {
 
   it('rejects duplicate ids inserted by generated layers', () => {
     const layers: PreflightLayer[] = [
-      { label: 'generated:one', patches: [{ insert: [{ id: 'dup', name: 'a' }] }] },
-      { label: 'generated:two', patches: [{ insert: [{ id: 'dup', name: 'b' }] }] },
+      groupLayer(1, [{ insert: [{ id: 'dup', name: 'a' }] }]),
+      groupLayer(2, [{ insert: [{ id: 'dup', name: 'b' }] }]),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:one', 'generated:two'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.duplicateInsertIds).toEqual(['dup'])
   })
 })
@@ -218,10 +280,7 @@ describe('preset selection composition', () => {
     const layer = new LayerBuilder('registry').selectPreset(definePreset('ptc-fresh'), {
       default: definePreset('standard'),
     })
-    return {
-      label: 'generated:registry',
-      patches: layer.patches as Record<string, unknown>[],
-    }
+    return groupLayer(1, layer.patches as Record<string, unknown>[], { label: 'registry' })
   }
 
   it('composes the selected registry config over a bundle registry row', () => {
@@ -229,9 +288,7 @@ describe('preset selection composition', () => {
       { label: 'bundle:@fixture/base', patches: [{ insert: [registryRow] }] },
       selectionLayer(),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:registry'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.warnings).toEqual([])
     expect(result.entries).toEqual([
       {
@@ -247,13 +304,16 @@ describe('preset selection composition', () => {
       { label: 'bundle:@fixture/base', patches: basePatches },
       selectionLayer(),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:registry'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toContain('agent-preset-registry')
     const attributed = attributePreflightWarnings(layers, result.warnings)
-    expect(attributed).toEqual([{ layer: 'generated:registry', message: result.warnings[0] }])
+    expect(attributed).toEqual([
+      {
+        layer: 'generated #1 "registry" [agent-preset-registry]',
+        message: result.warnings[0],
+      },
+    ])
     expect(result.entries.map((entry) => entry.id)).toEqual(['timer'])
   })
 })
@@ -278,8 +338,7 @@ describe('empty generated layers', () => {
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
     expect(result.success.warnings).toHaveLength(1)
-    expect(result.success.warnings[0]).toContain('empty')
-    expect(result.success.warnings[0]).not.toMatch(/^generated:empty: /)
+    expect(result.success.warnings[0]).toBe('generated #1: contains no patches')
     expect(buildGenerated(plan)).toEqual(generated)
   })
 
@@ -298,8 +357,7 @@ describe('empty generated layers', () => {
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
     expect(result.success.warnings).toHaveLength(1)
-    expect(result.success.warnings[0]).toMatch(/^generated:empty: /)
-    expect(result.success.warnings[0]).toContain('empty')
+    expect(result.success.warnings[0]).toMatch(/^generated #1: contains no patches$/)
   })
 
   it('fails strict without changing the plan or generated output', async () => {
@@ -319,8 +377,7 @@ describe('empty generated layers', () => {
     if (result._tag !== 'Failure') return
     expect(result.failure._tag).toBe('PreflightFailure')
     expect(result.failure.warnings).toHaveLength(1)
-    expect(result.failure.warnings[0]).toContain('empty')
-    expect(result.failure.warnings[0]).not.toMatch(/^generated:empty: /)
+    expect(result.failure.warnings[0]).toBe('generated #1: contains no patches')
     const emptyFile = generated.files.find((file) => file.path.endsWith('empty.yml'))
     expect(emptyFile?.content).toBe('[]\n')
     expect(buildGenerated(plan)).toEqual(generated)
@@ -329,14 +386,9 @@ describe('empty generated layers', () => {
   it('does not warn for an empty bundle layer or a filled generated layer', () => {
     const layers: PreflightLayer[] = [
       { label: 'bundle:empty-bundle', patches: [] },
-      {
-        label: 'generated:filled',
-        patches: [{ insert: [{ id: 'filled-row', name: '@scope/filled' }] }],
-      },
+      groupLayer(1, [{ insert: [{ id: 'filled-row', name: '@scope/filled' }] }]),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:filled'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.warnings).toEqual([])
     expect(result.emptyLayerLabels).toEqual([])
     expect(result.entries.map((entry) => entry.id)).toEqual(['filled-row'])
@@ -345,25 +397,21 @@ describe('empty generated layers', () => {
   it('attributes an empty-layer warning alongside composition warnings', () => {
     const layers: PreflightLayer[] = [
       { label: 'bundle:@deepseek-ai/dsh-base', patches: basePatches },
-      {
-        label: 'generated:missing-target',
-        patches: [{ id: 'missing-row', config: { interval: 1 } }],
-      },
-      { label: 'generated:empty', patches: [] },
+      groupLayer(1, [{ id: 'missing-row', config: { interval: 1 } }], { label: 'target' }),
+      groupLayer(2, [], { label: 'empty' }),
     ]
-    const result = composePreflightLayers(layers, {
-      generatedLayerLabels: ['generated:missing-target', 'generated:empty'],
-    })
+    const result = composePreflightLayers(layers)
     expect(result.warnings).toHaveLength(2)
-    expect(result.emptyLayerLabels).toEqual(['generated:empty'])
-    const attributed = attributePreflightWarnings(layers, result.warnings, {
-      emptyLayerLabels: result.emptyLayerLabels,
-    })
+    expect(result.emptyLayerLabels).toEqual(['generated #2 "empty"'])
+    const attributed = attributePreflightWarnings(layers, result.warnings)
     expect(attributed.map((warning) => warning.layer)).toEqual([
-      'generated:missing-target',
-      'generated:empty',
+      'generated #1 "target" [missing-row]',
+      'generated #2 "empty"',
     ])
-    expect(attributed.map((warning) => warning.message)).toEqual(result.warnings)
+    expect(attributed.map((warning) => warning.message)).toEqual([
+      result.warnings[0],
+      'contains no patches',
+    ])
   })
 })
 
@@ -402,7 +450,7 @@ describe('preflight checks', () => {
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
     expect(result.success.warnings).toHaveLength(1)
-    expect(result.success.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.success.warnings[0]).toMatch(/^generated #1 \[missing-row\]: /)
     expect(result.success.warnings[0]).toContain('missing-row')
   })
 
@@ -442,7 +490,7 @@ describe('preflight checks', () => {
     if (result._tag !== 'Failure') return
     expect(result.failure._tag).toBe('PreflightFailure')
     expect(result.failure.warnings).toHaveLength(1)
-    expect(result.failure.warnings[0]).toMatch(/^generated:overrides: /)
+    expect(result.failure.warnings[0]).toMatch(/^generated #1 \[missing-row\]: /)
     expect(result.failure.warnings[0]).toContain('missing-row')
   })
 
