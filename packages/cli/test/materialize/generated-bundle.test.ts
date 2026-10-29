@@ -54,9 +54,9 @@ describe('generated bundle', () => {
     expect(result.generationId).toMatch(/^[0-9a-f]{64}$/)
     const patchFiles = result.files.filter((file) => file.path.endsWith('.yml'))
     expect(patchFiles.map((file) => file.path)).toEqual([
-      `patches/${result.generationId}/base.yml`,
-      `patches/${result.generationId}/overrides.yml`,
-      `patches/${result.generationId}/expressions.yml`,
+      `patches/${result.generationId}/0001.yml`,
+      `patches/${result.generationId}/0002.yml`,
+      `patches/${result.generationId}/0003.yml`,
     ])
   })
 
@@ -82,12 +82,12 @@ describe('generated bundle', () => {
     expect(metadata.bundles).toEqual(managedBundles)
     expect(metadata.packages).toEqual(packages)
     expect(metadata.layers.map((entry) => entry.file)).toEqual([
-      `patches/${result.generationId}/base.yml`,
-      `patches/${result.generationId}/overrides.yml`,
-      `patches/${result.generationId}/expressions.yml`,
+      `patches/${result.generationId}/0001.yml`,
+      `patches/${result.generationId}/0002.yml`,
+      `patches/${result.generationId}/0003.yml`,
     ])
     for (const entry of metadata.layers) {
-      expect(entry.file).toMatch(/^patches\/[0-9a-f]{64}\/[a-z0-9-]+\.yml$/)
+      expect(entry.file).toMatch(/^patches\/[0-9a-f]{64}\/\d{4,}\.yml$/)
       expect(entry.hash).toMatch(/^[0-9a-f]{64}$/)
     }
   })

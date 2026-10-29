@@ -4,6 +4,7 @@
  * @module @eedsh/cli/materialize/program
  */
 import { join } from 'node:path'
+import type { ConfigProvenance } from '@eedsh/config'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option, Schema } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -64,6 +65,10 @@ export interface MaterializeOptions {
   explain: boolean
   /** Re-baseline ownership from the current manifest when the record is invalid. */
   adoptOwnership?: boolean
+  /** The evaluated config's recorded provenance, when it has any. */
+  provenance?: ConfigProvenance
+  /** Absolute directory of the evaluated config file, for relative sites. */
+  configDir?: string
 }
 
 /** What a materialization run did. */
@@ -303,6 +308,8 @@ export function materialize(
         strict: options.strict,
         explain: options.explain,
         notices: reconciled.notices,
+        ...(options.provenance === undefined ? {} : { provenance: options.provenance }),
+        ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
       })
 
       return {

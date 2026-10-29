@@ -1,3 +1,4 @@
+import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -73,6 +74,8 @@ export interface HarnessOptions {
   plan?: ProfilePlan
   installFail?: boolean
   preflightFail?: boolean
+  provenance?: ConfigProvenance
+  configDir?: string
 }
 
 /**
@@ -108,6 +111,8 @@ export function harness(options: HarnessOptions = {}) {
       generatedSpec: GENERATED_SPEC,
       strict: false,
       explain: false,
+      ...(options.provenance === undefined ? {} : { provenance: options.provenance }),
+      ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
       ...overrides,
     }
   }

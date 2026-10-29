@@ -120,6 +120,28 @@ describe('plan mirror verification', () => {
   })
 })
 
+describe('provenance sidecar', () => {
+  const SIDECAR_PATH = `${PROFILE_DIR}/.eedsh/provenance.json`
+  const configDir = '/repo/config'
+  const provenance = {
+    profiles: {
+      work: [{ label: 'cli', sites: [{ file: `${configDir}/config.ts`, line: 3, column: 5 }] }],
+    },
+  }
+
+  it('does not write a sidecar for an unchanged materialization', async () => {
+    const h = harness({ provenance, configDir })
+    const first = await h.run()
+    expect(first.changed).toBe(true)
+    expect(JSON.parse(h.fs.files.get(SIDECAR_PATH) ?? '{}').generationId).toBe(first.generationId)
+    h.fs.files.delete(SIDECAR_PATH)
+
+    const second = await h.run()
+    expect(second.changed).toBe(false)
+    expect(h.fs.files.has(SIDECAR_PATH)).toBe(false)
+  })
+})
+
 describe('dependency-section notices', () => {
   it('reports a cleanup notice in the materialization result', async () => {
     const h = harness()

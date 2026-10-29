@@ -378,7 +378,7 @@ describe('empty generated layers', () => {
     expect(result.failure._tag).toBe('PreflightFailure')
     expect(result.failure.warnings).toHaveLength(1)
     expect(result.failure.warnings[0]).toBe('generated #1: contains no patches')
-    const emptyFile = generated.files.find((file) => file.path.endsWith('empty.yml'))
+    const emptyFile = generated.files.find((file) => file.path.endsWith('0001.yml'))
     expect(emptyFile?.content).toBe('[]\n')
     expect(buildGenerated(plan)).toEqual(generated)
   })

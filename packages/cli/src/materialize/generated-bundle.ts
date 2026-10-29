@@ -139,6 +139,17 @@ export function hashPlan(plan: ProfilePlan): string {
   return sha256(canonicalJson(plan))
 }
 
+/**
+ * The generated patch file name for a 1-based group position, such as
+ * `0001.yml`. Position is the group's identity, and the zero-padded name keeps
+ * the directory listing in application order.
+ * @param index - the zero-based group index.
+ * @returns the package-relative patch file path suffix.
+ */
+export function positionalPatchName(index: number): string {
+  return `${String(index + 1).padStart(4, '0')}.yml`
+}
+
 /** Inputs for {@link buildGeneratedBundle}. */
 export interface BuildGeneratedBundleInput {
   plan: ProfilePlan
@@ -175,15 +186,15 @@ export function generationIdFor(input: {
  */
 export function buildGeneratedBundle(input: BuildGeneratedBundleInput): GeneratedBundle {
   const planHash = hashPlan(input.plan)
-  const emitted = input.plan.layers.map((item, index) => ({
-    id: item.id ?? String(index + 1),
-    content: emitPatchesYaml(item.patches),
-  }))
-  const hashes = emitted.map((item) => ({ id: item.id, hash: sha256(item.content) }))
-  const generationId = generationIdFor({ planHash, layers: hashes })
-  const layers: GenerationLayer[] = hashes.map((item) => ({
-    file: `patches/${generationId}/${item.id}.yml`,
-    hash: item.hash,
+  const emitted = input.plan.layers.map((item) => emitPatchesYaml(item.patches))
+  const hashes = emitted.map((content) => sha256(content))
+  const generationId = generationIdFor({
+    planHash,
+    layers: hashes.map((hash) => ({ hash })),
+  })
+  const layers: GenerationLayer[] = hashes.map((hash, index) => ({
+    file: `patches/${generationId}/${positionalPatchName(index)}`,
+    hash,
   }))
 
   const generation: GenerationRecord = {
@@ -209,9 +220,9 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
   }
 
   const authoritativeContent = canonicalJson(input.plan)
-  const files: GeneratedBundleFile[] = emitted.map((item, index) => ({
+  const files: GeneratedBundleFile[] = emitted.map((content, index) => ({
     path: layers[index]!.file,
-    content: item.content,
+    content,
   }))
   files.push({ path: authoritativePlanPath(generationId), content: authoritativeContent })
   files.push({ path: 'package.json', content: `${JSON.stringify(manifest, null, 2)}\n` })

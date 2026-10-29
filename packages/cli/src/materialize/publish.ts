@@ -6,6 +6,7 @@
  * @module @eedsh/cli/materialize/publish
  */
 import { dirname, join } from 'node:path'
+import type { ConfigProvenance } from '@eedsh/config'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -22,7 +23,13 @@ import { readOptional } from '../internal/read-optional'
 import type { Diagnostic } from './diagnostics'
 import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle'
 import { readProfileDependencies } from './manifest'
-import { ensureProfileFiles, GENERATED_DIRNAME, PLAN_RELATIVE_PATH } from './profile'
+import {
+  ensureProfileFiles,
+  GENERATED_DIRNAME,
+  PLAN_RELATIVE_PATH,
+  PROVENANCE_RELATIVE_PATH,
+} from './profile'
+import { provenanceSidecarContent } from './provenance'
 
 /** Inputs for {@link publishProfile}. */
 export interface PublishProfileInput {
@@ -38,6 +45,10 @@ export interface PublishProfileInput {
   explain: boolean
   /** Reconciliation diagnostics to report with the publication. */
   notices: readonly Diagnostic[]
+  /** The evaluated config's recorded provenance, when it has any. */
+  provenance?: ConfigProvenance
+  /** Absolute directory of the evaluated config file, for relative sites. */
+  configDir?: string
 }
 
 /** What publication did. */
@@ -53,9 +64,11 @@ interface ProfileSnapshot {
   manifestPath: string
   lockfilePath: string
   mirrorPath: string
+  provenancePath: string
   manifestContent: Option.Option<string>
   lockfileContent: Option.Option<string>
   mirrorContent: Option.Option<string>
+  provenanceContent: Option.Option<string>
 }
 
 /** Write profile scaffolding, generated layers, and the authoritative plan. */
@@ -92,16 +105,20 @@ function snapshotProfileFiles(
     const manifestPath = join(profileDir, 'package.json')
     const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
     const mirrorPath = join(profileDir, PLAN_RELATIVE_PATH)
+    const provenancePath = join(profileDir, PROVENANCE_RELATIVE_PATH)
     const manifestContent = yield* readOptional(fs, manifestPath)
     const lockfileContent = yield* readOptional(fs, lockfilePath)
     const mirrorContent = yield* readOptional(fs, mirrorPath)
+    const provenanceContent = yield* readOptional(fs, provenancePath)
     return {
       manifestPath,
       lockfilePath,
       mirrorPath,
+      provenancePath,
       manifestContent,
       lockfileContent,
       mirrorContent,
+      provenanceContent,
     }
   })
 }
@@ -115,6 +132,28 @@ function profileDependenciesChanged(
     canonicalJson(readProfileDependencies(previousManifest)) !==
     canonicalJson(readProfileDependencies(Option.some(manifest)))
   )
+}
+
+/** Write the advisory provenance sidecar next to the plan mirror. */
+function writeProvenanceSidecar(
+  fs: FileSystem.FileSystem,
+  path: string,
+  content: string,
+): Effect.Effect<void, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    yield* fs.makeDirectory(dirname(path), { recursive: true })
+    yield* writeFileAtomic(fs, path, content)
+  })
+}
+
+/** The sidecar content for this publication, when the config was evaluated here. */
+function provenanceFor(input: PublishProfileInput): string | undefined {
+  if (input.provenance === undefined || input.configDir === undefined) return undefined
+  return provenanceSidecarContent({
+    generationId: input.generated.generationId,
+    configDir: input.configDir,
+    groups: input.provenance.profiles[input.plan.profile.name] ?? [],
+  })
 }
 
 /** Write the reconciled profile manifest in its formatted on-disk form. */
@@ -145,6 +184,7 @@ function restoreProfileFiles(
     yield* restoreFile(fs, snapshot.manifestPath, snapshot.manifestContent)
     yield* restoreFile(fs, snapshot.lockfilePath, snapshot.lockfileContent)
     yield* restoreFile(fs, snapshot.mirrorPath, snapshot.mirrorContent)
+    yield* restoreFile(fs, snapshot.provenancePath, snapshot.provenanceContent)
   })
 }
 
@@ -222,6 +262,10 @@ export function publishProfile(
       writePlanMirror(fs, snapshot.mirrorPath, input.generated.planContent),
       restore,
     )
+    const sidecar = provenanceFor(input)
+    if (sidecar !== undefined) {
+      yield* restoreOnFailure(writeProvenanceSidecar(fs, snapshot.provenancePath, sidecar), restore)
+    }
     yield* restoreOnFailure(commitGeneratedManifest(fs, generatedDir, input.generated), restore)
 
     return {

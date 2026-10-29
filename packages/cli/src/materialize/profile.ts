@@ -28,6 +28,9 @@ export const GENERATED_DIRNAME = '.eedsh/generated'
 /** The inspectable plan copy, relative to the profile. */
 export const PLAN_RELATIVE_PATH = '.eedsh/plan.json'
 
+/** The advisory provenance sidecar, relative to the profile. */
+export const PROVENANCE_RELATIVE_PATH = '.eedsh/provenance.json'
+
 /** The profile-local sync lock, relative to the profile. */
 export const LOCK_RELATIVE_PATH = '.eedsh/sync.lock'
 
