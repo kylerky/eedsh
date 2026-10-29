@@ -22,7 +22,8 @@ import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
-import { ConfigError, loadConfig, validateConfigPath } from './config'
+import { ConfigError, type ConfigLoadFailure, loadConfig, validateConfigPath } from './config'
+import { presetDefinitionErrorLines } from './internal/authoring-error'
 import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
@@ -93,7 +94,7 @@ export interface CliRunOptions {
   loadConfig?: (
     configPath: string,
     evaluationNonce?: string,
-  ) => Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError>
+  ) => Effect.Effect<EedshConfig, ConfigLoadFailure>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace the file system `doctor` inspects. */
@@ -243,6 +244,8 @@ function describeError(error: unknown): string[] {
         return Array.isArray(tagged.lines) ? tagged.lines.map(String) : [String(tagged.message)]
       case 'ResolutionError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'PresetDefinitionError':
+        return presetDefinitionErrorLines(tagged)
       case 'PreviewError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       default:
@@ -584,7 +587,7 @@ function resolveConfigPath(
 function loadConfigValue(
   configPath: string,
   runtime: CommandRuntime,
-): Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError> {
+): Effect.Effect<EedshConfig, ConfigLoadFailure> {
   return (runtime.options.loadConfig ?? loadConfig)(configPath)
 }
 
@@ -622,7 +625,7 @@ interface SyncCommandInput {
 function runSyncCommand(
   input: SyncCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<number, ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure> {
+): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshResolveFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)
@@ -688,7 +691,7 @@ function runRunCommand(
   runtime: CommandRuntime,
 ): Effect.Effect<
   number,
-  ConfigError | Schema.SchemaError | MaterializeError | DshResolveFailure | SpawnFailure
+  ConfigLoadFailure | MaterializeError | DshResolveFailure | SpawnFailure
 > {
   return Effect.gen(function* () {
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
@@ -752,7 +755,7 @@ interface DoctorCommandInput {
 function runDoctorCommand(
   input: DoctorCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<number, ConfigError | Schema.SchemaError, FileSystem.FileSystem> {
+): Effect.Effect<number, ConfigLoadFailure, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
     if (Option.isSome(input.profile) && Option.isSome(input.configPath)) {

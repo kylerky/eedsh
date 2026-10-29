@@ -15,6 +15,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { CONFIG_FILENAME } from './config-path'
 import { resolveDshInstallation } from './dsh'
+import { type AuthoringError, isAuthoringError } from './internal/authoring-error'
 import { findTsconfigPath } from './internal/tsconfig'
 
 /** A config path, evaluation, or export failure. */
@@ -39,6 +40,9 @@ function errorMessage(error: unknown): string {
   }
   return String(error)
 }
+
+/** Every failure config evaluation can report. */
+export type ConfigLoadFailure = ConfigError | Schema.SchemaError | AuthoringError
 
 /** Read a config's default export as a validated multi-profile config. */
 function exportedConfig(
@@ -181,7 +185,7 @@ function importEnvironment(configPath: string): () => void {
 export function loadConfig(
   configPath: string,
   evaluationNonce?: string,
-): Effect.Effect<EedshConfig, ConfigError | Schema.SchemaError> {
+): Effect.Effect<EedshConfig, ConfigLoadFailure> {
   return Effect.gen(function* () {
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
@@ -217,10 +221,12 @@ export function loadConfig(
       catch: (cause) =>
         Schema.isSchemaError(cause)
           ? cause
-          : new ConfigError(
-              'config.import_failed',
-              `cannot import ${configPath}: ${errorMessage(cause)}`,
-            ),
+          : isAuthoringError(cause)
+            ? cause
+            : new ConfigError(
+                'config.import_failed',
+                `cannot import ${configPath}: ${errorMessage(cause)}`,
+              ),
     })
 
     const exported = imported.default

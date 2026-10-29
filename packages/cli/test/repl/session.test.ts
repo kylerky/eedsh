@@ -3,14 +3,24 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { defineConfig, takeResolutionTrace } from '@eedsh/config'
+import {
+  defineConfig,
+  PresetDefinitionError,
+  ResolutionError,
+  takeResolutionTrace,
+} from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../../src/config'
 import { runReplLoop } from '../../src/repl/prompt'
-import { ReplSession, ReplSessionError, type SyncOutcome } from '../../src/repl/session'
+import {
+  ReplSession,
+  ReplSessionError,
+  type ReplConfigFailure,
+  type SyncOutcome,
+} from '../../src/repl/session'
 import { waitFor } from '../support/async'
 
 const root = process.cwd()
@@ -70,7 +80,7 @@ interface Harness {
   err: string[]
   loads: () => number
   setConfig: (config: EedshConfig) => void
-  setFailure: (error: ConfigError) => void
+  setFailure: (error: ReplConfigFailure) => void
   syncs: ProfilePlan[]
 }
 
@@ -87,7 +97,7 @@ async function session(
   } = {},
 ): Promise<Harness> {
   let current = options.config ?? configWith(['a'])
-  let failure: ConfigError | undefined
+  let failure: ReplConfigFailure | undefined
   let loadCount = 0
   const out: string[] = []
   const err: string[] = []
@@ -291,6 +301,47 @@ describe('typed domain bindings', () => {
     await expect(
       session({ authoringModule: { plan: {}, defineConfig: () => undefined } }),
     ).rejects.toMatchObject({ code: 'repl.binding_collision' })
+  })
+})
+
+describe('authoring failure formatting', () => {
+  it('reports a preserved resolution failure by code instead of a config import failure', async () => {
+    const h = await session()
+    h.setFailure(
+      new ResolutionError({
+        code: 'resolution.preset_not_found',
+        bundle: '@deepseek-ai/dsh-base',
+        message: 'bundle "@deepseek-ai/dsh-base" declares no preset "missing"',
+      }),
+    )
+    await h.session.reload()
+    const err = h.err.join('\n')
+    expect(err).toContain('reload failed')
+    expect(err).toContain('resolution.preset_not_found')
+    expect(err).toContain('declares no preset "missing"')
+    expect(err).not.toContain('config.import_failed')
+  })
+
+  it('reports a preserved preset-definition failure with its ids', async () => {
+    const h = await session()
+    h.setFailure(
+      new PresetDefinitionError({
+        code: 'preset.child_not_found',
+        presetId: 'ptc-fresh',
+        rowId: 'preset-ptc-fresh',
+        childId: 'missing',
+        message:
+          'preset "ptc-fresh" (row "preset-ptc-fresh") declares no child "missing"',
+      }),
+    )
+    await h.session.reload()
+    const err = h.err.join('\n')
+    expect(err).toContain('reload failed')
+    expect(err).toContain('preset.child_not_found')
+    expect(err).toContain('"ptc-fresh"')
+    expect(err).toContain('"preset-ptc-fresh"')
+    expect(err).toContain('"missing"')
+    expect(err).not.toContain('config.import_failed')
   })
 })
 

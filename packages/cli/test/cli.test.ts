@@ -381,6 +381,52 @@ describe('config evaluation', () => {
     expect(h.fs.files.size).toBe(0)
   })
 
+  it('reports a preserved resolution failure instead of config.import_failed', async () => {
+    const dir = await tempDir('preset-resolution-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { bundle } from '@eedsh/config'
+
+export default bundle('@deepseek-ai/dsh-base').preset('missing').toJSON()
+`,
+    )
+    const h = harness()
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('resolution.preset_not_found')
+    expect(errors).toContain('"missing"')
+    expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
+  it('reports a preserved preset-definition failure with its ids', async () => {
+    const dir = await tempDir('preset-child-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { definePreset } from '@eedsh/config'
+
+definePreset('ptc-fresh').children((children) => {
+  children.child('missing')
+})
+
+export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
+`,
+    )
+    const h = harness()
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('preset.child_not_found')
+    expect(errors).toContain('"ptc-fresh"')
+    expect(errors).toContain('"preset-ptc-fresh"')
+    expect(errors).toContain('"missing"')
+    expect(errors).not.toContain('config.import_failed')
+    expect(h.fs.files.size).toBe(0)
+  })
+
   it('applies an edited config in watch mode', async () => {
     const dir = await tempDir('watch-')
     const configPath = join(dir, 'config.ts')

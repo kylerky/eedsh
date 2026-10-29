@@ -79,6 +79,34 @@ export default {
 }
 `
 
+const missingPresetSource = `
+import { bundle } from '@eedsh/config'
+
+export default bundle('@deepseek-ai/dsh-base').preset('missing').toJSON()
+`
+
+const missingPresetChildSource = `
+import { definePreset } from '@eedsh/config'
+
+definePreset('ptc-fresh').children((children) => {
+  children.child('missing')
+})
+
+export default {
+  dsh: '0.2.1-rc.2',
+  profiles: { work: { bundles: [] } },
+}
+`
+
+const untaggedThrowSource = `
+throw new Error('untagged import boom')
+
+export default {
+  dsh: '0.2.1-rc.2',
+  profiles: { work: { bundles: [] } },
+}
+`
+
 const lonePlanSource = `
 export default {
   format: 'eedsh/profile-plan',
@@ -176,6 +204,43 @@ describe('config loading', () => {
     if (home !== undefined && Result.isFailure(home)) {
       expect(home.failure.message).toContain('owned by the materializer')
     }
+  })
+})
+
+describe('authoring failures during import', () => {
+  async function failureOf(source: string): Promise<unknown> {
+    const dir = await configDir(source)
+    const exit = await Effect.runPromiseExit(loadConfig(join(dir, 'config.ts')))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (!Exit.isFailure(exit)) return undefined
+    return Cause.squash(exit.cause)
+  }
+
+  it('preserves a missing preset as a resolution failure', async () => {
+    const error = (await failureOf(missingPresetSource)) as Record<string, unknown>
+    expect(error._tag).toBe('ResolutionError')
+    expect(error.code).toBe('resolution.preset_not_found')
+    expect(String(error.message)).toContain('"missing"')
+    expect(String(error.message)).toContain('@deepseek-ai/dsh-base')
+  })
+
+  it('preserves a missing preset child as a preset-definition failure', async () => {
+    const error = (await failureOf(missingPresetChildSource)) as Record<string, unknown>
+    expect(error._tag).toBe('PresetDefinitionError')
+    expect(error.code).toBe('preset.child_not_found')
+    expect(error.presetId).toBe('ptc-fresh')
+    expect(error.rowId).toBe('preset-ptc-fresh')
+    expect(error.childId).toBe('missing')
+    expect(String(error.message)).toContain('"ptc-fresh"')
+    expect(String(error.message)).toContain('"preset-ptc-fresh"')
+    expect(String(error.message)).toContain('"missing"')
+  })
+
+  it('keeps an untagged import failure a config import failure', async () => {
+    const error = (await failureOf(untaggedThrowSource)) as Record<string, unknown>
+    expect(error._tag).toBe('ConfigError')
+    expect(error.code).toBe('config.import_failed')
+    expect(String(error.message)).toContain('untagged import boom')
   })
 })
 

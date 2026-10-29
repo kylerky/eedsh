@@ -17,13 +17,13 @@ import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
 import * as Result from 'effect/Result'
-import type * as Schema from 'effect/Schema'
-import { type ConfigError, loadConfig as defaultLoadConfig } from '../config'
+import { type ConfigLoadFailure, loadConfig as defaultLoadConfig } from '../config'
 import { type DoctorResult, doctor } from '../doctor'
 import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
+import { presetDefinitionErrorLines } from '../internal/authoring-error'
 import { composePreflightLayers, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import { type WatchSession, watchConfigDirectory } from '../watch'
@@ -54,7 +54,7 @@ import {
 } from './views'
 
 /** A loadable config failure. */
-export type ReplConfigFailure = ConfigError | Schema.SchemaError
+export type ReplConfigFailure = ConfigLoadFailure
 
 /** A line sink. */
 export type LineSink = (line: string) => void
@@ -210,6 +210,8 @@ function errorLines(error: unknown): string[] {
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'ResolutionError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
+      case 'PresetDefinitionError':
+        return presetDefinitionErrorLines(tagged)
       case 'PreviewError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'ReplSessionError':
