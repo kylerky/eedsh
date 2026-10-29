@@ -22,6 +22,12 @@ import type * as Schema from 'effect/Schema'
 import { normalizeAuthoring } from './authoring'
 import { type PresetDefinition, type PresetRef, presetRefId } from './preset'
 import {
+  type AuthoringSite,
+  captureAuthoringSite,
+  type PatchGroupProvenance,
+  recordProfileProvenance,
+} from './provenance'
+import {
   type Bundle,
   bundleSelection,
   type PatchTarget,
@@ -45,9 +51,22 @@ export class LayerBuilder {
   readonly label: string | undefined
   /** The appended Loader patches in application order. */
   readonly patches: PlanPatch[] = []
+  /** The captured authoring site per patch, aligned with `patches`. */
+  readonly sites: (AuthoringSite | undefined)[] = []
 
   constructor(label?: string) {
     this.label = label
+  }
+
+  /** Append one patch and capture its authoring site, best effort. */
+  private append(patch: PlanPatch): void {
+    this.patches.push(patch)
+    this.sites.push(captureAuthoringSite())
+  }
+
+  /** The captured provenance for this group. */
+  provenance(): PatchGroupProvenance {
+    return { label: this.label, sites: [...this.sites] }
   }
 
   /**
@@ -57,7 +76,7 @@ export class LayerBuilder {
    */
   insert(entries: LayerEntry | readonly LayerEntry[]): this {
     const list: readonly LayerEntry[] = Array.isArray(entries) ? entries : [entries]
-    this.patches.push({ insert: [...list] })
+    this.append({ insert: [...list] })
     return this
   }
 
@@ -67,7 +86,7 @@ export class LayerBuilder {
    * @returns this layer.
    */
   disable(target: PatchTarget): this {
-    this.patches.push({ id: patchTargetId(target), disabled: true })
+    this.append({ id: patchTargetId(target), disabled: true })
     return this
   }
 
@@ -77,7 +96,7 @@ export class LayerBuilder {
    * @returns this layer.
    */
   enable(target: PatchTarget): this {
-    this.patches.push({ id: patchTargetId(target), disabled: false })
+    this.append({ id: patchTargetId(target), disabled: false })
     return this
   }
 
@@ -88,7 +107,7 @@ export class LayerBuilder {
    * @returns this layer.
    */
   override(target: PatchTarget, config: JsonValue): this {
-    this.patches.push({ id: patchTargetId(target), config })
+    this.append({ id: patchTargetId(target), config })
     return this
   }
 
@@ -103,7 +122,7 @@ export class LayerBuilder {
   selectPreset(selected: PresetRef, options: { readonly default: PresetRef }): this {
     const selectedDefault = presetRefId(selected, 'selected')
     const deploymentDefault = presetRefId(options.default, 'deployment-default')
-    this.patches.push({
+    this.append({
       id: 'agent-preset-registry',
       config: { default: deploymentDefault, selectedDefault },
     })
@@ -116,7 +135,7 @@ export class LayerBuilder {
    * @returns this layer.
    */
   raw(entry: PlanPatch): this {
-    this.patches.push({ ...entry })
+    this.append({ ...entry })
     return this
   }
 
@@ -227,6 +246,11 @@ export class ProfileBuilder {
     return this
   }
 
+  /** The captured authoring provenance for this profile's patch groups. */
+  provenance(): readonly PatchGroupProvenance[] {
+    return this.layers.map((layer) => layer.provenance())
+  }
+
   /** The profile as authored data; typed handles are normalized at build. */
   toJSON(): {
     readonly bundles: readonly unknown[]
@@ -289,6 +313,9 @@ export class ConfigBuilder {
    * @returns the validated config or a native schema failure.
    */
   build(): Result.Result<EedshConfig, Schema.SchemaError> {
+    for (const profile of this.profiles) {
+      recordProfileProvenance(profile.name, profile.provenance())
+    }
     const authored: Record<string, unknown> = {
       dsh: this.pin,
       profiles: Object.fromEntries(

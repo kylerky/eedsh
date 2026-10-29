@@ -15,6 +15,13 @@ export type {
 export * from './authoring'
 export * from './builders'
 export * from './preset'
+export {
+  type AuthoringSite,
+  type ConfigProvenance,
+  clearProvenance,
+  configProvenance,
+  type PatchGroupProvenance,
+} from './provenance'
 export * from './query'
 export {
   CONFIG_DIR_ENV,
