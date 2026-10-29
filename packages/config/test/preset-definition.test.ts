@@ -207,6 +207,72 @@ describe('nested child scope', () => {
   })
 })
 
+describe('preset selection', () => {
+  function planWithSelection(
+    build: (layer: LayerBuilder) => void,
+  ): ReturnType<typeof planOfDefinition> {
+    const built = defineConfig()
+      .dsh('0.2.1-rc.2')
+      .profile('work', (profile) => {
+        profile.generated().layer('registry', build)
+      })
+      .build()
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    return plan.success
+  }
+
+  it('writes differing selected and deployment-default preset ids', () => {
+    const standard = bundle('@fixture/base').preset('standard')
+    const adapted = definePreset('ptc-fresh').from(installedPreset())
+    const plan = planWithSelection((layer) => layer.selectPreset(adapted, { default: standard }))
+    expect(plan.layers[0]?.patches).toEqual([
+      {
+        id: 'agent-preset-registry',
+        config: { default: 'standard', selectedDefault: 'ptc-fresh' },
+      },
+    ])
+  })
+
+  it('writes the same preset id twice when it is also the deployment default', () => {
+    const adapted = definePreset('ptc-fresh')
+    const plan = planWithSelection((layer) => layer.selectPreset(adapted, { default: adapted }))
+    expect(plan.layers[0]?.patches[0]).toEqual({
+      id: 'agent-preset-registry',
+      config: { default: 'ptc-fresh', selectedDefault: 'ptc-fresh' },
+    })
+  })
+
+  it('writes the full registry config without merging or inferring', () => {
+    const standard = bundle('@fixture/base').preset('standard')
+    const adapted = definePreset('ptc-fresh')
+    const plan = planWithSelection((layer) => {
+      layer.raw({ id: 'agent-preset-registry', config: { default: 'inferred', extra: true } })
+      layer.selectPreset(adapted, { default: standard })
+    })
+    const patch = plan.layers[0]?.patches[1] as { config: Record<string, unknown> }
+    expect(Object.keys(patch.config).sort()).toEqual(['default', 'selectedDefault'])
+    expect(patch.config).toEqual({ default: 'standard', selectedDefault: 'ptc-fresh' })
+  })
+
+  it('rejects a non-preset reference with a tagged selection failure', () => {
+    const standard = definePreset('standard')
+    for (const bad of ['ptc-fresh', {}, null]) {
+      expect(() =>
+        new LayerBuilder('registry').selectPreset(bad as never, { default: standard }),
+      ).toThrowError(PresetDefinitionError)
+    }
+    try {
+      new LayerBuilder('registry').selectPreset({} as never, { default: standard })
+    } catch (error) {
+      const failure = error as PresetDefinitionError
+      expect(failure.code).toBe('preset.invalid_selection')
+      expect(failure.message).toContain('preset')
+    }
+  })
+})
+
 describe('child lookup failures', () => {
   function failureOf(run: () => void): PresetDefinitionError {
     try {

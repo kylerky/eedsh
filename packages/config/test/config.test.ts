@@ -1,4 +1,4 @@
-import { bundle, defineConfig, ResolutionError } from '@eedsh/config'
+import { bundle, defineConfig, definePreset, LayerBuilder, ResolutionError } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
@@ -126,6 +126,44 @@ describe('fluent config builder', () => {
       { kind: 'generated' },
     ])
     expect(JSON.parse(JSON.stringify(plan))).toEqual(plan)
+  })
+
+  it('writes the complete preset registry config from explicit references', () => {
+    const standard = definePreset('standard')
+    const adapted = definePreset('ptc-fresh', { rowId: 'preset-adapted' })
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          profile.layer('registry', (layer) => layer.selectPreset(adapted, { default: standard }))
+        })
+        .build(),
+    )
+    expect(planOf(config, 'work').layers).toEqual([
+      {
+        id: 'registry',
+        patches: [
+          {
+            id: 'agent-preset-registry',
+            config: { default: 'standard', selectedDefault: 'ptc-fresh' },
+          },
+        ],
+      },
+    ])
+  })
+
+  it('requires the deployment default and accepts no shorthand', () => {
+    const adapted = definePreset('ptc-fresh')
+    const layer = new LayerBuilder('registry')
+    if (false as boolean) {
+      // @ts-expect-error the deployment default must be supplied explicitly
+      layer.selectPreset(adapted)
+      // @ts-expect-error the deployment default must be supplied explicitly
+      layer.selectPreset(adapted, {})
+      // @ts-expect-error a preset reference is a handle, never a bare id
+      layer.selectPreset('ptc-fresh', { default: adapted })
+    }
+    expect(layer.patches).toEqual([])
   })
 
   it('returns detached, independent builds', () => {

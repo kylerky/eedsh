@@ -7,7 +7,7 @@
  * @module @eedsh/config/preset
  */
 import type { JsonObject } from '@eedsh/plan'
-import { AUTHORING_KIND } from './authoring'
+import { AUTHORING_KIND, authoringKind } from './authoring'
 import type { Preset } from './query'
 
 /** The Loader row name every preset definition normalizes to. */
@@ -293,6 +293,52 @@ export class PresetDefinition {
     if (state.order !== undefined) config.order = state.order
     return { id: this.rowId, name: PRESET_ROW_NAME, config }
   }
+}
+
+/** A reference the preset registry can select: an installed or authored preset. */
+export type PresetRef = Preset | PresetDefinition
+
+function describeValue(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'an array'
+  if (typeof value === 'object') {
+    const name = (value as { constructor?: { name?: string } }).constructor?.name
+    return name === undefined || name === '' ? 'an object' : `a ${name}`
+  }
+  return typeof value
+}
+
+/**
+ * The preset id one reference resolves to for the registry.
+ * @param reference - an installed `Preset` or an authored `PresetDefinition`.
+ * @param role - the reference's role, used in the failure message.
+ * @returns the preset id the registry selects.
+ */
+export function presetRefId(reference: PresetRef, role: string): string {
+  const kind = authoringKind(reference)
+  const record =
+    reference !== null && typeof reference === 'object'
+      ? (reference as unknown as Record<string, unknown>)
+      : undefined
+  const presetId = typeof record?.id === 'string' ? record.id : ''
+  const rowId = typeof record?.rowId === 'string' ? record.rowId : ''
+  if (kind !== 'preset' && kind !== 'preset-definition') {
+    throw new PresetDefinitionError({
+      code: 'preset.invalid_selection',
+      presetId,
+      rowId,
+      message: `the ${role} preset must be an installed preset or an authored preset definition; received ${describeValue(reference)}`,
+    })
+  }
+  if (presetId === '') {
+    throw new PresetDefinitionError({
+      code: 'preset.invalid_selection',
+      presetId,
+      rowId,
+      message: `the ${role} preset has no preset id to select`,
+    })
+  }
+  return presetId
 }
 
 /**

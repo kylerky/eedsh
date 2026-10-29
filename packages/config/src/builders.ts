@@ -20,7 +20,7 @@ import {
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import { normalizeAuthoring } from './authoring'
-import type { PresetDefinition } from './preset'
+import { type PresetDefinition, type PresetRef, presetRefId } from './preset'
 import {
   type Bundle,
   bundleSelection,
@@ -89,6 +89,24 @@ export class LayerBuilder {
    */
   override(target: PatchTarget, config: JsonValue): this {
     this.patches.push({ id: patchTargetId(target), config })
+    return this
+  }
+
+  /**
+   * Select one preset and declare the deployment default explicitly. The
+   * written config is complete and replaces the registry row's config; when
+   * the row is absent, preflight reports the unmatched target.
+   * @param selected - an installed or authored preset reference.
+   * @param options - the required deployment-default preset reference.
+   * @returns this layer.
+   */
+  selectPreset(selected: PresetRef, options: { readonly default: PresetRef }): this {
+    const selectedDefault = presetRefId(selected, 'selected')
+    const deploymentDefault = presetRefId(options.default, 'deployment-default')
+    this.patches.push({
+      id: 'agent-preset-registry',
+      config: { default: deploymentDefault, selectedDefault },
+    })
     return this
   }
 

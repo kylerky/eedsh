@@ -1,3 +1,4 @@
+import { definePreset, LayerBuilder } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
@@ -203,6 +204,59 @@ describe('preflight composition', () => {
       generatedLayerLabels: ['generated:one', 'generated:two'],
     })
     expect(result.duplicateInsertIds).toEqual(['dup'])
+  })
+})
+
+describe('preset selection composition', () => {
+  const registryRow = {
+    id: 'agent-preset-registry',
+    name: '@deepseek-ai/dsh-agent-preset-registry',
+    config: { default: 'standard' },
+  }
+
+  function selectionLayer(): PreflightLayer {
+    const layer = new LayerBuilder('registry').selectPreset(definePreset('ptc-fresh'), {
+      default: definePreset('standard'),
+    })
+    return {
+      label: 'generated:registry',
+      patches: layer.patches as Record<string, unknown>[],
+    }
+  }
+
+  it('composes the selected registry config over a bundle registry row', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:@fixture/base', patches: [{ insert: [registryRow] }] },
+      selectionLayer(),
+    ]
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:registry'],
+    })
+    expect(result.warnings).toEqual([])
+    expect(result.entries).toEqual([
+      {
+        id: 'agent-preset-registry',
+        name: '@deepseek-ai/dsh-agent-preset-registry',
+        config: { default: 'standard', selectedDefault: 'ptc-fresh' },
+      },
+    ])
+  })
+
+  it('leaves a missing registry row as an attributed preflight warning', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:@fixture/base', patches: basePatches },
+      selectionLayer(),
+    ]
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:registry'],
+    })
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]).toContain('agent-preset-registry')
+    const attributed = attributePreflightWarnings(layers, result.warnings)
+    expect(attributed).toEqual([
+      { layer: 'generated:registry', message: result.warnings[0] },
+    ])
+    expect(result.entries.map((entry) => entry.id)).toEqual(['timer'])
   })
 })
 
