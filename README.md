@@ -209,7 +209,7 @@ row; methods never reach the persisted plan.
 |---|---|
 | `defineConfig()` | Start the synchronous config builder. `.dsh(pin)`, `.defaultProfile(name)`, and `.profile(name, build)` chain; `.build()` validates. |
 | `ConfigBuilder.build()` | Normalize typed objects, validate the envelope and every profile, and return `Result<EedshConfig, Schema.SchemaError>`. |
-| `ProfileBuilder.bundle(name \| Bundle, options?)` | Add an ordered bundle selection; `options.source` overrides its source. A rooted query is rejected. |
+| `ProfileBuilder.bundle(name \| Bundle)` | Add an ordered bundle selection. A rooted query is rejected. Bundle selection never declares a dependency; a local bundle that is both calls `.bundle(name)` and `.package(name, spec)`. |
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
 | `ProfileBuilder.layer(id, build)` | Declare an ordered patch layer scoped to its callback. |
 | `ProfileBuilder.package(name, spec)` | Add a profile-local package dependency. |
@@ -219,7 +219,7 @@ row; methods never reach the persisted plan.
 | `LayerBuilder.raw(entry)` | Preserve a raw Loader patch entry, including unnamed fields. |
 | `group(id, fields, children)` | Build a group entry for `insert`, with fields, an optional isolate map, and ordered children. |
 | `js(source)` | Emit a `!!js` runtime expression evaluated at activation. |
-| `bundle(name, options?)` | Select a bundle and query handle; `.fromProfile()` and `.fromPackageDir()` root it. |
+| `bundle(name)` | Select a bundle and query handle; `.fromProfile()` and `.fromPackageDir()` root it. |
 
 ## Authoring queries and the config REPL
 

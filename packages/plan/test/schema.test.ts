@@ -55,6 +55,25 @@ describe('plan schema decoding', () => {
     expect(value.packages).toEqual({})
   })
 
+  it('accepts a legacy NamedBundle.source without changing the plan version', () => {
+    const result = decode(
+      plan({
+        bundles: [
+          { kind: 'bundle', name: '@deepseek-ai/dsh-base', source: 'link:../base' },
+          { kind: 'generated' },
+        ],
+      }),
+    )
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.version).toBe(PLAN_VERSION)
+    expect(result.success.bundles[0]).toEqual({
+      kind: 'bundle',
+      name: '@deepseek-ai/dsh-base',
+      source: 'link:../base',
+    })
+  })
+
   it('decodes nested bundles, layers, patches, and packages', () => {
     const result = decode(
       plan({

@@ -170,19 +170,12 @@ export class ProfileBuilder {
   /**
    * Add an ordered bundle selection.
    * @param value - a bundle name or an unrooted `Bundle`.
-   * @param options - optional source override when a name is supplied.
    * @returns this profile.
    */
-  bundle(value: string | Bundle, options: { readonly source?: string } = {}): this {
-    if (typeof value === 'string') {
-      this.bundles.push(
-        options.source === undefined
-          ? { kind: 'bundle', name: value }
-          : { kind: 'bundle', name: value, source: options.source },
-      )
-    } else {
-      this.bundles.push(bundleSelection(value))
-    }
+  bundle(value: string | Bundle): this {
+    this.bundles.push(
+      typeof value === 'string' ? { kind: 'bundle', name: value } : bundleSelection(value),
+    )
     return this
   }
 

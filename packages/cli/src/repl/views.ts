@@ -60,8 +60,7 @@ export class BundleView {
     this.name = selection.name
     this.source = selection.source
     this.profile = profile
-    const options = selection.source === undefined ? {} : { source: selection.source }
-    this.query = bundleHandle(selection.name, options).fromProfile(profile)
+    this.query = bundleHandle(selection.name).fromProfile(profile)
   }
 
   /** The bundle selection as plain plan data. */

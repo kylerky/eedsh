@@ -16,9 +16,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../../src/config'
 import { runReplLoop } from '../../src/repl/prompt'
 import {
+  type ReplConfigFailure,
   ReplSession,
   ReplSessionError,
-  type ReplConfigFailure,
   type SyncOutcome,
 } from '../../src/repl/session'
 import { waitFor } from '../support/async'
@@ -330,8 +330,7 @@ describe('authoring failure formatting', () => {
         presetId: 'ptc-fresh',
         rowId: 'preset-ptc-fresh',
         childId: 'missing',
-        message:
-          'preset "ptc-fresh" (row "preset-ptc-fresh") declares no child "missing"',
+        message: 'preset "ptc-fresh" (row "preset-ptc-fresh") declares no child "missing"',
       }),
     )
     await h.session.reload()

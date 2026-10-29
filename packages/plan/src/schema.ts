@@ -93,6 +93,11 @@ export const ExpressionNodeSchema = Schema.Struct({
 export const NamedBundleSchema = Schema.Struct({
   kind: Schema.Literal('bundle'),
   name: BundleNameSchema,
+  /**
+   * @deprecated Legacy plan data accepted without a version change; new
+   * authoring emits only the bundle name and declares dependencies on
+   * `.package()`. The materializer ignores this field.
+   */
   source: Schema.optional(Schema.NonEmptyString),
 })
 

@@ -421,8 +421,6 @@ describe('normalization to an ordinary row', () => {
     const installed = installedPreset()
     const definition = definePreset('ptc-fresh')
     expect(installed.disable()).toEqual({ id: 'preset-expressive', disabled: true })
-    expect(() => new LayerBuilder('bad').disable(definition as never)).toThrowError(
-      ResolutionError,
-    )
+    expect(() => new LayerBuilder('bad').disable(definition as never)).toThrowError(ResolutionError)
   })
 })

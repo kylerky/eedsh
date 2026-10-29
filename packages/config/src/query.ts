@@ -16,12 +16,6 @@ import {
   resolveBundle,
 } from './resolve'
 
-/** Options for a bundle selection. */
-export interface BundleOptions {
-  /** Optional profile-local package specifier for the bundle. */
-  readonly source?: string
-}
-
 /** A value a layer patch may target. */
 export type PatchTarget = string | Row | Preset
 
@@ -173,18 +167,15 @@ export class BundleQuery {
   readonly bundle: string
   /** The bundle name, mirrored for structural handles. */
   readonly name: string
-  /** The optional profile-local package specifier. */
-  readonly source?: string
   /** The handle kind; a rooted query is never a plan selection. */
   readonly kind: QueryKind = 'bundle-query'
   protected readonly root: QueryRoot
   private snapshot: ResolvedBundle | undefined
 
-  constructor(name: string, root: QueryRoot = {}, options: BundleOptions = {}) {
+  constructor(name: string, root: QueryRoot = {}) {
     this.bundle = name
     this.name = name
     this.root = root
-    if (options.source !== undefined) this.source = options.source
   }
 
   protected resolved(): ResolvedBundle {
@@ -262,15 +253,13 @@ export class Bundle extends BundleQuery {
   override readonly kind: QueryKind = 'bundle'
   readonly [AUTHORING_KIND] = 'bundle' as const
 
-  constructor(name: string, options: BundleOptions = {}) {
-    super(name, {}, options)
+  constructor(name: string) {
+    super(name)
   }
 
   /** The plan selection data. */
   toJSON(): NamedBundle {
-    return this.source === undefined
-      ? { kind: 'bundle', name: this.bundle }
-      : { kind: 'bundle', name: this.bundle, source: this.source }
+    return { kind: 'bundle', name: this.bundle }
   }
 
   /**
@@ -279,7 +268,7 @@ export class Bundle extends BundleQuery {
    * @returns a query-only handle.
    */
   fromProfile(profile: string | { readonly name?: unknown }): BundleQuery {
-    return new BundleQuery(this.bundle, { profile: this.profileName(profile) }, this.options())
+    return new BundleQuery(this.bundle, { profile: this.profileName(profile) })
   }
 
   /**
@@ -289,11 +278,7 @@ export class Bundle extends BundleQuery {
    * @returns a query-only handle.
    */
   fromPackageDir(dir: string): BundleQuery {
-    return new BundleQuery(this.bundle, { packageDir: dir }, this.options())
-  }
-
-  private options(): BundleOptions {
-    return this.source === undefined ? {} : { source: this.source }
+    return new BundleQuery(this.bundle, { packageDir: dir })
   }
 
   private profileName(profile: string | { readonly name?: unknown }): string {
@@ -311,11 +296,10 @@ export class Bundle extends BundleQuery {
 /**
  * Select a bundle at this position or query it.
  * @param name - the bundle package name.
- * @param options - optional source override.
  * @returns the typed bundle selection and query handle.
  */
-export function bundle(name: string, options: BundleOptions = {}): Bundle {
-  return new Bundle(name, options)
+export function bundle(name: string): Bundle {
+  return new Bundle(name)
 }
 
 /**

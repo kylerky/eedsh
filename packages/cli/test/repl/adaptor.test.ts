@@ -1,7 +1,11 @@
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { completeShellLine, createCompletionCompleter, type ReplCompleter } from '../../src/repl/prompt'
+import {
+  completeShellLine,
+  createCompletionCompleter,
+  type ReplCompleter,
+} from '../../src/repl/prompt'
 
 describe('readline completion adapter', () => {
   it('returns domain hits with the token to replace', async () => {

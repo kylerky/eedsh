@@ -23,7 +23,12 @@ interface ProfilePlan {
   readonly profile: { readonly name: string }
   readonly dsh: string // exact DSH pin
   readonly bundles: readonly (
-    | { readonly kind: 'bundle'; readonly name: string; readonly source?: string }
+    | {
+        readonly kind: 'bundle'
+        readonly name: string
+        /** @deprecated Legacy data accepted without a version change; never produced by new authoring. */
+        readonly source?: string
+      }
     | { readonly kind: 'generated' }
   )[]
   readonly layers: readonly {

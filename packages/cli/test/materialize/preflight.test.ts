@@ -253,9 +253,7 @@ describe('preset selection composition', () => {
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toContain('agent-preset-registry')
     const attributed = attributePreflightWarnings(layers, result.warnings)
-    expect(attributed).toEqual([
-      { layer: 'generated:registry', message: result.warnings[0] },
-    ])
+    expect(attributed).toEqual([{ layer: 'generated:registry', message: result.warnings[0] }])
     expect(result.entries.map((entry) => entry.id)).toEqual(['timer'])
   })
 })

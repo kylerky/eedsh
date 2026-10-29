@@ -56,7 +56,7 @@ describe('fluent config builder', () => {
         .profile('work', (profile) =>
           profile
             .bundle('@deepseek-ai/dsh-base')
-            .bundle(bundle('@deepseek-ai/dsh-web-app', { source: 'link:../web-app' }))
+            .bundle(bundle('@deepseek-ai/dsh-web-app'))
             .generated()
             .layer('plugins', (layer) =>
               layer.insert({ id: 'my-plugin', name: '@scope/my-plugin' }),
@@ -72,7 +72,7 @@ describe('fluent config builder', () => {
     const work = planOf(config, 'work')
     expect(work.bundles).toEqual([
       { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
-      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app', source: 'link:../web-app' },
+      { kind: 'bundle', name: '@deepseek-ai/dsh-web-app' },
       { kind: 'generated' },
     ])
     expect(work.packages).toEqual({ '@scope/my-plugin': 'link:../my-plugin' })
@@ -126,6 +126,38 @@ describe('fluent config builder', () => {
       { kind: 'generated' },
     ])
     expect(JSON.parse(JSON.stringify(plan))).toEqual(plan)
+  })
+
+  it('emits no bundle source from a selection or a profile bundle option', () => {
+    // @ts-expect-error bundle source options are removed from the authoring API
+    const handle = bundle('@deepseek-ai/dsh-web-app', { source: 'link:../web-app' })
+    expect(handle.toJSON()).toEqual({ kind: 'bundle', name: '@deepseek-ai/dsh-web-app' })
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          // @ts-expect-error bundle source options are removed from the authoring API
+          profile.bundle('@deepseek-ai/dsh-base', { source: 'link:../base' })
+        })
+        .build(),
+    )
+    expect(planOf(config, 'work').bundles).toEqual([
+      { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
+    ])
+  })
+
+  it('keeps package declarations as the only dependency input', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          profile.bundle('@deepseek-ai/dsh-base').package('@scope/plugin', 'link:../plugin')
+        })
+        .build(),
+    )
+    const plan = planOf(config, 'work')
+    expect(plan.bundles).toEqual([{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }])
+    expect(plan.packages).toEqual({ '@scope/plugin': 'link:../plugin' })
   })
 
   it('writes the complete preset registry config from explicit references', () => {

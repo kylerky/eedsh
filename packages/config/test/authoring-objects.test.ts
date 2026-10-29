@@ -49,16 +49,13 @@ function planValue(bundleValue: unknown): unknown {
 }
 
 describe('authoring brand', () => {
-  it('exposes a bundle selection as plain plan JSON', () => {
+  it('exposes a bundle selection as plain plan JSON without a source', () => {
+    // @ts-expect-error bundle source options are removed from the authoring API
     const handle = bundle('@fixture/base', { source: 'link:../base' })
     expect(handle).toBeInstanceOf(Bundle)
-    expect(handle.toJSON()).toEqual({
-      kind: 'bundle',
-      name: '@fixture/base',
-      source: 'link:../base',
-    })
+    expect(handle.toJSON()).toEqual({ kind: 'bundle', name: '@fixture/base' })
     expect(normalizeAuthoring({ bundles: [handle] })).toEqual({
-      bundles: [{ kind: 'bundle', name: '@fixture/base', source: 'link:../base' }],
+      bundles: [{ kind: 'bundle', name: '@fixture/base' }],
     })
   })
 
@@ -165,7 +162,10 @@ describe('resolved expressions', () => {
     expect(inserted.config).toMatchObject({
       plugins: [
         { id: 'tool-web', disabled: { $eedsh: { expr: "!ctx.get('profileContext')" } } },
-        { id: 'tool-todo', config: { label: { $eedsh: { expr: "ctx.get('profileContext').label" } } } },
+        {
+          id: 'tool-todo',
+          config: { label: { $eedsh: { expr: "ctx.get('profileContext').label" } } },
+        },
       ],
     })
     expect(JSON.stringify(inserted)).not.toContain('__jsExpr')

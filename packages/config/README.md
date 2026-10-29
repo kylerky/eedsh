@@ -70,8 +70,10 @@ than once returns independent equivalent values.
 
 ### `ProfileBuilder`
 
-- `.bundle(name | Bundle, options = {})` adds an ordered bundle selection.
-  `options.source` overrides the package source. A rooted query is rejected.
+- `.bundle(name | Bundle)` adds an ordered bundle selection. A rooted query
+  is rejected. A local bundle that also needs a profile dependency commonly calls
+  both `.bundle(name)` and `.package(name, spec)`; bundle selection never
+  declares a dependency.
 - `.generated()` adds the single positional generated-bundle marker.
 - `.layer(id, build?)` adds an ordered patch layer and scopes a `LayerBuilder`
   to the callback.
@@ -93,7 +95,7 @@ for a group entry and a runtime expression node.
 
 ### `bundle()`, `Bundle`, and `BundleQuery`
 
-`bundle(name, options?)` returns a `Bundle`: an ordered plan selection
+`bundle(name)` returns a `Bundle`: an ordered plan selection
 (`.toJSON()` is `{ kind: 'bundle', name }`) and a query handle. With no root,
 queries resolve from the pinned installation named by `EEDSH_DSH_ANCHOR` and
 never from a profile copy.
@@ -108,6 +110,11 @@ never from a profile copy.
 `BundleQuery` is deliberately not a plan selection: it has no plan-normalization
 brand, no `toJSON()`, and no second root method. Passing it to
 `ProfileBuilder.bundle()` is a type error and a runtime rejection.
+
+The removed bundle `source` authoring option leaves `NamedBundle.source` as
+accepted legacy plan data with no version change. Author configs use
+`.bundle(name)` for the patch layer and `.package(name, spec)` for the profile
+dependency.
 
 ### Queries, `Row`, and `Preset`
 

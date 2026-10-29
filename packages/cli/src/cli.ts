@@ -23,7 +23,6 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
 import { ConfigError, type ConfigLoadFailure, loadConfig, validateConfigPath } from './config'
-import { presetDefinitionErrorLines } from './internal/authoring-error'
 import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { resolveDshInstallation } from './dsh'
@@ -37,6 +36,7 @@ import {
   resolveInitDependencySpecs,
   runInit,
 } from './init'
+import { presetDefinitionErrorLines } from './internal/authoring-error'
 import {
   type CheckFailure,
   type DshResolveFailure,
@@ -689,10 +689,7 @@ interface RunCommandInput {
 function runRunCommand(
   input: RunCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<
-  number,
-  ConfigLoadFailure | MaterializeError | DshResolveFailure | SpawnFailure
-> {
+): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshResolveFailure | SpawnFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
