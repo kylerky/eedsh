@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import type { REPLServer } from 'node:repl'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
@@ -90,7 +90,12 @@ export interface CompositionResult {
 }
 
 /** A composition runner supplied by the session or a test. */
-export type ComposePlan = (plan: ProfilePlan, profileDir: string) => Promise<CompositionResult>
+export type ComposePlan = (
+  plan: ProfilePlan,
+  profileDir: string,
+  provenance: ConfigProvenance | undefined,
+  configDir: string,
+) => Promise<CompositionResult>
 
 /** The authoring package loaded from the config project. */
 export interface AuthoringPackage {
@@ -418,22 +423,47 @@ async function defaultDoctor(profileDir: string): Promise<DoctorResult> {
   return await Effect.runPromise(doctor({ profileDir }).pipe(Effect.provide(NodeServices.layer)))
 }
 
+/** One generated preflight layer per plan group, with recorded provenance. */
+function generatedPreflightLayers(
+  plan: ProfilePlan,
+  provenance: ConfigProvenance | undefined,
+): PreflightLayer[] {
+  const groups = provenance?.profiles[plan.profile.name] ?? []
+  return plan.layers.map((layer, index) => {
+    const recorded = groups[index]
+    return {
+      label: `generated #${index + 1}`,
+      patches: layer.patches as Record<string, unknown>[],
+      generated: {
+        position: index + 1,
+        label: recorded?.label,
+        sites: recorded?.sites ?? [],
+      },
+    }
+  })
+}
+
+/** The last-touch source of one patched row: site, then group position, then bundle. */
+function sourceOf(layer: PreflightLayer, offset: number, configDir: string): string {
+  const group = layer.generated
+  if (group === undefined) return layer.label
+  const site = group.sites[offset]
+  if (site !== undefined) return `${relative(configDir, site.file)}:${site.line}:${site.column}`
+  return `generated #${group.position}`
+}
+
 async function defaultCompose(
   plan: ProfilePlan,
   profileDir: string,
   installAnchor: string,
+  provenance: ConfigProvenance | undefined,
+  configDir: string,
 ): Promise<CompositionResult> {
   const layers: PreflightLayer[] = []
   let generatedPlaced = false
   for (const item of plan.bundles) {
     if (item.kind === 'generated') {
-      for (const [index, layer] of plan.layers.entries()) {
-        layers.push({
-          label: `generated #${index + 1}`,
-          patches: layer.patches as Record<string, unknown>[],
-          generated: { position: index + 1, label: layer.id, sites: [] },
-        })
-      }
+      layers.push(...generatedPreflightLayers(plan, provenance))
       generatedPlaced = true
       continue
     }
@@ -447,18 +477,13 @@ async function defaultCompose(
     }
     layers.push({ label: `bundle:${item.name}`, patches: result.success })
   }
-  if (!generatedPlaced) {
-    for (const [index, layer] of plan.layers.entries()) {
-      layers.push({
-        label: `generated #${index + 1}`,
-        patches: layer.patches as Record<string, unknown>[],
-        generated: { position: index + 1, label: layer.id, sites: [] },
-      })
-    }
-  }
+  if (!generatedPlaced) layers.push(...generatedPreflightLayers(plan, provenance))
   const sources: Record<string, string> = {}
   for (const layer of layers) {
-    for (const id of touchedRowIds(layer.patches)) sources[id] = layer.label
+    for (const [offset, patch] of layer.patches.entries()) {
+      const source = sourceOf(layer, offset, configDir)
+      for (const id of touchedRowIds([patch])) sources[id] = source
+    }
   }
   const composition = composePreflightLayers(layers)
   const warnings = [...composition.warnings]
@@ -537,7 +562,7 @@ export class ReplSession {
     this.syncEnabled = options.sync === true
     this.compose =
       options.compose ??
-      ((plan, profileDir) => {
+      ((plan, profileDir, provenance, configDir) => {
         const installation = resolveDshInstallation()
         if (Result.isFailure(installation)) {
           return Promise.resolve({
@@ -546,7 +571,13 @@ export class ReplSession {
             error: messageOf(installation.failure),
           })
         }
-        return defaultCompose(plan, profileDir, installation.success.installAnchor)
+        return defaultCompose(
+          plan,
+          profileDir,
+          installation.success.installAnchor,
+          provenance,
+          configDir,
+        )
       })
     this.previousEnv = {
       anchor: process.env.EEDSH_DSH_ANCHOR,
@@ -685,7 +716,7 @@ export class ReplSession {
       let composition: CompositionSnapshot | undefined
       if (plan !== undefined) {
         try {
-          const composed = await this.compose(plan, profileDir)
+          const composed = await this.compose(plan, profileDir, this.provenance, this.configDir)
           composition = {
             rowCount: composed.rowCount,
             entries: composed.entries ?? [],

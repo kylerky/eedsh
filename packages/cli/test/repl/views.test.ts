@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { defineConfig, takeResolutionTrace } from '@eedsh/config'
+import { type ConfigProvenance, defineConfig, takeResolutionTrace } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
@@ -84,7 +84,7 @@ function snapshotOf(overrides: Partial<ProfileSnapshot> = {}): ProfileSnapshot {
       sources: {
         outer: 'bundle:@deepseek-ai/dsh-base',
         inner: 'bundle:@deepseek-ai/dsh-base',
-        timer: 'generated:cli',
+        timer: 'generated #1',
       },
       warnings: ['one warning'],
       error: undefined,
@@ -142,6 +142,7 @@ async function makeSession(
     }>
     installPreview?: (dir: string) => Promise<void>
     doctor?: (dir: string) => Promise<DoctorResult>
+    provenance?: ConfigProvenance
   } = {},
 ) {
   let current = options.config ?? baseConfig()
@@ -153,7 +154,8 @@ async function makeSession(
     env: { DSH_HOME: join(work, 'home') },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
-    loadConfig: () => Effect.succeed({ config: current, provenance: undefined, configDir: work }),
+    loadConfig: () =>
+      Effect.succeed({ config: current, provenance: options.provenance, configDir: work }),
     ...(options.useDefaultCompose === true
       ? {}
       : {
@@ -241,7 +243,7 @@ describe('profile and bundle views', () => {
       kind: 'bundle',
       name: '@deepseek-ai/dsh-base',
     })
-    expect(view.layers().map((layer) => layer.id)).toEqual(['cli'])
+    expect(view.layers()).toHaveLength(1)
   })
 
   it('reports an invalid profile without throwing from the constructor', () => {
@@ -332,7 +334,7 @@ describe('composition and entry views', () => {
     const entries = view.entries()
     expect(entries.map((entry) => entry.id)).toEqual(['outer', 'timer'])
     expect(entries[0]?.source).toBe('bundle:@deepseek-ai/dsh-base')
-    expect(entries[1]?.source).toBe('generated:cli')
+    expect(entries[1]?.source).toBe('generated #1')
     expect(entries[1]?.toJSON()).toEqual({ id: 'timer' })
     expect(new EntryView({ name: 'no-id' }, {})).toMatchObject({ id: '', source: undefined })
   })
@@ -438,7 +440,7 @@ describe('exploration snapshots', () => {
       ),
     })
     expect(await h.session.evaluate('selectedProfile.entries()[0].id')).toBe('row-a')
-    expect(await h.session.evaluate('selectedProfile.entries()[0].source')).toBe('generated:cli')
+    expect(await h.session.evaluate('selectedProfile.entries()[0].source')).toBe('generated #1')
     h.setConfig(
       configOf((builder) =>
         builder.profile('work', (profile) =>
@@ -454,6 +456,44 @@ describe('exploration snapshots', () => {
       '@scope/new': '1.0.0',
     })
     expect(await h.session.evaluate('selectedProfile.entries()[0].id')).toBe('row-b')
+  })
+
+  it('reports a generated row by its authoring site when one is recorded', async () => {
+    const provenance: ConfigProvenance = {
+      profiles: {
+        work: [
+          {
+            label: 'cli',
+            sites: [{ file: join(work, 'config.ts'), line: 9, column: 5 }],
+          },
+        ],
+      },
+    }
+    const h = await makeSession({
+      useDefaultCompose: true,
+      provenance,
+      config: configOf((builder) =>
+        builder.profile('work', (profile) =>
+          profile
+            .generated()
+            .layer('cli', (layer) => layer.insert({ id: 'row-a', name: '@scope/a' })),
+        ),
+      ),
+    })
+    expect(await h.session.evaluate('selectedProfile.entries()[0].source')).toBe('config.ts:9:5')
+  })
+
+  it('reports a bundle row by its bundle name when no site is recorded', async () => {
+    await installProfileBundle()
+    const h = await makeSession({
+      useDefaultCompose: true,
+      config: configOf((builder) =>
+        builder.profile('work', (profile) => profile.bundle('@fixture/custom')),
+      ),
+    })
+    expect(
+      await h.session.evaluate('selectedProfile.entries().map((entry) => entry.source)'),
+    ).toContain('bundle:@fixture/custom')
   })
 
   it('rebuilds the selected profile view on a profile switch', async () => {
@@ -563,7 +603,7 @@ describe('read-only exploration', () => {
         rowCount: 1,
         warnings: [],
         entries: [{ id: 'row-a' }],
-        sources: { 'row-a': 'generated:cli' },
+        sources: { 'row-a': 'generated #1' },
       }),
     })
     takeResolutionTrace()

@@ -55,11 +55,11 @@ function quote(value: string): string {
 
 function diffLayerPatches(
   profile: string,
-  layerId: string,
+  layerLabel: string,
   before: unknown[],
   after: unknown[],
 ): string[] {
-  const prefix = `profile ${quote(profile)} layer ${quote(layerId)}`
+  const prefix = `profile ${quote(profile)} layer ${layerLabel}`
   const previous = patchEntities(before)
   const next = patchEntities(after)
   const lines: string[] = []
@@ -76,8 +76,9 @@ function diffLayerPatches(
   return lines
 }
 
-function layerKey(layer: { readonly id?: string | undefined }, index: number): string {
-  return layer.id ?? `#${index}`
+/** A group's display label: its recorded legacy label plus its position. */
+function layerLabel(layer: { readonly id?: string | undefined }, index: number): string {
+  return layer.id === undefined ? `#${index + 1}` : `${quote(layer.id)} (#${index + 1})`
 }
 
 function diffPlan(profile: string, before: ProfilePlan, after: ProfilePlan): string[] {
@@ -119,23 +120,29 @@ function diffPlan(profile: string, before: ProfilePlan, after: ProfilePlan): str
     if (!Object.hasOwn(afterPackages, name)) lines.push(`- package ${quote(name)}`)
   }
 
-  const beforeLayers = new Map(before.layers.map((item, index) => [layerKey(item, index), item]))
-  const afterLayers = new Map(after.layers.map((item, index) => [layerKey(item, index), item]))
-  for (const [id, item] of afterLayers) {
-    const old = beforeLayers.get(id)
-    if (old === undefined) {
-      lines.push(`+ layer ${quote(id)} (profile ${quote(profile)})`)
-      lines.push(...diffLayerPatches(profile, id, [], item.patches as unknown[]))
-      continue
-    }
-    if (canonicalJson(old.patches) === canonicalJson(item.patches)) continue
-    lines.push(`~ layer ${quote(id)} (profile ${quote(profile)})`)
-    lines.push(
-      ...diffLayerPatches(profile, id, old.patches as unknown[], item.patches as unknown[]),
+  // Groups are anonymous: pair them by patch content, consuming matches in
+  // order so repeated identical groups pair deterministically. Inserting or
+  // removing a group then reports only that group instead of every later one.
+  const matchedBefore = new Set<number>()
+  const matchedAfter = new Map<number, number>()
+  for (const [afterIndex, item] of after.layers.entries()) {
+    const key = canonicalJson(item.patches)
+    const beforeIndex = before.layers.findIndex(
+      (candidate, index) => !matchedBefore.has(index) && canonicalJson(candidate.patches) === key,
     )
+    if (beforeIndex < 0) continue
+    matchedBefore.add(beforeIndex)
+    matchedAfter.set(afterIndex, beforeIndex)
   }
-  for (const id of beforeLayers.keys()) {
-    if (!afterLayers.has(id)) lines.push(`- layer ${quote(id)} (profile ${quote(profile)})`)
+  for (const [afterIndex, item] of after.layers.entries()) {
+    if (matchedAfter.has(afterIndex)) continue
+    const label = layerLabel(item, afterIndex)
+    lines.push(`+ layer ${label} (profile ${quote(profile)})`)
+    lines.push(...diffLayerPatches(profile, label, [], item.patches as unknown[]))
+  }
+  for (const [beforeIndex, item] of before.layers.entries()) {
+    if (matchedBefore.has(beforeIndex)) continue
+    lines.push(`- layer ${layerLabel(item, beforeIndex)} (profile ${quote(profile)})`)
   }
   return lines
 }
