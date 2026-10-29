@@ -4,6 +4,7 @@ import {
   Bundle,
   BundleQuery,
   bundle,
+  defineConfig,
   group,
   js,
   LayerBuilder,
@@ -137,6 +138,34 @@ describe('typed resolution data', () => {
     const rooted = bundle('@fixture/base').fromProfile('work')
     expect('fromProfile' in rooted).toBe(false)
     expect('fromPackageDir' in rooted).toBe(false)
+  })
+})
+
+describe('resolved expressions', () => {
+  it('makes nested runtime expressions plan-shaped and validates the row', () => {
+    const preset = bundle('@fixture/expressive').preset('expressive')
+    const built = defineConfig()
+      .dsh('0.2.1-rc.2')
+      .profile('work', (profile) => {
+        profile
+          .bundle(bundle('@fixture/expressive'))
+          .generated()
+          .layer('preset', (layer) => layer.insert(preset))
+      })
+      .build()
+    expect(Result.isSuccess(built)).toBe(true)
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    const inserted = plan.success.layers[0]?.patches[0]?.insert?.[0] as Record<string, unknown>
+    expect(inserted.config).toMatchObject({
+      plugins: [
+        { id: 'tool-web', disabled: { $eedsh: { expr: "!ctx.get('profileContext')" } } },
+        { id: 'tool-todo', config: { label: { $eedsh: { expr: "ctx.get('profileContext').label" } } } },
+      ],
+    })
+    expect(JSON.stringify(inserted)).not.toContain('__jsExpr')
   })
 })
 

@@ -189,6 +189,63 @@ describe('yaml emission', () => {
     ])
   })
 })
+describe('preset expression emission', () => {
+  it('emits nested preset child expressions that survive the DSH patch parse', async () => {
+    const yaml = await import('js-yaml')
+    const { entryListSchema } = await import('@deepseek-ai/cordis-plugin-include')
+    const plan = planOf({
+      name: 'work',
+      dsh: '0.2.1-rc.2',
+      bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
+      layers: [
+        layer('preset', [
+          insert({
+            id: 'preset-expressive',
+            name: '@deepseek-ai/dsh-agent-preset',
+            config: {
+              id: 'expressive',
+              plugins: [
+                {
+                  id: 'tool-web',
+                  name: '@deepseek-ai/dsh-tool-web',
+                  disabled: js("!ctx.get('profileContext')"),
+                },
+                {
+                  id: 'tool-todo',
+                  name: '@deepseek-ai/dsh-tool-todo',
+                  config: { label: js("ctx.get('profileContext').label") },
+                },
+              ],
+            },
+          }),
+        ]),
+      ],
+    })
+    const result = build(plan)
+    const layerFile = result.files.find((file) => file.path.endsWith('.yml'))
+    expect(layerFile?.content).toContain('!!js')
+    expect(layerFile?.content).not.toContain('$eedsh')
+    const parsed = yaml.load(layerFile?.content ?? '', { schema: entryListSchema }) as unknown
+    expect(parsed).toMatchObject([
+      {
+        insert: [
+          {
+            config: {
+              plugins: [
+                { id: 'tool-web', disabled: { __jsExpr: "!ctx.get('profileContext')" } },
+                {
+                  id: 'tool-todo',
+                  config: { label: { __jsExpr: "ctx.get('profileContext').label" } },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ])
+  })
+})
+
 describe('DSH round-trip', () => {
   it('composes emitted layers through the DSH patch loader', async () => {
     const { mkdir, mkdtemp, writeFile } = await import('node:fs/promises')

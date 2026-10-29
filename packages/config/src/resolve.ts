@@ -163,6 +163,29 @@ function jsonClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+/**
+ * Convert DSH's parsed runtime-expression marker to the plan's expression
+ * node. The conversion is shape-exact: only a record whose sole key is
+ * `__jsExpr` with a string value is converted, so every other opaque config
+ * value stays untouched.
+ * @param value - one detached bundle row.
+ * @returns the row with plan expression nodes.
+ */
+function planExpressionNodes<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => planExpressionNodes(item)) as T
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record)
+    if (keys.length === 1 && keys[0] === '__jsExpr' && typeof record.__jsExpr === 'string') {
+      return { $eedsh: { expr: record.__jsExpr } } as T
+    }
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(record)) out[key] = planExpressionNodes(item)
+    return out as T
+  }
+  return value
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value)
@@ -409,7 +432,8 @@ function loadRows(
   }
   try {
     const entries = composeEntries(layers as unknown as Parameters<typeof composeEntries>[0])
-    return deepFreeze(jsonClone(entries) as unknown as PlanEntry[])
+    const detached = planExpressionNodes(jsonClone(entries))
+    return deepFreeze(detached) as unknown as PlanEntry[]
   } catch (cause) {
     throw new ResolutionError({
       code: 'resolution.patch_invalid',

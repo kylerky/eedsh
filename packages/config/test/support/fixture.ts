@@ -69,6 +69,27 @@ export async function createAuthoringFixture(tempRoot: string): Promise<Authorin
       name: '@deepseek-ai/cordis-plugin-timer'
 `,
   )
+  await writeBundle(
+    dshDir,
+    '@fixture/expressive',
+    '1.1.0',
+    `- insert:
+    - id: preset-expressive
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: expressive
+        name: Expressive
+        order: 2
+        plugins:
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            disabled: !!js "!ctx.get('profileContext')"
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              label: !!js "ctx.get('profileContext').label"
+`,
+  )
   const home = join(root, 'home')
   const workDir = join(home, 'profiles', 'work')
   await writeJson(join(workDir, 'package.json'), {

@@ -91,6 +91,25 @@ describe('pinned authoring resolution', () => {
     }
   })
 
+  it('normalizes nested runtime expressions to plan expression nodes', () => {
+    const preset = bundle('@fixture/expressive').preset('expressive')
+    const config = preset.toJSON().config as Record<string, unknown>
+    const children = config.plugins as Record<string, unknown>[]
+    expect(children).toEqual([
+      expect.objectContaining({
+        id: 'tool-web',
+        disabled: { $eedsh: { expr: "!ctx.get('profileContext')" } },
+      }),
+      expect.objectContaining({
+        id: 'tool-todo',
+        config: { label: { $eedsh: { expr: "ctx.get('profileContext').label" } } },
+      }),
+    ])
+    expect(JSON.stringify(preset.toJSON())).not.toContain('__jsExpr')
+    expect(Object.isFrozen(children[0])).toBe(true)
+    expect(Object.isFrozen((children[0] as { disabled: unknown }).disabled)).toBe(true)
+  })
+
   it('returns frozen, plain JSON rows', () => {
     const value = bundle('@fixture/base').rows()
     expect(Object.isFrozen(value[0]?.data)).toBe(true)
