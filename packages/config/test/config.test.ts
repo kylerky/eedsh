@@ -90,9 +90,27 @@ describe('fluent config builder', () => {
         .build(),
     )
     expect(planOf(config, 'work').layers).toEqual([
-      { id: 'first', patches: [{ insert: [{ id: 'first-row', name: '@scope/first' }] }] },
-      { id: 'second', patches: [{ id: 'preset-standard', disabled: true }] },
+      { patches: [{ insert: [{ id: 'first-row', name: '@scope/first' }] }] },
+      { patches: [{ id: 'preset-standard', disabled: true }] },
     ])
+  })
+
+  it('declares anonymous patch groups with an optional label', () => {
+    const config = configOf(
+      defineConfig()
+        .dsh(dsh)
+        .profile('work', (profile) => {
+          profile.layer((layer) => layer.insert({ id: 'first-row', name: '@scope/first' }))
+          profile.layer('lsp', (layer) => layer.disable('preset-standard'))
+        })
+        .build(),
+    )
+    const layers = planOf(config, 'work').layers
+    expect(layers).toEqual([
+      { patches: [{ insert: [{ id: 'first-row', name: '@scope/first' }] }] },
+      { patches: [{ id: 'preset-standard', disabled: true }] },
+    ])
+    expect(layers.some((item) => 'id' in item)).toBe(false)
   })
 
   it('keeps the callback return value irrelevant', () => {
@@ -173,7 +191,6 @@ describe('fluent config builder', () => {
     )
     expect(planOf(config, 'work').layers).toEqual([
       {
-        id: 'registry',
         patches: [
           {
             id: 'agent-preset-registry',

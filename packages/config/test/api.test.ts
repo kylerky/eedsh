@@ -104,7 +104,7 @@ describe('layer builder patches', () => {
 
   it('keeps patch order', () => {
     const value = new LayerBuilder('ordered').disable('a').enable('a').override('b', { on: true })
-    expect(value.id).toBe('ordered')
+    expect(value.label).toBe('ordered')
     expect(value.patches).toEqual([
       { id: 'a', disabled: true },
       { id: 'a', disabled: false },

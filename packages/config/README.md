@@ -35,7 +35,7 @@ export default defineConfig()
       .bundle('@deepseek-ai/dsh-base')
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
-      .layer('plugins', (layer) => {
+      .layer((layer) => {
         layer
           .insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } })
           .disable(standard ?? 'preset-minimal')
@@ -76,8 +76,10 @@ than once returns independent equivalent values.
   both `.bundle(name)` and `.package(name, spec)`; bundle selection never
   declares a dependency.
 - `.generated()` adds the single positional generated-bundle marker.
-- `.layer(id, build?)` adds an ordered patch layer and scopes a `LayerBuilder`
-  to the callback.
+- `.layer(build)` adds an ordered, anonymous patch group and scopes a
+  `LayerBuilder` to the callback. `.layer(label, build)` adds the same group
+  with an optional display label. A group's identity is its position: the label
+  is not unique, is never part of the plan, and does not name a file.
 - `.package(name, spec)` adds one profile-local package dependency.
 
 ### `LayerBuilder`
@@ -175,7 +177,7 @@ export default defineConfig()
     profile
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
-      .layer('presets', (layer) => layer.insert(adapted))
+      .layer((layer) => layer.insert(adapted))
       .layer('registry', (layer) => layer.selectPreset(adapted, { default: standard }))
   })
   .build()

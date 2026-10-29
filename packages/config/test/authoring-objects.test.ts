@@ -271,7 +271,7 @@ describe('layer patches', () => {
       .override(row, { interval: 5 })
       .raw({ id: 'raw-row', extra: { a: 1 } })
     expect(chained).toBe(layer)
-    expect(layer.id).toBe('order')
+    expect(layer.label).toBe('order')
     expect(layer.patches).toEqual([
       { insert: [{ id: 'inserted', name: '@scope/inserted' }] },
       { id: 'timer', disabled: true },
@@ -279,7 +279,7 @@ describe('layer patches', () => {
       { id: 'timer', config: { interval: 5 } },
       { id: 'raw-row', extra: { a: 1 } },
     ])
-    expect(layer.toJSON()).toEqual({ id: 'order', patches: layer.patches })
+    expect(layer.toJSON()).toEqual({ patches: layer.patches })
   })
 
   it('keeps js and group as plain value constructors', () => {

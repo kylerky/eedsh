@@ -41,13 +41,13 @@ export type LayerEntry = PlanEntry | Row | Preset | PresetDefinition
  * return the layer so calls can chain.
  */
 export class LayerBuilder {
-  /** The layer id, which is also the patch file name. */
-  readonly id: string
+  /** The optional display label; never an identifier and never part of the plan. */
+  readonly label: string | undefined
   /** The appended Loader patches in application order. */
   readonly patches: PlanPatch[] = []
 
-  constructor(id: string) {
-    this.id = id
+  constructor(label?: string) {
+    this.label = label
   }
 
   /**
@@ -120,9 +120,9 @@ export class LayerBuilder {
     return this
   }
 
-  /** The layer as plain plan data. */
+  /** The layer as plain plan data; its identity is its position. */
   toJSON(): PlanLayer {
-    return { id: this.id, patches: [...this.patches] }
+    return { patches: [...this.patches] }
   }
 }
 
@@ -189,14 +189,29 @@ export class ProfileBuilder {
   }
 
   /**
-   * Declare an ordered patch layer scoped to its callback.
-   * @param id - safe kebab-case layer id, also the patch file name.
-   * @param build - receives a layer builder scoped to this layer.
+   * Declare an ordered patch group scoped to its callback. The callback may be
+   * passed alone for an anonymous group, or after an optional display label;
+   * the label is not an identifier and is never part of the plan.
+   * @param build - receives a layer builder scoped to this group.
    * @returns this profile.
    */
-  layer(id: string, build?: (layer: LayerBuilder) => void): this {
-    const layer = new LayerBuilder(id)
-    if (build !== undefined) build(layer)
+  layer(build: (layer: LayerBuilder) => void): this
+  /**
+   * Declare a labelled, ordered patch group scoped to its callback. The
+   * callback stays optional so an empty labelled group can be declared.
+   * @param label - an optional, non-unique display label.
+   * @param build - receives a layer builder scoped to this group.
+   * @returns this profile.
+   */
+  layer(label: string, build?: (layer: LayerBuilder) => void): this
+  layer(
+    labelOrBuild: string | ((layer: LayerBuilder) => void),
+    build?: (layer: LayerBuilder) => void,
+  ): this {
+    const label = typeof labelOrBuild === 'string' ? labelOrBuild : undefined
+    const buildLayer = typeof labelOrBuild === 'function' ? labelOrBuild : build
+    const layer = new LayerBuilder(label)
+    if (buildLayer !== undefined) buildLayer(layer)
     this.layers.push(layer)
     return this
   }
