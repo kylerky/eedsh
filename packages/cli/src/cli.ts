@@ -957,7 +957,7 @@ export async function runEedsh(
     Flag.optional,
   )
   const strictFlag = Flag.Boolean('strict').pipe(
-    Flag.withDescription('treat unmatched patch targets as failures'),
+    Flag.withDescription('treat preflight warnings as failures'),
     Flag.withDefault(false),
   )
   const watchFlag = Flag.Boolean('watch').pipe(

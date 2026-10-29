@@ -58,7 +58,7 @@ export interface MaterializeOptions {
   runtimeSpec: string
   /** Dependency specification for `@eedsh/generated`. */
   generatedSpec: string
-  /** Treat unmatched patch targets as failures. */
+  /** Treat preflight warnings as failures. */
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean

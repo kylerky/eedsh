@@ -258,6 +258,115 @@ describe('preset selection composition', () => {
   })
 })
 
+describe('empty generated layers', () => {
+  it('warns once in raw mode and names the empty layer', async () => {
+    const plan = fixturePlan([
+      planLayer('empty', []),
+      planLayer('base', [override('timer', { interval: 1 })]),
+    ])
+    const generated = buildGenerated(plan)
+    const result = await runCheck(
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated,
+        strict: false,
+        explain: false,
+      },
+      fakeDsh(() => Effect.succeed(basePatches)),
+    )
+    expect(result._tag).toBe('Success')
+    if (result._tag !== 'Success') return
+    expect(result.success.warnings).toHaveLength(1)
+    expect(result.success.warnings[0]).toContain('empty')
+    expect(result.success.warnings[0]).not.toMatch(/^generated:empty: /)
+    expect(buildGenerated(plan)).toEqual(generated)
+  })
+
+  it('attributes the empty-layer warning when explain is enabled', async () => {
+    const plan = fixturePlan([planLayer('empty', [])])
+    const result = await runCheck(
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated: buildGenerated(plan),
+        strict: false,
+        explain: true,
+      },
+      fakeDsh(() => Effect.succeed(basePatches)),
+    )
+    expect(result._tag).toBe('Success')
+    if (result._tag !== 'Success') return
+    expect(result.success.warnings).toHaveLength(1)
+    expect(result.success.warnings[0]).toMatch(/^generated:empty: /)
+    expect(result.success.warnings[0]).toContain('empty')
+  })
+
+  it('fails strict without changing the plan or generated output', async () => {
+    const plan = fixturePlan([planLayer('empty', [])])
+    const generated = buildGenerated(plan)
+    const result = await runCheck(
+      {
+        plan,
+        profileDir: '/profiles/work',
+        generated,
+        strict: true,
+        explain: false,
+      },
+      fakeDsh(() => Effect.succeed(basePatches)),
+    )
+    expect(result._tag).toBe('Failure')
+    if (result._tag !== 'Failure') return
+    expect(result.failure._tag).toBe('PreflightFailure')
+    expect(result.failure.warnings).toHaveLength(1)
+    expect(result.failure.warnings[0]).toContain('empty')
+    expect(result.failure.warnings[0]).not.toMatch(/^generated:empty: /)
+    const emptyFile = generated.files.find((file) => file.path.endsWith('empty.yml'))
+    expect(emptyFile?.content).toBe('[]\n')
+    expect(buildGenerated(plan)).toEqual(generated)
+  })
+
+  it('does not warn for an empty bundle layer or a filled generated layer', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:empty-bundle', patches: [] },
+      {
+        label: 'generated:filled',
+        patches: [{ insert: [{ id: 'filled-row', name: '@scope/filled' }] }],
+      },
+    ]
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:filled'],
+    })
+    expect(result.warnings).toEqual([])
+    expect(result.emptyLayerLabels).toEqual([])
+    expect(result.entries.map((entry) => entry.id)).toEqual(['filled-row'])
+  })
+
+  it('attributes an empty-layer warning alongside composition warnings', () => {
+    const layers: PreflightLayer[] = [
+      { label: 'bundle:@deepseek-ai/dsh-base', patches: basePatches },
+      {
+        label: 'generated:missing-target',
+        patches: [{ id: 'missing-row', config: { interval: 1 } }],
+      },
+      { label: 'generated:empty', patches: [] },
+    ]
+    const result = composePreflightLayers(layers, {
+      generatedLayerLabels: ['generated:missing-target', 'generated:empty'],
+    })
+    expect(result.warnings).toHaveLength(2)
+    expect(result.emptyLayerLabels).toEqual(['generated:empty'])
+    const attributed = attributePreflightWarnings(layers, result.warnings, {
+      emptyLayerLabels: result.emptyLayerLabels,
+    })
+    expect(attributed.map((warning) => warning.layer)).toEqual([
+      'generated:missing-target',
+      'generated:empty',
+    ])
+    expect(attributed.map((warning) => warning.message)).toEqual(result.warnings)
+  })
+})
+
 describe('preflight checks', () => {
   it('returns raw warnings by default', async () => {
     const plan = fixturePlan([planLayer('overrides', [override('missing-row', { interval: 1 })])])

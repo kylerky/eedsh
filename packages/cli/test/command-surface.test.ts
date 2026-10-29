@@ -89,7 +89,7 @@ describe('command surface characterization', () => {
     expect(h.out.join('\n')).toContain('profile cli-fixture')
   })
 
-  it('runs sync --strict and fails on unmatched patch targets', async () => {
+  it('runs sync --strict and fails on preflight warnings', async () => {
     const h = harness({ basePatches, realPreflight: true })
     expect(await runEedsh(['sync', '--strict', '--config', fixture('unmatched')], h.options)).toBe(
       1,
@@ -162,6 +162,7 @@ describe('command surface characterization', () => {
     for (const flag of ['--config', '--profile', '--strict', '--watch', '--explain']) {
       expect(syncText).toContain(flag)
     }
+    expect(syncText).toContain('treat preflight warnings as failures')
 
     const runHelp = harness()
     expect(await runEedsh(['run', '--help'], runHelp.options)).toBe(0)

@@ -27,7 +27,7 @@ export interface PreflightLayer {
   patches: Record<string, unknown>[]
 }
 
-/** One unmatched-patch diagnostic attributed to its layer. */
+/** One preflight diagnostic attributed to its layer. */
 export interface PreflightWarning {
   layer: string
   message: string
@@ -39,10 +39,20 @@ const patchListSchema = Schema.Array(patchEntrySchema)
 /** The result of composing a preflight layer stack. */
 export interface PreflightComposition {
   entries: Record<string, unknown>[]
-  /** Raw DSH diagnostics, in patch application order. */
+  /**
+   * Raw diagnostics: DSH composition warnings in patch application order,
+   * followed by one empty-layer warning per empty generated layer.
+   */
   warnings: string[]
+  /** Generated layers that contributed no patches, in layer order. */
+  emptyLayerLabels: string[]
   /** Row ids inserted twice by generated layers. */
   duplicateInsertIds: string[]
+}
+
+function emptyLayerWarning(label: string): string {
+  const id = label.startsWith('generated:') ? label.slice('generated:'.length) : label
+  return `generated layer ${JSON.stringify(id)} contains no patches`
 }
 
 /** Collect ids inserted by a layer, including nested group children. */
@@ -98,6 +108,13 @@ export function composePreflightLayers(
   ) as unknown as Record<string, unknown>[]
 
   const generatedLabels = new Set(options.generatedLayerLabels ?? [])
+  const emptyLayerLabels: string[] = []
+  for (const layer of layers) {
+    if (!generatedLabels.has(layer.label) || layer.patches.length > 0) continue
+    emptyLayerLabels.push(layer.label)
+    warnings.push(emptyLayerWarning(layer.label))
+  }
+
   const seen = new Map<string, string>()
   const duplicates = new Set<string>()
   for (const layer of layers) {
@@ -111,45 +128,71 @@ export function composePreflightLayers(
   return {
     entries,
     warnings,
+    emptyLayerLabels,
     duplicateInsertIds: [...duplicates].sort(),
   }
 }
 
 /**
- * Attribute raw warnings to the layer whose patches produced them. Prefixes are
+ * Attribute raw warnings to the layer whose patches produced them. Composition
+ * warnings are attributed by recomposing prefixes; empty-layer warnings are
+ * synthetic and map to their generated layer by position. Prefixes are
  * recomposed only when warnings exist, and the full stack is never recomposed:
- * the last layer receives any remaining warnings.
+ * the last layer receives any remaining composition warnings.
  * @param layers - layers in application order.
  * @param warnings - the raw warning list from one-pass composition.
+ * @param options - the generated layers that emitted an empty-layer warning.
  * @returns warnings paired with their source layer, in raw order.
  */
 export function attributePreflightWarnings(
   layers: readonly PreflightLayer[],
   warnings: readonly string[],
+  options: { readonly emptyLayerLabels?: readonly string[] } = {},
 ): PreflightWarning[] {
   if (warnings.length === 0) return []
   const first = layers[0]
   if (first === undefined) return []
-  if (layers.length === 1) return warnings.map((message) => ({ layer: first.label, message }))
+  const emptyLabels = options.emptyLayerLabels ?? []
+  const syntheticCount = Math.min(emptyLabels.length, warnings.length)
+  const composeWarnings =
+    syntheticCount === 0 ? warnings : warnings.slice(0, warnings.length - syntheticCount)
+  const synthetic = syntheticCount === 0 ? [] : warnings.slice(warnings.length - syntheticCount)
 
   const attributed: PreflightWarning[] = []
-  let placed = 0
-  for (let index = 0; index < layers.length - 1 && placed < warnings.length; index += 1) {
-    const prefixWarnings: string[] = []
-    composeEntries(
-      layers.slice(0, index + 1).map((layer) => layer.patches as PatchOptions[]),
-      (message) => prefixWarnings.push(message),
-    )
-    const added = Math.min(prefixWarnings.length - placed, warnings.length - placed)
-    if (added <= 0) continue
-    for (const message of warnings.slice(placed, placed + added)) {
-      attributed.push({ layer: layers[index]!.label, message })
+  if (composeWarnings.length > 0) {
+    if (layers.length === 1) {
+      for (const message of composeWarnings) attributed.push({ layer: first.label, message })
+    } else {
+      let placed = 0
+      for (
+        let index = 0;
+        index < layers.length - 1 && placed < composeWarnings.length;
+        index += 1
+      ) {
+        const prefixWarnings: string[] = []
+        composeEntries(
+          layers.slice(0, index + 1).map((layer) => layer.patches as PatchOptions[]),
+          (message) => prefixWarnings.push(message),
+        )
+        const added = Math.min(prefixWarnings.length - placed, composeWarnings.length - placed)
+        if (added <= 0) continue
+        for (const message of composeWarnings.slice(placed, placed + added)) {
+          attributed.push({ layer: layers[index]!.label, message })
+        }
+        placed += added
+      }
+
+      const last = layers[layers.length - 1]!
+      for (const message of composeWarnings.slice(placed)) {
+        attributed.push({ layer: last.label, message })
+      }
     }
-    placed += added
   }
 
-  const last = layers[layers.length - 1]!
-  for (const message of warnings.slice(placed)) attributed.push({ layer: last.label, message })
+  for (const [index, label] of emptyLabels.entries()) {
+    const message = synthetic[index]
+    if (message !== undefined) attributed.push({ layer: label, message })
+  }
   return attributed
 }
 
@@ -273,9 +316,9 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
           const raw = composition.warnings
           const messages =
             input.explain && raw.length > 0
-              ? attributePreflightWarnings(layers, raw).map(
-                  (warning) => `${warning.layer}: ${warning.message}`,
-                )
+              ? attributePreflightWarnings(layers, raw, {
+                  emptyLayerLabels: composition.emptyLayerLabels,
+                }).map((warning) => `${warning.layer}: ${warning.message}`)
               : raw
           if (composition.duplicateInsertIds.length > 0) {
             return yield* Effect.fail(
@@ -286,7 +329,7 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationS
             )
           }
           if (input.strict && messages.length > 0) {
-            return yield* Effect.fail(fail('unmatched patch targets in strict mode', messages))
+            return yield* Effect.fail(fail('preflight warnings in strict mode', messages))
           }
           return { warnings: messages }
         })

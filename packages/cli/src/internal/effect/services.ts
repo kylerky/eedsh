@@ -67,6 +67,7 @@ export interface PreflightInput {
 
 /** Preflight output. */
 export interface PreflightResult {
+  /** Raw warnings, or layer-attributed warnings when `explain` is enabled. */
   warnings: string[]
 }
 

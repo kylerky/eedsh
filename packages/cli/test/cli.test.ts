@@ -979,6 +979,37 @@ describe('strict mode', () => {
     expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(false)
   })
 
+  it('warns on an empty generated layer and fails strict without committing', async () => {
+    const dir = await tempDir('empty-layer-')
+    const configPath = join(dir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { defineConfig } from '@eedsh/config'
+
+export default defineConfig()
+  .dsh('0.2.1-rc.2')
+  .profile('cli-empty', (profile) => {
+    profile.bundle('@deepseek-ai/dsh-base').generated().layer('empty')
+  })
+  .build()
+`,
+    )
+    const manifest = '/home/profiles/cli-empty/.eedsh/generated/package.json'
+    const warned = harness({ basePatches, realPreflight: true })
+    expect(await runEedsh(['sync', '--config', configPath], warned.options)).toBe(0)
+    const warnings = warned.err.join('\n')
+    expect(warnings).toContain('contains no patches')
+    expect(warnings).toContain('empty')
+    expect(warnings).not.toContain('generated:empty:')
+    expect(warnings).toContain('--explain')
+    expect(warned.fs.files.has(manifest)).toBe(true)
+
+    const strict = harness({ basePatches, realPreflight: true })
+    expect(await runEedsh(['sync', '--strict', '--config', configPath], strict.options)).toBe(1)
+    expect(strict.err.join('\n')).toContain('contains no patches')
+    expect(strict.fs.files.has(manifest)).toBe(false)
+  })
+
   it('publishes with --explain when there are no warnings', async () => {
     const h = harness({ basePatches, realPreflight: true })
     const code = await runEedsh(['sync', '--explain', '--config', fixture('basic')], h.options)
