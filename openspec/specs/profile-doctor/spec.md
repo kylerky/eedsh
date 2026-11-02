@@ -23,7 +23,7 @@ Defines the read-only `eedsh doctor` command: how it selects a published profile
 
 ### Requirement: Doctor selects one published profile
 
-Doctor SHALL inspect the profile named by `--profile <name>` or, without that flag, the profile named by the discovered config. When `--profile` is given, doctor SHALL NOT evaluate a config; otherwise it SHALL use config evaluation only to obtain the profile name and SHALL NOT report unpublished config changes. `--profile` and `--config` SHALL be mutually exclusive.
+Doctor SHALL inspect the profile named by `--profile <name>`. When `--profile` is given, doctor SHALL NOT evaluate a config. Without `--profile`, doctor SHALL evaluate the config, select the default profile when one is declared, otherwise the sole profile, and inspect that published profile. When the config declares more than one profile and no default, doctor SHALL report a usage error and exit 2, listing the available profile names. `--profile` and `--config` SHALL remain mutually exclusive. Config evaluation SHALL be used only to obtain the profile name and SHALL NOT report unpublished config changes. An invalid profile plan SHALL NOT prevent doctor from inspecting that published profile by name.
 
 #### Scenario: Doctor inspects without the config
 
@@ -33,9 +33,16 @@ Doctor SHALL inspect the profile named by `--profile <name>` or, without that fl
 
 #### Scenario: Doctor discovers the profile from the config
 
-- **WHEN** the user runs `eedsh doctor` in a directory containing a config
-- **THEN** doctor obtains the profile name from that config
+- **WHEN** the user runs `eedsh doctor` and the XDG config declares one profile or a default
+- **THEN** doctor obtains that profile name from the config
 - **AND** inspects the published profile
+
+#### Scenario: Ambiguous profile selection is a usage error
+
+- **WHEN** the config declares several profiles, no default, and the user runs `eedsh doctor` without `--profile`
+- **THEN** doctor reports a usage error
+- **AND** lists the available profile names
+- **AND** exits with status 2
 
 #### Scenario: Profile and config are mutually exclusive
 
@@ -46,6 +53,12 @@ Doctor SHALL inspect the profile named by `--profile <name>` or, without that fl
 
 - **WHEN** the selected profile directory does not exist
 - **THEN** doctor reports an error and exits with status 1
+
+#### Scenario: Invalid plan does not block diagnosis
+
+- **WHEN** the selected profile's plan is invalid but its published profile exists
+- **THEN** doctor inspects the published profile by name
+- **AND** does not fail solely because the plan is invalid
 
 ### Requirement: Doctor validates the generation record
 
@@ -85,19 +98,21 @@ Doctor SHALL verify that `.eedsh/generated/plans/<generationId>.json` exists, co
 - **AND** exits with status 1
 
 ### Requirement: Doctor verifies record, plan, and mirror consistency
-
-Doctor SHALL verify that the record's managed bundle order and plan-declared package specifications agree with the authoritative plan, and that `.eedsh/plan.json` contains the same plan. An inconsistent record and plan SHALL be an error; a missing or differing mirror SHALL be a warning.
+Doctor SHALL verify that the record's managed bundle order and plan-declared package specifications agree with the authoritative plan, and that `.eedsh/plan.json` contains the same plan. An inconsistent record and plan SHALL be an error; a missing or differing mirror SHALL be a warning. The provenance sidecar SHALL NOT participate in this check: an absent, unreadable, or generation-mismatched sidecar SHALL NOT produce a finding and SHALL NOT change the exit status.
 
 #### Scenario: Record disagrees with the plan
-
 - **WHEN** the record's managed bundle order or plan package specifications differ from the authoritative plan
 - **THEN** doctor reports an error identifying the inconsistency
 
 #### Scenario: Mirror differs
-
 - **WHEN** `.eedsh/plan.json` is missing or contains a different plan
 - **THEN** doctor reports a warning naming the mirror path
 - **AND** does not modify the file
+
+#### Scenario: Provenance sidecar is advisory
+- **WHEN** `.eedsh/provenance.json` is missing, malformed, or names a different generation
+- **THEN** doctor reports no finding for it
+- **AND** the command exit status is unaffected
 
 ### Requirement: Doctor verifies managed manifest entries
 

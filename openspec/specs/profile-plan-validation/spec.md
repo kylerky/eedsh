@@ -51,12 +51,27 @@ The public surface SHALL NOT export a plan issue type, a plan validation error, 
 
 ### Requirement: Plan failures are reported with the native formatted message
 
-The command-line interface SHALL report an invalid plan by printing the native failure message, preserving its multi-line structure and its location annotations, and SHALL exit with the validation-failure exit code. It SHALL apply to an invalid plain export, a failed Result export, and a schema failure raised by the authoring API while the config module is evaluated. It SHALL NOT reformat the failure into one `path: message` line per issue and SHALL NOT wrap a schema failure as an import failure.
+The command-line interface SHALL report an invalid config or invalid profile by printing the native failure message, preserving its multi-line structure and location annotations, and SHALL exit with the validation-failure exit code. A config-level failure SHALL be printed once. A profile-level failure SHALL identify the profile by name and print that profile's native message once; when several selected profiles are invalid, every profile's failure SHALL be reported. The CLI SHALL NOT reformat a failure into one `path: message` line per issue, SHALL NOT wrap a schema failure as an import failure, and SHALL NOT truncate issues.
 
 #### Scenario: An invalid config prints the native message
 
-- **WHEN** a command evaluates a config whose default export is not a valid plan, whether plain data or a failure Result
+- **WHEN** a command evaluates a config with a config-level defect
 - **THEN** standard error contains the native formatted failure message, including location annotations
+- **AND** the message is printed once
+- **AND** the command exits with status 1
+
+#### Scenario: An invalid profile is reported with its name
+
+- **WHEN** a command selects or attempts a profile whose plan is invalid
+- **THEN** standard error identifies the profile by name
+- **AND** prints that profile's native formatted failure message, including location annotations
+- **AND** the command exits with status 1
+
+#### Scenario: Several invalid profiles are all reported
+
+- **WHEN** bare `eedsh sync` encounters two invalid profiles
+- **THEN** both profiles' native failures are reported
+- **AND** each is identified by its profile name
 - **AND** the command exits with status 1
 
 #### Scenario: An invalid Result export prints the native message
@@ -67,46 +82,51 @@ The command-line interface SHALL report an invalid plan by printing the native f
 
 #### Scenario: An authoring failure during evaluation prints the native message
 
-- **WHEN** the authoring API returns a failure Result during config evaluation
+- **WHEN** the authoring API produces a config-level failure Result during config evaluation
 - **THEN** standard error contains the native formatted failure message
 - **AND** it does not contain a `config.import_failed` prefix
 
-### Requirement: The authoring entry point is synchronous and returns the native Result
+### Requirement: Config authoring is synchronous and returns the native Result
 
-`defineProfile` SHALL remain synchronous and SHALL return `Result<ProfilePlan, Schema.SchemaError>`. It SHALL NOT throw when the candidate is invalid. `assertPlan` SHALL be removed. `validatePlan` SHALL remain the Result-returning validation entry point.
+`defineConfig()` SHALL be synchronous and SHALL return a `ConfigBuilder`. Its terminal `build()` SHALL normalize typed authoring objects to plain config data, validate the config and every profile, and return `Result<EedshConfig, Schema.SchemaError>` without throwing on invalid input. Failures SHALL carry Effect's native schema error. `defineProfile` and `assertPlan` SHALL be removed; `validatePlan` SHALL remain.
 
-#### Scenario: Authoring a valid profile returns a success Result
+#### Scenario: A valid fluent config returns a success Result
 
-- **WHEN** a caller supplies conforming profile input
-- **THEN** `defineProfile` returns a success Result carrying the validated plan synchronously
+- **WHEN** a caller supplies a conforming fluent config
+- **THEN** `build()` returns a success Result carrying the validated config synchronously
 
-#### Scenario: Authoring an invalid profile returns a failure Result
+#### Scenario: An invalid fluent config returns a failure Result
 
-- **WHEN** a caller supplies input that violates the plan contract
-- **THEN** `defineProfile` returns a failure Result
+- **WHEN** a caller supplies input that violates the config or plan contract
+- **THEN** `build()` returns a failure Result
 - **AND** the failure satisfies `Schema.isSchemaError`
 - **AND** no exception is thrown
 
-#### Scenario: The throwing authoring helper is absent
+#### Scenario: Typed objects are normalized before validation
+
+- **WHEN** a caller builds a config composed of typed authoring objects
+- **THEN** the success value is plain JSON-compatible data with no methods or class instances
+
+#### Scenario: The legacy authoring helper is absent
 
 - **WHEN** a consumer imports the config package's public entry points
-- **THEN** no `assertPlan` helper is exported
+- **THEN** no `defineProfile` or `assertPlan` helper is exported
 - **AND** `validatePlan` remains available for callers that want the Result directly
 
-### Requirement: A config module may export a plan or a validation Result
+### Requirement: A config module exports a validated config Result
 
-A config module SHALL be allowed to default-export either a profile plan value or a `Result<ProfilePlan, Schema.SchemaError>`. The CLI SHALL validate a plain export with the strict plan options, SHALL unwrap a successful Result export, and SHALL report a failed Result export as its native schema failure. The CLI SHALL NOT wrap a schema failure exported by a config as an import failure. A successful Result whose value does not satisfy the plan contract SHALL be rejected by validation.
+A config module SHALL default-export the `Result` produced by `defineConfig().build()`. The CLI SHALL unwrap a successful Result, report a failed Result as its native schema failure, and validate a plain config value with the strict config schema. A lone profile plan SHALL NOT be accepted as a config, and a successful Result whose value violates the contract SHALL be rejected.
 
 #### Scenario: Result export is unwrapped
 
-- **WHEN** a config default-exports the success Result produced by `defineProfile`
-- **THEN** the CLI evaluates it as a validated plan
+- **WHEN** a config default-exports the success Result produced by `defineConfig().build()`
+- **THEN** the CLI evaluates it as a validated config
 - **AND** the profile is published when materialization succeeds
 
-#### Scenario: Plain plan export is validated
+#### Scenario: Plain config export is validated
 
-- **WHEN** a config default-exports a plan-shaped value rather than a Result
-- **THEN** the CLI validates it with the strict plan options
+- **WHEN** a config default-exports a config-shaped value rather than a Result
+- **THEN** the CLI validates it with the strict config schema
 - **AND** an invalid value fails with the native schema message
 
 #### Scenario: Failed Result export prints the native message
@@ -115,7 +135,18 @@ A config module SHALL be allowed to default-export either a profile plan value o
 - **THEN** the CLI prints the native formatted schema message
 - **AND** it does not prefix the message with `config.import_failed`
 
+#### Scenario: Lone profile plan is rejected as a config
+
+- **WHEN** a config default-exports a single profile plan rather than a config value
+- **THEN** the CLI rejects it with the native config schema failure
+
 #### Scenario: Forged success Result is revalidated
 
-- **WHEN** a config default-exports a success Result whose value violates the plan contract
+- **WHEN** a config default-exports a success Result whose value violates the config contract
 - **THEN** the CLI rejects the value with the native schema failure
+
+#### Scenario: Invalid profile is retained, not promoted
+
+- **WHEN** a successful config Result contains one invalid profile
+- **THEN** the CLI keeps that profile's native failure
+- **AND** does not report the whole config as a failed Result

@@ -17,16 +17,23 @@ Defines how `eedsh` reports preflight composition diagnostics: raw by default, a
 - **AND** publication proceeds in non-strict mode with exit status 0
 
 ### Requirement: Attribution on demand
-
-`eedsh sync --explain` SHALL attribute each preflight warning to the layer whose patches produced it, using the `<layer>: <message>` form. Attribution SHALL run only when `--explain` is present and at least one warning exists.
+`eedsh sync --explain` SHALL attribute each preflight warning to the patch entry whose application produced it, using the form `<group>: <message>`, where `<group>` identifies the generated patch group by its 1-based position and, when known, the authoring site and the row ids that patch touches. Attribution SHALL run only when `--explain` is present and at least one warning exists.
 
 #### Scenario: Attributed warning with --explain
+- **WHEN** `eedsh sync --explain` composes patches that produce an unmatched-patch warning
+- **THEN** the reported warning identifies the position of the generated patch group whose patch produced it
+- **AND** the raw message follows the group identification
 
-- **WHEN** `eedsh sync --explain` composes layers that produce an unmatched-patch warning
-- **THEN** the reported warning names the source layer followed by the raw message
+#### Scenario: Attribution names the authoring site when it is known
+- **WHEN** the config was evaluated in this process and the warning comes from a generated patch
+- **THEN** the attributed warning includes the source file and line that declared that patch
+
+#### Scenario: Attribution degrades when the site is unknown
+- **WHEN** an attributed warning comes from a published generation whose authoring site is not available
+- **THEN** the warning still identifies the patch group by position and lists the row ids the patch touches
+- **AND** attribution does not fail
 
 #### Scenario: Explained run without warnings
-
 - **WHEN** `eedsh sync --explain` composes a layer stack that produces no warnings
 - **THEN** the command publishes normally with exit status 0
 - **AND** reports no warnings
@@ -81,3 +88,26 @@ When the CLI prints raw preflight warnings, it SHALL print a one-line hint that 
 - **WHEN** the user runs `eedsh check --explain`
 - **THEN** the command reports a usage error
 - **AND** exits with status 2
+
+### Requirement: Empty patch groups are reported
+Preflight SHALL report a generated patch group that contributes no patches, identifying it by 1-based position and, when known, its authoring site. The report SHALL be a warning, SHALL use the existing raw, attributed, and strict preflight behavior, SHALL be subject to strict mode like every other preflight warning, and SHALL NOT change the plan, composition, or generated group set or fail non-strict publication.
+
+#### Scenario: Empty generated group
+- **WHEN** a plan declares a generated patch group with no patches
+- **THEN** preflight reports that group by position
+- **AND** non-strict publication proceeds
+
+#### Scenario: Raw empty-group warning
+- **WHEN** `eedsh sync` composes a generated patch group with no patches and `--explain` is absent
+- **THEN** the CLI reports a raw warning naming the empty group
+- **AND** publication proceeds in non-strict mode with exit status 0
+
+#### Scenario: Attributed empty-group warning
+- **WHEN** `eedsh sync --explain` composes a generated patch group with no patches
+- **THEN** the reported warning identifies the source group in the attributed form
+
+#### Scenario: Strict mode fails on an empty group
+- **WHEN** `eedsh sync --strict` encounters a generated patch group that contributes no patches
+- **THEN** the command exits with the failure status 1
+- **AND** the diagnostics are raw messages without group prefixes unless `--explain` is also present
+- **AND** no generation is committed

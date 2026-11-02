@@ -6,19 +6,42 @@ Lets eedsh authors describe a DSH profile's ordered bundles and generated patch 
 ## Requirements
 
 ### Requirement: TypeScript authoring produces a versioned profile plan
-The system SHALL provide a TypeScript authoring surface that accepts a profile name, a DSH runtime pin, ordered bundle selections, ordered generated patch layers, and profile-local package dependencies, and produces a JSON-compatible profile plan with an explicit format version.
+The system SHALL provide a synchronous TypeScript authoring surface in which one config declares one exact DSH pin, an optional default profile name, and a record of named profiles. Each profile SHALL accept ordered bundles, ordered generated patch groups, and profile-local package dependencies. A generated patch group SHALL be declared without an identifier, and the order of declaration SHALL be the group order. The surface SHALL produce one JSON-compatible versioned plan per profile, using the record key as the name and the shared pin, and SHALL preserve authored order. Dynamically constructed profile records SHALL be accepted.
 
 #### Scenario: Minimal authoring produces a plan
-- **WHEN** an author supplies a profile name, a DSH runtime pin, and at least one bundle
-- **THEN** the system produces a plan containing the format version, profile name, runtime pin, ordered bundles, ordered layers, and package dependencies
+- **WHEN** an author supplies a shared DSH pin and a profile with at least one bundle
+- **THEN** the system produces a plan containing the format version, the record key as profile name, the shared pin, ordered bundles, ordered patch groups, and package dependencies
+
+#### Scenario: Several profiles produce one plan each
+- **WHEN** an author declares profiles `work` and `home` under one config
+- **THEN** the system produces one plan for `work` and one for `home`
+- **AND** each plan carries its own bundles, layers, and packages
+
+#### Scenario: The shared pin is applied to every plan
+- **WHEN** an author supplies one config-level DSH pin and two profiles
+- **THEN** both plans contain that exact pin
+
+#### Scenario: The record key becomes the profile name
+- **WHEN** an author declares a profile under the key `work`
+- **THEN** the resulting plan names the profile `work`
+
+#### Scenario: Dynamically constructed profiles are accepted
+- **WHEN** an author builds the profile record with a spread, a computed key, or a loop
+- **THEN** every resulting key produces a plan with that key as its name
+
+#### Scenario: Patch groups are declared without a name
+- **WHEN** an author declares two patch groups
+- **THEN** neither declaration supplies an identifier
+- **AND** the plan records the two groups in declaration order
 
 #### Scenario: Plan round-trips through JSON
 - **WHEN** a plan containing nested config objects and expression values is serialized and parsed as JSON
 - **THEN** the parsed plan is semantically identical and remains valid
 
 #### Scenario: Unsupported authoring values are rejected
-- **WHEN** an author supplies a function, a circular object, or another non-JSON value in a plan position
-- **THEN** validation fails with the location of the unsupported value and no plan is emitted
+- **WHEN** an author supplies a function, a circular object, or another non-JSON value in one profile's plan position
+- **THEN** validation fails for that profile with the location of the unsupported value
+- **AND** no plan is emitted for that profile
 
 ### Requirement: Bundles are ordered and the generated layer is positional
 The plan SHALL preserve the authored bundle order and SHALL accept at most one generated-layer marker. When the marker is present, the generated layer occupies that position; when it is absent, the generated layer is last among managed bundles.
@@ -40,10 +63,10 @@ The plan SHALL preserve the authored bundle order and SHALL accept at most one g
 - **THEN** the plan preserves that order
 
 ### Requirement: Patch layers use Loader patch semantics
-Each generated layer SHALL have a unique identifier and an ordered patch list. A patch entry SHALL support inserting entries, overriding an existing entry by id with whole-config replacement, disabling or enabling an entry, declaring a group and isolate scope, asserting an entry name, and preserving any additional Loader patch field. Raw patch entries SHALL be accepted.
+Each generated patch group SHALL be an ordered patch list whose identity is its position in the plan. A patch entry SHALL support inserting entries, overriding an existing entry by id with whole-config replacement, disabling or enabling an entry, declaring a group and isolate scope, asserting an entry name, and preserving any additional Loader patch field. Raw patch entries SHALL be accepted.
 
 #### Scenario: Later override wins
-- **WHEN** one layer inserts a row and a later layer overrides the same id
+- **WHEN** one patch group inserts a row and a later patch group overrides the same id
 - **THEN** the composed result carries the later value
 
 #### Scenario: Override replaces the whole config
@@ -51,7 +74,7 @@ Each generated layer SHALL have a unique identifier and an ordered patch list. A
 - **THEN** the row's config is the supplied object and fields from the earlier config are not merged in
 
 #### Scenario: Disable and enable are patches
-- **WHEN** an author disables a row and a later layer enables it
+- **WHEN** an author disables a row and a later patch group enables it
 - **THEN** the composed result has the row enabled
 
 #### Scenario: Group and isolate fields survive
@@ -60,7 +83,12 @@ Each generated layer SHALL have a unique identifier and an ordered patch list. A
 
 #### Scenario: Raw patch entry is accepted
 - **WHEN** an author supplies a raw Loader patch entry
-- **THEN** it is preserved in the layer as an ordinary patch entry
+- **THEN** it is preserved in the patch group as an ordinary patch entry
+
+#### Scenario: A legacy identifier is tolerated
+- **WHEN** a plan declares a patch group with an identifier
+- **THEN** validation accepts the plan
+- **AND** the identifier does not affect the group order, the emitted patch file name, or the composed entries
 
 ### Requirement: Runtime expressions are structured data
 The plan SHALL represent runtime expressions as structured nodes carrying the expression source text. The plan SHALL NOT contain executable functions or other values that cannot be serialized as JSON.
@@ -78,27 +106,23 @@ The plan SHALL represent runtime expressions as structured nodes carrying the ex
 - **THEN** the plan stores and returns the source text without evaluating or rewriting it
 
 ### Requirement: Plan validation rejects invalid profiles
-
-Validation SHALL reject missing profile identity, multiple generated markers, duplicate or empty layer identifiers, invalid bundle or package specifications, malformed expression nodes, and unsupported JSON values. Every rejection SHALL identify the failing plan location and a human-readable message. Validation SHALL NOT attach a semantic error code to an issue.
+Validation SHALL reject missing profile identity, multiple generated markers, invalid bundle or package specifications, malformed expression nodes, and unsupported JSON values. Every rejection SHALL identify the failing plan location and a human-readable message. Validation SHALL NOT attach a semantic error code to an issue.
 
 #### Scenario: Missing profile name
-
 - **WHEN** a plan omits the profile name
 - **THEN** validation fails with an error naming the missing profile name and its location
 
 #### Scenario: Duplicate layer identifier
-
-- **WHEN** two layers share an identifier
-- **THEN** validation fails and identifies both layers
+- **WHEN** a plan declares two patch groups that carry the same legacy identifier
+- **THEN** validation succeeds, because an identifier no longer names a group
+- **AND** both groups keep their declared order
 
 #### Scenario: Invalid expression node
-
 - **WHEN** an expression node lacks its source text or has an extra shape
 - **THEN** validation fails with the expression location
 
 #### Scenario: Valid plan is accepted
-
-- **WHEN** a complete plan contains only supported values and unique layer identifiers
+- **WHEN** a complete plan contains only supported values
 - **THEN** validation succeeds
 
 ### Requirement: The plan exposes only Loader layer concepts
@@ -127,26 +151,21 @@ The system SHALL export a public plan schema that is an Effect Schema value and 
 - **THEN** decoding fails and the failure identifies the offending plan location
 
 ### Requirement: The public schema validates the complete plan contract
-
-The schema SHALL validate the plan shape, profile identity and naming rules, duplicate bundle and layer identifiers, the generated-marker count, reserved names, patch rules, JSON compatibility, and expression-node shape.
+The schema SHALL validate the plan shape, profile identity and naming rules, duplicate bundle identifiers, the generated-marker count, reserved names, patch rules, JSON compatibility, and expression-node shape.
 
 #### Scenario: A structurally invalid plan is rejected
-
 - **WHEN** a value supplies a plan field with the wrong type or an unknown plan field
 - **THEN** decoding fails and the failure identifies the offending plan location
 
 #### Scenario: A semantically invalid plan is rejected
-
-- **WHEN** a plan contains a duplicate layer identifier, a duplicate bundle name, more than one generated marker, a reserved name, or an invalid layer or profile name
+- **WHEN** a plan contains a duplicate bundle name, more than one generated marker, a reserved name, or an invalid profile name
 - **THEN** decoding fails and the failure identifies the offending plan location
 
 #### Scenario: Non-JSON values are rejected
-
 - **WHEN** a plan contains a function, symbol, BigInt, undefined value, non-finite number, circular reference, or class instance
 - **THEN** decoding fails and the failure identifies the offending plan location
 
 #### Scenario: A malformed expression node is rejected
-
 - **WHEN** a plan contains an expression node without exactly the reserved source-text shape
 - **THEN** decoding fails and the failure identifies the expression location
 
