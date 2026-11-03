@@ -3,6 +3,7 @@ import * as config from '@eedsh/config'
 import * as plan from '@eedsh/plan'
 import * as runtime from '@eedsh/runtime'
 import { describe, expect, it } from 'vitest'
+import { SUPPORTED_DSH_RANGE, supportsDshVersion } from '../packages/cli/src/dsh-policy'
 
 const require = createRequire(import.meta.url)
 
@@ -57,12 +58,14 @@ describe('workspace', () => {
     expect(runtime.name).toBe('eedsh-runtime')
   })
 
-  it('resolves the pinned DSH package', () => {
+  it('resolves a DSH package inside the supported range', () => {
     const packageJson = require('@deepseek-ai/dsh/package.json') as {
       name: string
       version: string
     }
     expect(packageJson.name).toBe('@deepseek-ai/dsh')
-    expect(packageJson.version).toBe('0.2.1-rc.2')
+    expect(SUPPORTED_DSH_RANGE).toBe('^0.2.1-rc.2')
+    expect(supportsDshVersion(packageJson.version)).toBe(true)
+    expect(supportsDshVersion('0.3.0')).toBe(false)
   })
 })
