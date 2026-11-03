@@ -20,8 +20,7 @@
     "build": "tsdown"
   },
   "engines": {
-    "node": ">=26",
-    "dsh": "0.2.1-rc.2"
+    "node": ">=26"
   },
   "dsh": {
     "bundle": {

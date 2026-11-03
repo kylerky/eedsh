@@ -59,12 +59,28 @@ async function tempProfile(): Promise<string> {
   return dir
 }
 
-async function writeRecord(dir: string, generationId: string): Promise<void> {
+async function writeRecord(
+  dir: string,
+  generationId: string,
+  dshVersion?: string,
+): Promise<void> {
+  const eedsh = {
+    format: 'eedsh/generation',
+    generationId,
+    ...(dshVersion === undefined ? {} : { dshVersion }),
+  }
   await writeFile(
     join(dir, GENERATED),
-    `${JSON.stringify({ name: '@eedsh/generated', eedsh: { format: 'eedsh/generation', generationId } }, null, 2)}\n`,
+    `${JSON.stringify({ name: '@eedsh/generated', eedsh }, null, 2)}\n`,
     'utf8',
   )
+}
+
+async function writeInstallation(dir: string, version: string): Promise<string> {
+  const anchor = join(dir, 'dsh', 'package.json')
+  await mkdir(join(dir, 'dsh'), { recursive: true })
+  await writeFile(anchor, `${JSON.stringify({ name: '@deepseek-ai/dsh', version })}\n`, 'utf8')
+  return anchor
 }
 
 async function writeRaw(dir: string, content: string): Promise<void> {
@@ -227,5 +243,93 @@ describe('generated layer watcher reloads', () => {
     await writeRecord(dir, 'gen-e')
     await watches[0]!.refresh()
     expect(logs.lines.some((line) => /gen-e applied/i.test(line.message))).toBe(true)
+  })
+})
+describe('runtime manifest', () => {
+  it('declares no DSH engine and keeps the Node engine', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const manifest = JSON.parse(
+      await readFile(join(root, 'packages/runtime/package.json'), 'utf8'),
+    ) as { engines?: Record<string, string> }
+    expect(manifest.engines?.dsh).toBeUndefined()
+    expect(manifest.engines?.node).toBeDefined()
+  })
+})
+
+describe('HMR capability guard', () => {
+  it('does not register when watchConfig is missing and reports the capability', async () => {
+    const dir = await tempProfile()
+    await writeRecord(dir, 'gen-a')
+    const { logger, lines } = fakeLogger()
+    const hmr = {
+      reconcileProfile: async () => ({ warnings: [], pending: [] }),
+    } as unknown as HmrLike
+    expect(await registerGeneratedLayerWatcher({ profileContext: { dir }, hmr, logger })).toBe(
+      undefined,
+    )
+    expect(lines.some((line) => /watchConfig/.test(line.message))).toBe(true)
+    expect(lines.some((line) => line.level === 'error')).toBe(false)
+  })
+
+  it('does not register when reconcileProfile is missing and reports the capability', async () => {
+    const dir = await tempProfile()
+    await writeRecord(dir, 'gen-a')
+    const { logger, lines } = fakeLogger()
+    const hmr = {
+      watchConfig: async () => async () => {},
+    } as unknown as HmrLike
+    expect(await registerGeneratedLayerWatcher({ profileContext: { dir }, hmr, logger })).toBe(
+      undefined,
+    )
+    expect(lines.some((line) => /reconcileProfile/.test(line.message))).toBe(true)
+    expect(lines.some((line) => line.level === 'error')).toBe(false)
+  })
+})
+
+describe('runtime version drift', () => {
+  it('warns when the generation record was published with another DSH', async () => {
+    const dir = await tempProfile()
+    await writeRecord(dir, 'gen-a', '0.2.1-rc.2')
+    const installAnchor = await writeInstallation(dir, '0.2.1-rc.5')
+    const { logger, lines } = fakeLogger()
+    const fake = fakeHmr()
+    await registerGeneratedLayerWatcher({
+      profileContext: { dir, installAnchor },
+      hmr: fake.hmr,
+      logger,
+    })
+    const warning = lines.find((line) => line.level === 'warn' && /eedsh sync/.test(line.message))
+    expect(warning).toBeDefined()
+    expect(warning?.message).toContain('0.2.1-rc.2')
+    expect(warning?.message).toContain('0.2.1-rc.5')
+  })
+
+  it('does not warn when the record and the running installation agree', async () => {
+    const dir = await tempProfile()
+    await writeRecord(dir, 'gen-a', '0.2.1-rc.5')
+    const installAnchor = await writeInstallation(dir, '0.2.1-rc.5')
+    const { logger, lines } = fakeLogger()
+    const fake = fakeHmr()
+    await registerGeneratedLayerWatcher({
+      profileContext: { dir, installAnchor },
+      hmr: fake.hmr,
+      logger,
+    })
+    expect(lines.some((line) => /drift|eedsh sync/.test(line.message))).toBe(false)
+  })
+
+  it('does not claim compatibility or fail when the installation version is unavailable', async () => {
+    const dir = await tempProfile()
+    await writeRecord(dir, 'gen-a', '0.2.1-rc.2')
+    const { logger, lines } = fakeLogger()
+    const fake = fakeHmr()
+    const dispose = await registerGeneratedLayerWatcher({
+      profileContext: { dir, installAnchor: join(dir, 'missing', 'package.json') },
+      hmr: fake.hmr,
+      logger,
+    })
+    expect(typeof dispose).toBe('function')
+    expect(lines.some((line) => /eedsh sync/.test(line.message))).toBe(false)
+    expect(lines.some((line) => line.level === 'error')).toBe(false)
   })
 })

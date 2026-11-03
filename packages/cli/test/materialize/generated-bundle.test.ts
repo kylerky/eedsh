@@ -66,7 +66,12 @@ describe('generated bundle', () => {
     )
     expect(result.manifest.name).toBe('@eedsh/generated')
     expect(result.manifest.private).toBe(true)
-    expect(result.manifest.engines.dsh).toBe('0.2.1-rc.2')
+    expect('engines' in result.manifest).toBe(false)
+    const manifest = JSON.parse(result.files.at(-1)?.content ?? '{}') as Record<string, unknown>
+    expect(manifest.engines).toBeUndefined()
+    expect(manifest.dsh).toEqual({
+      bundle: { patch: result.generation.layers.map((entry) => `./${entry.file}`) },
+    })
   })
 
   it('records provenance in the eedsh metadata block', () => {
@@ -78,6 +83,7 @@ describe('generated bundle', () => {
     expect(metadata.planHash).toBe(result.planHash)
     expect(metadata.eedshVersion).toBe('0.0.0')
     expect(metadata.dshVersion).toBe('0.2.1-rc.2')
+    expect(typeof metadata.dshVersion).toBe('string')
     expect(metadata.bundles).toEqual(managedBundles)
     expect(metadata.packages).toEqual(packages)
     expect(metadata.layers.map((entry) => entry.file)).toEqual([

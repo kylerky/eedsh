@@ -89,7 +89,6 @@ export interface GeneratedManifest {
   version: string
   private: true
   description: string
-  engines: { dsh: string }
   dsh: { bundle: { patch: string[] } }
   eedsh: GenerationRecord
 }
@@ -214,7 +213,6 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
     version: '0.0.0',
     private: true,
     description: 'eedsh-managed generated bundle. Do not edit; run "eedsh sync" instead.',
-    engines: { dsh: input.dshVersion },
     dsh: { bundle: { patch: layers.map((layer) => `./${layer.file}`) } },
     eedsh: generation,
   }

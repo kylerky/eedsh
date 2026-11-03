@@ -51,7 +51,7 @@ export interface WatcherLogger {
 /** Inputs for {@link registerGeneratedLayerWatcher}. */
 export interface RegisterWatcherInput {
   /** Present only in a profile launched by dsh. */
-  profileContext?: { dir: string } | undefined
+  profileContext?: { dir: string; installAnchor?: string } | undefined
   /** The active HMR service; absent when the composition has none. */
   hmr?: HmrLike | undefined
   logger: WatcherLogger
@@ -65,6 +65,32 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** The DSH installation manifest fields the runtime reads. */
+export interface InstallationManifest {
+  readonly version?: unknown
+}
+
+/**
+ * Read the running DSH installation version from its manifest.
+ * @param anchor - absolute path of the installation package.json.
+ * @param read - file read seam.
+ * @returns the exact version, or undefined when it cannot be read.
+ */
+async function readInstallationVersion(
+  anchor: string | undefined,
+  read: (path: string) => Promise<string>,
+): Promise<string | undefined> {
+  if (anchor === undefined) return undefined
+  try {
+    const parsed: unknown = JSON.parse(await read(anchor))
+    if (!isObject(parsed)) return undefined
+    const version = parsed.version
+    return typeof version === 'string' && version.length > 0 ? version : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** The watcher body, factored so it can be tested without a Cordis context. */
@@ -87,11 +113,19 @@ export function createGenerationWatcher(options: {
   hmr: HmrLike
   logger: WatcherLogger
   readFile?: ((path: string) => Promise<string>) | undefined
+  /** The running DSH installation version, when the profile exposes it. */
+  runningDshVersion?: string | undefined
 }): GenerationWatcher {
   const read = options.readFile ?? ((path: string) => readFile(path, 'utf8'))
   let last: string | undefined
 
-  async function readGenerationId(): Promise<string | undefined> {
+  /** The record fields the watcher compares with the running installation. */
+  interface GenerationInfo {
+    readonly id: string
+    readonly dshVersion?: string | undefined
+  }
+
+  async function readGeneration(): Promise<GenerationInfo | undefined> {
     let text: string
     try {
       text = await read(options.manifestPath)
@@ -118,25 +152,44 @@ export function createGenerationWatcher(options: {
       )
       return undefined
     }
-    return id
+    const recordVersion = isObject(metadata) ? metadata.dshVersion : undefined
+    return {
+      id,
+      ...(typeof recordVersion === 'string' && recordVersion.length > 0
+        ? { dshVersion: recordVersion }
+        : {}),
+    }
+  }
+
+  /** Report generation/runtime drift without claiming compatibility. */
+  function reportDrift(info: GenerationInfo): void {
+    const running = options.runningDshVersion
+    if (info.dshVersion === undefined || running === undefined) return
+    if (info.dshVersion === running) return
+    options.logger.warn(
+      `generation ${info.id} was published with DSH ${info.dshVersion} but the running installation is ${running}; run "eedsh sync" to publish with this installation`,
+    )
   }
 
   async function initialize(): Promise<void> {
-    const id = await readGenerationId()
-    if (id === undefined) return
-    last = id
-    options.logger.info(`observing generation ${id}`)
+    const info = await readGeneration()
+    if (info === undefined) return
+    last = info.id
+    options.logger.info(`observing generation ${info.id}`)
+    reportDrift(info)
   }
 
   async function refresh(): Promise<void> {
-    const id = await readGenerationId()
-    if (id === undefined) return
+    const info = await readGeneration()
+    if (info === undefined) return
+    const id = info.id
     if (last === undefined) {
       last = id
       options.logger.info(`observing generation ${id}`)
       return
     }
     if (id === last) return
+    reportDrift(info)
     try {
       const outcome = await options.hmr.reconcileProfile()
       last = id
@@ -171,12 +224,26 @@ export async function registerGeneratedLayerWatcher(
   const hmr = input.hmr
   if (profileContext === undefined || hmr === undefined) return undefined
 
+  const candidate = hmr as unknown as Partial<Record<'watchConfig' | 'reconcileProfile', unknown>>
+  const missing = (['watchConfig', 'reconcileProfile'] as const).filter(
+    (method) => typeof candidate[method] !== 'function',
+  )
+  if (missing.length > 0) {
+    input.logger.warn(
+      `the HMR service is missing ${missing.join(', ')}; generated-layer watcher not registered`,
+    )
+    return undefined
+  }
+
+  const read = input.readFile ?? ((path: string) => readFile(path, 'utf8'))
+  const runningDshVersion = await readInstallationVersion(profileContext.installAnchor, read)
   const manifestPath = generatedManifestPath(profileContext.dir)
   const watcher = createGenerationWatcher({
     manifestPath,
     hmr,
     logger: input.logger,
     ...(input.readFile === undefined ? {} : { readFile: input.readFile }),
+    ...(runningDshVersion === undefined ? {} : { runningDshVersion }),
   })
   await watcher.initialize()
   const dispose = await hmr.watchConfig(manifestPath, () => watcher.refresh())
