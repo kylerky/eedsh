@@ -123,7 +123,7 @@ describe('first-sync bootstrap integration', () => {
     expect(out.join('\n')).toContain('published profile cli-fixture')
     expect(err.join('\n')).not.toContain('dsh.launcher_unresolved')
 
-    const anchorPath = join(home, '.eedsh', 'installation.json')
+    const anchorPath = join(home, '.local', 'state', 'installation.json')
     expect(existsSync(anchorPath)).toBe(true)
     if (process.platform !== 'win32') expect((await stat(anchorPath)).mode & 0o077).toBe(0)
     const anchor = JSON.parse(await readFile(anchorPath, 'utf8')) as InstallationAnchor

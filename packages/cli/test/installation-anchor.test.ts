@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as Result from 'effect/Result'
@@ -53,13 +53,13 @@ function failureOf(result: Result.Result<unknown, DshFailure>): DshFailure {
 describe('CLI installation anchor location', () => {
   it('resolves the cache below resolveDshHome', () => {
     expect(installationAnchorPathForEnv({ DSH_HOME: '/custom/home' })).toBe(
-      join('/custom/home', '.eedsh', 'installation.json'),
+      join('/custom/home', '.local', 'state', 'installation.json'),
     )
     expect(installationAnchorPathForEnv({ HOME: '/users/me' })).toBe(
-      join('/users/me', '.dsh', '.eedsh', 'installation.json'),
+      join('/users/me', '.dsh', '.local', 'state', 'installation.json'),
     )
     expect(installationAnchorPathForEnv({ HOME: '/users/me', DSH_HOME: '/explicit' })).toBe(
-      join('/explicit', '.eedsh', 'installation.json'),
+      join('/explicit', '.local', 'state', 'installation.json'),
     )
   })
 
@@ -164,12 +164,45 @@ describe('CLI installation anchor snapshots', () => {
     expect(snapshot.problem).toBeUndefined()
   })
 
+  it('removes the retired anchor and its empty directory on write', async () => {
+    const home = await tempDir('anchor-retired-')
+    const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.2.1-rc.2')
+    const env = { DSH_HOME: home }
+    await mkdir(join(home, '.eedsh'), { recursive: true })
+    writeFileSync(join(home, '.eedsh', 'installation.json'), '{}')
+
+    const record = anchorForInstallation(
+      { installAnchor: installation.anchor, version: '0.2.1-rc.2' },
+      { recordedBy: 'sync' },
+    )
+    expect(writeInstallationAnchorSync(env, record)).toEqual({ ok: true })
+    expect(existsSync(join(home, '.eedsh'))).toBe(false)
+    expect(existsSync(join(home, '.local', 'state', 'installation.json'))).toBe(true)
+  })
+
+  it('leaves a retired directory that holds other content', async () => {
+    const home = await tempDir('anchor-retired-other-')
+    const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.2.1-rc.2')
+    const env = { DSH_HOME: home }
+    await mkdir(join(home, '.eedsh'), { recursive: true })
+    writeFileSync(join(home, '.eedsh', 'installation.json'), '{}')
+    writeFileSync(join(home, '.eedsh', 'keep.txt'), 'keep')
+
+    const record = anchorForInstallation(
+      { installAnchor: installation.anchor, version: '0.2.1-rc.2' },
+      { recordedBy: 'sync' },
+    )
+    expect(writeInstallationAnchorSync(env, record)).toEqual({ ok: true })
+    expect(existsSync(join(home, '.eedsh', 'installation.json'))).toBe(false)
+    expect(existsSync(join(home, '.eedsh', 'keep.txt'))).toBe(true)
+  })
+
   it('reports a malformed record as a problem without a record', async () => {
     const home = await tempDir('anchor-malformed-')
     const env = { DSH_HOME: home }
-    await mkdir(join(home, '.eedsh'), { recursive: true })
+    await mkdir(join(home, '.local', 'state'), { recursive: true })
     const { writeFile } = await import('node:fs/promises')
-    await writeFile(join(home, '.eedsh', 'installation.json'), '{ nope', 'utf8')
+    await writeFile(join(home, '.local', 'state', 'installation.json'), '{ nope', 'utf8')
     const snapshot = readInstallationAnchorSnapshot(env)
     expect(snapshot.record).toBeUndefined()
     expect(snapshot.problem).toBeDefined()

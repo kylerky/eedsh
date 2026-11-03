@@ -19,6 +19,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
+  cleanupRetiredInstallationAnchorSync,
   decodeInstallationAnchor,
   encodeInstallationAnchor,
   type InstallationAnchor,
@@ -360,6 +361,8 @@ export function anchorForInstallation(
  * Atomically write the anchor below the environment's DSH home. The write is
  * synchronous because discovery runs before the command's Effect services are
  * built; failures are returned rather than thrown.
+ * A successful write also removes the retired `.eedsh/installation.json`
+ * location.
  * @param env - environment mapping.
  * @param anchor - the record to write.
  * @returns whether the record was written.
@@ -368,7 +371,8 @@ export function writeInstallationAnchorSync(
   env: Record<string, string | undefined>,
   anchor: InstallationAnchor,
 ): InstallationAnchorWrite {
-  const path = installationAnchorPathForEnv(env)
+  const home = resolveDshHome(undefined, env)
+  const path = installationAnchorPath(home)
   const directory = dirname(path)
   let temp: string | undefined
   try {
@@ -391,6 +395,7 @@ export function writeInstallationAnchorSync(
   } catch {
     // Windows has no POSIX mode bits; the owner-only intent is best effort there.
   }
+  cleanupRetiredInstallationAnchorSync(home)
   return { ok: true }
 }
 

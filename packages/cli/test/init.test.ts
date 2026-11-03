@@ -41,7 +41,7 @@ function harness(options: HarnessOptions = {}) {
       ? {
           ...fs.fs,
           writeFileString: (path: string, content: string) =>
-            path.startsWith('/dsh-home/.eedsh')
+            path.startsWith('/dsh-home/.local')
               ? Effect.fail(
                   PlatformError.systemError({
                     _tag: 'PermissionDenied',
@@ -267,13 +267,13 @@ describe('init on a real filesystem', () => {
       stderr: () => {},
     })
     expect(code).toBe(0)
-    const anchor = join(dshHome, '.eedsh', 'installation.json')
+    const anchor = join(dshHome, '.local', 'state', 'installation.json')
     expect(existsSync(anchor)).toBe(true)
     if (process.platform !== 'win32') expect((await stat(anchor)).mode & 0o077).toBe(0)
   })
 })
 const anchorHome = '/dsh-home'
-const anchorPath = join(anchorHome, '.eedsh', 'installation.json')
+const anchorPath = join(anchorHome, '.local', 'state', 'installation.json')
 
 interface DshFixture {
   readonly dir: string

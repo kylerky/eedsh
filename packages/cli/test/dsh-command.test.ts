@@ -440,7 +440,7 @@ function bootstrapRounds(calls: readonly { command: string }[]): number {
 }
 
 function anchorPathOf(home: string): string {
-  return join(home, '.eedsh', 'installation.json')
+  return join(home, '.local', 'state', 'installation.json')
 }
 
 function profileManifest(home: string): string {

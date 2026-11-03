@@ -417,7 +417,7 @@ describe('installation anchor boundaries', () => {
       DSH_HOME: '/dsh-home',
       XDG_CONFIG_HOME: '/xdg-config',
     })
-    expect(path).toBe(join(resolve('/dsh-home'), '.eedsh', 'installation.json'))
+    expect(path).toBe(join(resolve('/dsh-home'), '.local', 'state', 'installation.json'))
     expect(path.startsWith(resolve('/xdg-config'))).toBe(false)
 
     const source = readFileSync(join(root, 'packages/cli/src/installation-anchor.ts'), 'utf8')

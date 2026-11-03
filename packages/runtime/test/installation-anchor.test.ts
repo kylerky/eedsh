@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -23,7 +24,7 @@ function installAnchorAt(home: string): string {
 describe('installation anchor path', () => {
   it('places the record below the DSH home', () => {
     const home = join(root, '.tmp', 'home')
-    expect(installationAnchorPath(home)).toBe(join(home, '.eedsh', 'installation.json'))
+    expect(installationAnchorPath(home)).toBe(join(home, '.local', 'state', 'installation.json'))
   })
 })
 
@@ -145,13 +146,42 @@ describe('installation anchor file', () => {
     if (decoded.ok) expect(decoded.anchor.version).toBe('0.2.1-rc.5')
   })
 
+  it('removes the retired record and its empty directory after a write', async () => {
+    const home = await tempHome()
+    await mkdir(join(home, '.eedsh'), { recursive: true })
+    await writeFile(join(home, '.eedsh', 'installation.json'), '{}', 'utf8')
+
+    await writeInstallationAnchorFile(home, {
+      format: 1,
+      installAnchor: installAnchorAt(home),
+    })
+
+    expect(existsSync(join(home, '.eedsh'))).toBe(false)
+    expect(existsSync(installationAnchorPath(home))).toBe(true)
+  })
+
+  it('leaves a retired directory that holds other content', async () => {
+    const home = await tempHome()
+    await mkdir(join(home, '.eedsh'), { recursive: true })
+    await writeFile(join(home, '.eedsh', 'installation.json'), '{}', 'utf8')
+    await writeFile(join(home, '.eedsh', 'keep.txt'), 'keep', 'utf8')
+
+    await writeInstallationAnchorFile(home, {
+      format: 1,
+      installAnchor: installAnchorAt(home),
+    })
+
+    expect(existsSync(join(home, '.eedsh', 'installation.json'))).toBe(false)
+    expect(await readFile(join(home, '.eedsh', 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
   it('reports a missing or malformed record instead of throwing', async () => {
     const home = await tempHome()
     const missing = await readInstallationAnchorFile(home)
     expect(missing.ok).toBe(false)
     if (!missing.ok) expect(missing.reason).toContain('installation.json')
 
-    await mkdir(join(home, '.eedsh'), { recursive: true })
+    await mkdir(join(home, '.local', 'state'), { recursive: true })
     await writeFile(installationAnchorPath(home), '{ nope', 'utf8')
     const malformed = await readInstallationAnchorFile(home)
     expect(malformed.ok).toBe(false)

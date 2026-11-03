@@ -7,14 +7,18 @@
  * @module @eedsh/runtime/installation-anchor
  */
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { rmdirSync, rmSync } from 'node:fs'
+import { chmod, mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
 /** The one anchor record format this release reads and writes. */
 export const INSTALLATION_ANCHOR_FORMAT = 1
 
 /** Directory parts below the DSH home that hold the anchor record. */
-export const INSTALLATION_ANCHOR_PARTS = ['.eedsh', 'installation.json'] as const
+export const INSTALLATION_ANCHOR_PARTS = ['.local', 'state', 'installation.json'] as const
+
+/** Directory parts of the retired anchor location, cleaned up after a successful write. */
+export const RETIRED_INSTALLATION_ANCHOR_PARTS = ['.eedsh', 'installation.json'] as const
 
 /** The package managers the automatic bootstrap supports. */
 export type InstallationAnchorManager = 'pnpm' | 'npm'
@@ -175,9 +179,52 @@ export async function readInstallationAnchorFile(home: string): Promise<Installa
 }
 
 /**
+ * Remove the retired anchor record and then the retired directory when it
+ * holds nothing else. Cleanup never fails an anchor write: the new record is
+ * already authoritative, and a retired directory holding other content stays
+ * untouched.
+ * @param home - absolute DSH home.
+ * @returns a promise that resolves after cleanup is attempted.
+ */
+export async function cleanupRetiredInstallationAnchor(home: string): Promise<void> {
+  const path = join(home, ...RETIRED_INSTALLATION_ANCHOR_PARTS)
+  try {
+    await rm(path, { force: true })
+  } catch {
+    // The retired record could not be removed; leave its directory alone.
+    return
+  }
+  try {
+    await rmdir(dirname(path))
+  } catch {
+    // The retired directory holds other content or is already gone.
+  }
+}
+
+/**
+ * Synchronous variant of {@link cleanupRetiredInstallationAnchor} for writers
+ * that run before the command's services are built.
+ * @param home - absolute DSH home.
+ */
+export function cleanupRetiredInstallationAnchorSync(home: string): void {
+  const path = join(home, ...RETIRED_INSTALLATION_ANCHOR_PARTS)
+  try {
+    rmSync(path, { force: true })
+  } catch {
+    return
+  }
+  try {
+    rmdirSync(dirname(path))
+  } catch {
+    // The retired directory holds other content or is already gone.
+  }
+}
+
+/**
  * Atomically write the anchor record below one DSH home, creating the
- * `.eedsh` directory owner-only. The temporary file is removed when the write
- * or rename fails.
+ * `.local/state` directory owner-only. The temporary file is removed when the
+ * write or rename fails. A successful write cleans up the retired
+ * `.eedsh/installation.json` location.
  * @param home - absolute DSH home.
  * @param anchor - the record to write.
  * @returns a promise that resolves after the rename.
@@ -199,4 +246,5 @@ export async function writeInstallationAnchorFile(
   }
   await chmod(path, 0o600).catch(() => {})
   await chmod(directory, 0o700).catch(() => {})
+  await cleanupRetiredInstallationAnchor(home)
 }

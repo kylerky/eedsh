@@ -274,7 +274,7 @@ describe('bootstrap boundaries', () => {
       runner,
     })
     expect(Result.isSuccess(result)).toBe(true)
-    expect(existsSync(join(home, '.eedsh', 'installation.json'))).toBe(false)
+    expect(existsSync(join(home, '.local', 'state', 'installation.json'))).toBe(false)
   })
 
   it('uses fixed-argument commands and reads no shim metadata', async () => {
