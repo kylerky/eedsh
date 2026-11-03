@@ -48,19 +48,25 @@ function renameWithRetry(
  * @param fs - the platform file-system service.
  * @param path - absolute target path.
  * @param content - UTF-8 content.
+ * @param options - the mode for a new file; omitted when the target's default applies.
  * @returns an effect that succeeds when the target holds the new content.
  */
 export function writeFileAtomic(
   fs: FileSystem.FileSystem,
   path: string,
   content: string,
+  options: { readonly mode?: number } = {},
 ): Effect.Effect<void, PlatformError.PlatformError> {
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
   return Effect.acquireUseRelease(
     Effect.succeed(temp),
     (tempPath) =>
       Effect.gen(function* () {
-        yield* fs.writeFileString(tempPath, content)
+        yield* fs.writeFileString(
+          tempPath,
+          content,
+          options.mode === undefined ? {} : { mode: options.mode },
+        )
         yield* renameWithRetry(fs, tempPath, path)
       }),
     (tempPath) => fs.remove(tempPath, { force: true }).pipe(Effect.ignore),

@@ -252,7 +252,9 @@ export function runInit(
         const writtenAnchor = yield* Effect.result(
           Effect.gen(function* () {
             yield* fs.makeDirectory(dirname(anchorPath), { recursive: true, mode: 0o700 })
-            yield* writeFileAtomic(fs, anchorPath, encodeInstallationAnchor(anchorRecord))
+            yield* writeFileAtomic(fs, anchorPath, encodeInstallationAnchor(anchorRecord), {
+              mode: 0o600,
+            })
           }),
         )
         if (Result.isFailure(writtenAnchor)) {

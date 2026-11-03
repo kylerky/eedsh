@@ -7,7 +7,7 @@
  * discovery, anchor validation, anchor writing, and publication are real.
  */
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
@@ -125,6 +125,7 @@ describe('first-sync bootstrap integration', () => {
 
     const anchorPath = join(home, '.eedsh', 'installation.json')
     expect(existsSync(anchorPath)).toBe(true)
+    if (process.platform !== 'win32') expect((await stat(anchorPath)).mode & 0o077).toBe(0)
     const anchor = JSON.parse(await readFile(anchorPath, 'utf8')) as InstallationAnchor
     expect(anchor).toMatchObject({
       format: 1,

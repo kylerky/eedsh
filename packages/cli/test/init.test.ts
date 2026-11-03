@@ -256,6 +256,21 @@ describe('init on a real filesystem', () => {
     expect(code).toBe(0)
     expect((await stat(join(home, 'eedsh'))).mode & 0o077).toBe(0)
   })
+
+  it('writes the installation anchor owner-only', async () => {
+    const home = await mkdtemp(join(tempRoot, 'init-anchor-mode-'))
+    const fixture = await writeDshFixture()
+    const dshHome = join(home, 'dsh-home')
+    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], {
+      env: { XDG_CONFIG_HOME: home, DSH_HOME: dshHome },
+      stdout: () => {},
+      stderr: () => {},
+    })
+    expect(code).toBe(0)
+    const anchor = join(dshHome, '.eedsh', 'installation.json')
+    expect(existsSync(anchor)).toBe(true)
+    if (process.platform !== 'win32') expect((await stat(anchor)).mode & 0o077).toBe(0)
+  })
 })
 const anchorHome = '/dsh-home'
 const anchorPath = join(anchorHome, '.eedsh', 'installation.json')
