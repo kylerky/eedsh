@@ -67,7 +67,10 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * every expected failure to a tagged DshFailure. Preflight composition is
  * synchronous and throws a tagged PreflightFailure when no bridge is installed. The
  * bridge loader and bundle resolver wrap Node's exception-shaped require/import
- * and DSH calls in tagged failures.
+ * and DSH calls in tagged failures. The anchor helpers wrap Node's
+ * exception-shaped read/stat/realpath calls and convert every expected failure
+ * to a tagged DshFailure or a reported write result, and the bootstrap treats
+ * malformed package-manager JSON as no candidate.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
@@ -85,6 +88,8 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/preflight.ts',
   'packages/cli/src/dsh-bridge.ts',
   'packages/cli/src/dsh.ts',
+  'packages/cli/src/installation-anchor.ts',
+  'packages/cli/src/dsh-bootstrap.ts',
 ])
 
 /** JavaScript exception control flow in one source text. */
