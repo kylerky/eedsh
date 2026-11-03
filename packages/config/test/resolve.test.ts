@@ -203,18 +203,16 @@ describe('config import anchor', () => {
 import { defineConfig } from '@eedsh/config'
 writeFileSync(${JSON.stringify(marker)}, process.env.EEDSH_DSH_ANCHOR ?? '')
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
   .build()
 `,
     )
     const { Effect } = await import('effect')
-    const loaded = await Effect.runPromise(loadConfig(configPath))
+    await Effect.runPromise(loadConfig(configPath))
     const { resolveDshInstallation } = await import('../../cli/src/dsh')
     const installation = resolveDshInstallation()
     if (Result.isFailure(installation)) throw installation.failure
     expect(await readFile(marker, 'utf8')).toBe(installation.success.installAnchor)
-    expect(loaded.config.dsh).toBe('0.2.1-rc.2')
     expect(process.env.EEDSH_DSH_ANCHOR).toBeUndefined()
     expect(process.env.EEDSH_CONFIG_DIR).toBeUndefined()
   })

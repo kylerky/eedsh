@@ -12,6 +12,7 @@ describe('workspace', () => {
     expect(typeof config.bundle).toBe('function')
     expect(typeof config.js).toBe('function')
     expect(typeof config.group).toBe('function')
+    expect('dsh' in config.defineConfig()).toBe(false)
     for (const symbol of [
       'defineProfile',
       'rows',
@@ -37,18 +38,17 @@ describe('workspace', () => {
   it('exposes the @eedsh/plan public entry', () => {
     expect(typeof plan.validatePlan).toBe('function')
     expect(typeof plan.validateConfigValue).toBe('function')
-    expect(plan.PLAN_VERSION).toBe(1)
+    expect(plan.PLAN_VERSION).toBe(2)
   })
 
   it('builds a profile through the fluent surface', () => {
     const result = config
       .defineConfig()
-      .dsh('0.2.1-rc.2')
       .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
       .build()
     expect(result).not.toBeInstanceOf(Promise)
     if (result._tag !== 'Success') throw new Error('expected a success Result')
-    expect(result.success.dsh).toBe('0.2.1-rc.2')
+    expect('dsh' in result.success).toBe(false)
     expect(Object.keys(result.success.profiles)).toEqual(['work'])
   })
 

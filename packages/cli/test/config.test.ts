@@ -25,7 +25,6 @@ const multiProfileSource = `
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('home')
   .profile('work', (profile) => {
     profile
@@ -42,7 +41,6 @@ const soleProfileSource = `
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('solo', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -55,7 +53,6 @@ const invalidSiblingSource = `
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base')
@@ -68,7 +65,6 @@ export default defineConfig()
 
 const plainConfigSource = `
 export default {
-  dsh: '0.2.1-rc.2',
   profiles: {
     'plain-export': {
       bundles: [{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }, { kind: 'generated' }],
@@ -93,7 +89,6 @@ definePreset('ptc-fresh').children((children) => {
 })
 
 export default {
-  dsh: '0.2.1-rc.2',
   profiles: { work: { bundles: [] } },
 }
 `
@@ -102,7 +97,6 @@ const untaggedThrowSource = `
 throw new Error('untagged import boom')
 
 export default {
-  dsh: '0.2.1-rc.2',
   profiles: { work: { bundles: [] } },
 }
 `
@@ -112,7 +106,6 @@ export default {
   format: 'eedsh/profile-plan',
   version: 1,
   profile: { name: 'legacy-plan' },
-  dsh: '0.2.1-rc.2',
   bundles: [],
   layers: [],
   packages: {},
@@ -159,7 +152,6 @@ describe('config loading', () => {
   it('loads a fluently built multi-profile config Result', async () => {
     const dir = await configDir(multiProfileSource)
     const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
-    expect(config.dsh).toBe('0.2.1-rc.2')
     expect(config.defaultProfile).toBe('home')
     expect(Object.keys(config.profiles)).toEqual(['work', 'home'])
     const home = config.profiles.home

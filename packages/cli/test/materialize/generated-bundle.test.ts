@@ -10,7 +10,6 @@ import { bundle, generated, insert, js, layer, override } from '../support/plan-
 function fixturePlan(): ProfilePlan {
   return planOf({
     name: 'work',
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
     layers: [
       layer('base', [
@@ -240,7 +239,6 @@ describe('preset expression emission', () => {
     const { entryListSchema } = await import('@deepseek-ai/cordis-plugin-include')
     const plan = planOf({
       name: 'work',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [
         layer('preset', [
@@ -300,7 +298,6 @@ describe('DSH round-trip', () => {
     const source = "ctx.get('profileContext') ? \"x: y\" : (1 + 2) * ctx.get('nested')(3)"
     const plan = planOf({
       name: 'work',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [
         layer('expressive', [

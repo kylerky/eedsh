@@ -41,7 +41,6 @@ function planValue(bundleValue: unknown): unknown {
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
     profile: { name: 'work' },
-    dsh: '0.2.1-rc.2',
     bundles: [bundleValue],
     layers: [],
     packages: {},
@@ -142,7 +141,6 @@ describe('resolved expressions', () => {
   it('makes nested runtime expressions plan-shaped and validates the row', () => {
     const preset = bundle('@fixture/expressive').preset('expressive')
     const built = defineConfig()
-      .dsh('0.2.1-rc.2')
       .profile('work', (profile) => {
         profile
           .bundle(bundle('@fixture/expressive'))

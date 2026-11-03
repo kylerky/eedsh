@@ -40,7 +40,6 @@ function installedPreset() {
 
 function planOfDefinition(definition: PresetDefinition) {
   const built = defineConfig()
-    .dsh('0.2.1-rc.2')
     .profile('work', (profile) => {
       profile.generated().layer('preset', (layer) => layer.insert(definition))
     })
@@ -212,8 +211,7 @@ describe('preset selection', () => {
     build: (layer: LayerBuilder) => void,
   ): ReturnType<typeof planOfDefinition> {
     const built = defineConfig()
-      .dsh('0.2.1-rc.2')
-      .profile('work', (profile) => {
+        .profile('work', (profile) => {
         profile.generated().layer('registry', build)
       })
       .build()

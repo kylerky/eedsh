@@ -18,8 +18,10 @@ function assertDerivedShape(plan: ProfilePlan, patch: PlanPatch): void {
   patch.id = 'other'
   // @ts-expect-error patch payloads are opaque values
   patch.config.selected
+  // @ts-expect-error the plan has no DSH value
+  plan.dsh
   // @ts-expect-error a readonly plan is not assignable to a mutable plan shape
-  const mutable: { dsh: string; layers: { id: string; patches: unknown[] }[] } = plan
+  const mutable: { layers: { id: string; patches: unknown[] }[] } = plan
   void mutable
 }
 void assertDerivedShape
@@ -33,9 +35,8 @@ describe('derived plan types', () => {
   it('derives the public plan from the schema', () => {
     const value: ProfilePlan = {
       format: 'eedsh/profile-plan',
-      version: 1,
+      version: 2,
       profile: { name: 'work' },
-      dsh: '0.2.1-rc.2',
       bundles: [{ kind: 'generated' }],
       layers: [],
       packages: {},

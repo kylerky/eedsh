@@ -5,7 +5,6 @@ import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { addHelperRow } from './fixtures/provenance-helper'
 
-const dsh = '0.2.1-rc.2'
 const self = fileURLToPath(import.meta.url)
 const helper = fileURLToPath(new URL('./fixtures/provenance-helper.ts', import.meta.url))
 
@@ -18,7 +17,7 @@ function lineOf(file: string, marker: string): number {
 }
 
 function buildWith(build: (layer: LayerBuilder) => void) {
-  const builder = defineConfig().dsh(dsh)
+  const builder = defineConfig()
   builder.profile('work', (profile) => profile.layer(build))
   return builder.build()
 }
@@ -46,7 +45,7 @@ describe('patch provenance', () => {
 
   it('records the optional group label without making it an identifier', () => {
     clearProvenance()
-    const builder = defineConfig().dsh(dsh)
+    const builder = defineConfig()
     builder.profile('work', (profile) =>
       profile.layer('lsp', (layer) => layer.disable('preset-standard')),
     )
@@ -58,10 +57,10 @@ describe('patch provenance', () => {
 
   it('keeps only the latest evaluation', () => {
     clearProvenance()
-    const first = defineConfig().dsh(dsh)
+    const first = defineConfig()
     first.profile('work', (profile) => profile.layer((layer) => layer.disable('a')))
     first.build()
-    const second = defineConfig().dsh(dsh)
+    const second = defineConfig()
     second.profile('work', (profile) =>
       profile.layer((layer) => {
         layer.disable('a')

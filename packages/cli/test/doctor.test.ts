@@ -37,7 +37,6 @@ importers:
 function rangePlan() {
   return planOf({
     name: 'work',
-    dsh: '0.2.1-rc.2',
     bundles: [bundle(BUNDLE), generated()],
     layers: [layer('cli', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })])],
     packages: { '@scope/plugin': '^1.0.0' },

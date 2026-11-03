@@ -64,7 +64,6 @@ describe('preview and authoring integration', () => {
     const initial = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => profile.generated())
   .build()
 `
@@ -89,7 +88,6 @@ export default defineConfig()
 const custom = bundle('@acme/plugin-bundle').fromProfile('work').rows()
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .generated()

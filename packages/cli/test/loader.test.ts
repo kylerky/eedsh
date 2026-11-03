@@ -36,7 +36,6 @@ async function writeMappedProject(prefix: string, profileName: string): Promise<
 import { profileName } from '@project/helper'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile(profileName, () => undefined)
   .build()
 `,
@@ -52,7 +51,6 @@ async function writeProvenanceProject(prefix: string): Promise<string> {
     `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('provenance-profile', (profile) => {
     profile.layer((layer) => layer.insert({ id: 'row', name: '@scope/row' }))
   })
@@ -90,7 +88,6 @@ describe('config loader resolution', () => {
 import { profileName } from '@shared/helper'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile(profileName, () => undefined)
   .build()
 `,
@@ -132,7 +129,6 @@ export default defineConfig()
 import { profileName } from './helper'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile(profileName, () => undefined)
   .build()
 `,

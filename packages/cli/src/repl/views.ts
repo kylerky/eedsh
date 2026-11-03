@@ -436,14 +436,11 @@ export class ProfileView {
 
 /** The loaded config as an exploration entry point. */
 export class ConfigView {
-  /** The config's exact DSH pin. */
-  readonly dsh: string
   /** The declared default profile, when one is named. */
   readonly defaultProfile: string | undefined
   private readonly views: ReadonlyMap<string, ProfileView>
 
   constructor(config: EedshConfig, snapshots: ReadonlyMap<string, ProfileSnapshot> = new Map()) {
-    this.dsh = config.dsh
     this.defaultProfile = config.defaultProfile
     this.views = new Map(
       Object.entries(config.profiles).map(([name, outcome]) => [

@@ -13,9 +13,6 @@ export const RESERVED_NAMES: readonly string[] = ['@eedsh/runtime', '@eedsh/gene
 
 const RESERVED = new Set(RESERVED_NAMES)
 
-/** An exact DSH runtime pin such as `0.2.1-rc.2`. */
-const DSH_PIN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
-
 /**
  * Require a plain object at a schema boundary before decoding its fields.
  * Struct decoding rebuilds objects, so without this guard a class instance
@@ -60,12 +57,6 @@ export const ProfileNameSchema = refine(
   Schema.NonEmptyString,
   (name) =>
     isSafeProfileName(name) || `profile name "${name}" is not usable as a profile directory`,
-)
-
-/** An exact DSH runtime pin. */
-export const DshPinSchema = refine(
-  Schema.NonEmptyString,
-  (dsh) => DSH_PIN.test(dsh) || `"${dsh}" is not an exact version`,
 )
 
 /** A bundle name the materializer does not already own. */
@@ -222,7 +213,6 @@ const ProfilePlanBaseSchema = plain(
       Schema.Struct({ name: ProfileNameSchema }),
       'profile must be a JSON object with a name',
     ),
-    dsh: DshPinSchema,
     bundles: PlanBundleListSchema,
     layers: PlanLayerListSchema,
     packages: PackagesSchema,

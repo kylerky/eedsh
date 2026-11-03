@@ -30,7 +30,6 @@ async function publish(): Promise<string> {
   created.push(profileDir)
   const plan = planOf({
     name: 'doctor-it',
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
     layers: [layer('it', [insert({ id: 'row', name: '@scope/row' })])],
   })

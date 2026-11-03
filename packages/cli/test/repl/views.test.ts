@@ -38,7 +38,7 @@ const fakeDoctor = async (): Promise<DoctorResult> => ({
 })
 
 function configOf(build: (builder: ReturnType<typeof defineConfig>) => void): EedshConfig {
-  const builder = defineConfig().dsh('0.2.1-rc.2')
+  const builder = defineConfig()
   build(builder)
   const result = builder.build()
   if (Result.isFailure(result)) throw result.failure
@@ -261,7 +261,6 @@ describe('profile and bundle views', () => {
   it('lists declared profiles and returns a missing profile as undefined', () => {
     const config = baseConfig()
     const view = new ConfigView(config, new Map())
-    expect(view.dsh).toBe('0.2.1-rc.2')
     expect(view.defaultProfile).toBe('work')
     expect(view.profiles().map((profile) => profile.name)).toEqual(['work', 'home'])
     expect(view.profiles().map((profile) => profile.valid)).toEqual([true, false])

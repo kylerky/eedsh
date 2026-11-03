@@ -1,11 +1,9 @@
 import { bundle, defineConfig, definePreset, LayerBuilder, ResolutionError } from '@eedsh/config'
-import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
+import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import * as Result from 'effect/Result'
-import type * as Schema from 'effect/Schema'
+import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
-
-const dsh = '0.2.1-rc.2'
 
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
 
@@ -38,20 +36,18 @@ function planOf(config: EedshConfig, name: string): ProfilePlan {
 describe('fluent config builder', () => {
   it('builds a minimal fluent config synchronously', () => {
     const result = defineConfig()
-      .dsh(dsh)
       .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
       .build()
     expect(result).not.toBeInstanceOf(Promise)
     const config = configOf(result)
-    expect(config.dsh).toBe(dsh)
+    expect('dsh' in config).toBe(false)
     expect(Object.keys(config.profiles)).toEqual(['work'])
     expect(planOf(config, 'work').profile.name).toBe('work')
   })
 
-  it('chains the pin, default profile, profiles, and packages', () => {
+  it('chains the default profile, profiles, and packages', () => {
     const config = configOf(
       defineConfig()
-        .dsh('1.2.3')
         .defaultProfile('home')
         .profile('work', (profile) =>
           profile
@@ -66,7 +62,6 @@ describe('fluent config builder', () => {
         .profile('home', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .build(),
     )
-    expect(config.dsh).toBe('1.2.3')
     expect(config.defaultProfile).toBe('home')
     expect(Object.keys(config.profiles)).toEqual(['work', 'home'])
     const work = planOf(config, 'work')
@@ -82,7 +77,6 @@ describe('fluent config builder', () => {
   it('scopes each layer callback to its own layer and keeps authored order', () => {
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           profile.layer('first', (layer) => layer.insert({ id: 'first-row', name: '@scope/first' }))
           profile.layer('second', (layer) => layer.disable('preset-standard'))
@@ -98,7 +92,6 @@ describe('fluent config builder', () => {
   it('declares anonymous patch groups with an optional label', () => {
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           profile.layer((layer) => layer.insert({ id: 'first-row', name: '@scope/first' }))
           profile.layer('lsp', (layer) => layer.disable('preset-standard'))
@@ -116,7 +109,6 @@ describe('fluent config builder', () => {
   it('keeps the callback return value irrelevant', () => {
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           profile.bundle('@deepseek-ai/dsh-base')
           return undefined as never
@@ -133,7 +125,6 @@ describe('fluent config builder', () => {
     const web = bundle('@deepseek-ai/dsh-web-app')
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => profile.bundle(base).bundle(web).generated())
         .build(),
     )
@@ -152,7 +143,6 @@ describe('fluent config builder', () => {
     expect(handle.toJSON()).toEqual({ kind: 'bundle', name: '@deepseek-ai/dsh-web-app' })
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           // @ts-expect-error bundle source options are removed from the authoring API
           profile.bundle('@deepseek-ai/dsh-base', { source: 'link:../base' })
@@ -167,7 +157,6 @@ describe('fluent config builder', () => {
   it('keeps package declarations as the only dependency input', () => {
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           profile.bundle('@deepseek-ai/dsh-base').package('@scope/plugin', 'link:../plugin')
         })
@@ -183,7 +172,6 @@ describe('fluent config builder', () => {
     const adapted = definePreset('ptc-fresh', { rowId: 'preset-adapted' })
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => {
           profile.layer('registry', (layer) => layer.selectPreset(adapted, { default: standard }))
         })
@@ -216,7 +204,7 @@ describe('fluent config builder', () => {
   })
 
   it('returns detached, independent builds', () => {
-    const builder = defineConfig().dsh(dsh)
+    const builder = defineConfig()
     builder.profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
     const first = configOf(builder.build())
     const second = configOf(builder.build())
@@ -225,25 +213,41 @@ describe('fluent config builder', () => {
   })
 })
 
-describe('builder defects', () => {
-  it('fails at build when the pin is missing', () => {
-    const error = failureOf(
+describe('removed DSH declaration', () => {
+  it('produces a config with no dsh value', () => {
+    const config = configOf(
       defineConfig()
         .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .build(),
     )
-    expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['dsh'])
+    expect('dsh' in config).toBe(false)
   })
 
+  it('rejects a plain-config dsh field and names it', () => {
+    const result = validateConfigValue({
+      dsh: '0.2.1-rc.2',
+      profiles: { work: { bundles: [{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }] } },
+    })
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(Schema.isSchemaError(result.failure)).toBe(true)
+      if (Schema.isSchemaError(result.failure)) {
+        expect(SchemaIssue.isIssue(result.failure.issue)).toBe(true)
+      }
+      expect(result.failure.message).toContain('dsh')
+    }
+  })
+})
+
+describe('builder defects', () => {
   it('fails at build when no profile is declared', () => {
-    const error = failureOf(defineConfig().dsh(dsh).build())
+    const error = failureOf(defineConfig().build())
     expect(issuesOf(error).map((issue) => issue.path)).toContainEqual(['profiles'])
   })
 
   it('rejects an unsafe profile key and names it', () => {
     const error = failureOf(
       defineConfig()
-        .dsh(dsh)
         .profile('a/b', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .build(),
     )
@@ -255,7 +259,6 @@ describe('builder defects', () => {
   it('rejects an unknown default profile', () => {
     const error = failureOf(
       defineConfig()
-        .dsh(dsh)
         .defaultProfile('missing')
         .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .build(),
@@ -268,7 +271,6 @@ describe('builder defects', () => {
   it('keeps an invalid profile as its own failure and validates its sibling', () => {
     const config = configOf(
       defineConfig()
-        .dsh(dsh)
         .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
         .profile('home', (profile) => profile.bundle('@eedsh/runtime'))
         .build(),
@@ -283,13 +285,9 @@ describe('builder defects', () => {
   })
 
   it('fails with the native schema error and never throws', () => {
-    expect(() =>
-      defineConfig()
-        .dsh('latest')
-        .profile('work', () => undefined)
-        .build(),
-    ).not.toThrow()
-    const failure = failureOf(defineConfig().dsh('latest').build())
+    expect(() => defineConfig().profile('a/b', () => undefined).build()).not.toThrow()
+    const failure = failureOf(defineConfig().build())
+    expect(issuesOf(failure).map((issue) => issue.path)).toContainEqual(['profiles'])
     expect(SchemaIssue.isIssue(failure.issue)).toBe(true)
   })
 })
@@ -318,7 +316,7 @@ describe('public authoring surface', () => {
 describe('rooted query rejection', () => {
   it('rejects a rooted query as a bundle selection', () => {
     const rooted = bundle('@deepseek-ai/dsh-base').fromProfile('work')
-    const builder = defineConfig().dsh(dsh)
+    const builder = defineConfig()
     expect(() =>
       builder.profile('work', (profile) => {
         // @ts-expect-error a rooted query is query-only and not a plan selection

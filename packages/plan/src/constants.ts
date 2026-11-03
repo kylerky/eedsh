@@ -8,4 +8,4 @@
 export const PLAN_FORMAT = 'eedsh/profile-plan'
 
 /** Plan schema version; bumped only when the plan shape changes incompatibly. */
-export const PLAN_VERSION = 1 as const
+export const PLAN_VERSION = 2 as const

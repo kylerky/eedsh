@@ -34,7 +34,7 @@ describe('validatePlan', () => {
   })
 
   it('fails with the native schema error', () => {
-    const error = failureOf(plan({ dsh: 'latest' }))
+    const error = failureOf(plan({ version: 1 }))
     expect(Schema.isSchemaError(error)).toBe(true)
     expect(error).toBeInstanceOf(Error)
     expect(error._tag).toBe('SchemaError')
@@ -57,13 +57,13 @@ describe('validatePlan', () => {
       expect(typeof issue.message).toBe('string')
       expect(issue.message.length).toBeGreaterThan(0)
     }
-    expect(failureOf(plan({ dsh: 'latest' })).message).toContain('at [')
+    expect(failureOf(plan({ version: 1 })).message).toContain('at [')
   })
 
   it('reports several violations together', () => {
     const error = failureOf(
       plan({
-        dsh: 'latest',
+        version: 1,
         layers: [layer('Base')],
         packages: { '@eedsh/generated': 'link:./generated' },
       }),
@@ -82,7 +82,7 @@ describe('validatePlan', () => {
   })
 
   it('serializes through the native representation', () => {
-    const error = failureOf(plan({ dsh: 'latest' }))
+    const error = failureOf(plan({ version: 1 }))
     expect(JSON.parse(JSON.stringify(error))).toEqual({
       _tag: 'SchemaError',
       message: error.message,
@@ -100,6 +100,12 @@ describe('validatePlan', () => {
       nested: { enabled: boolean }
     }
     expect(detached.nested.enabled).toBe(true)
+  })
+
+  it('accepts version 2 and rejects version 1 and a dsh field', () => {
+    expect(Result.isSuccess(validatePlan(plan()))).toBe(true)
+    expect(Result.isFailure(validatePlan(plan({ version: 1 })))).toBe(true)
+    expect(Result.isFailure(validatePlan(plan({ dsh: '0.2.1-rc.2' })))).toBe(true)
   })
 
   it('accepts anonymous layers and duplicate legacy layer ids', () => {

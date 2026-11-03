@@ -47,9 +47,10 @@ describe('plan schema decoding', () => {
     if (Result.isFailure(result)) return
     const value = result.success
     expect(value.format).toBe(PLAN_FORMAT)
+    expect(value.version).toBe(2)
     expect(value.version).toBe(PLAN_VERSION)
     expect(value.profile).toEqual({ name: 'work' })
-    expect(value.dsh).toBe('0.2.1-rc.2')
+    expect('dsh' in value).toBe(false)
     expect(value.bundles).toEqual([bundle('@deepseek-ai/dsh-base')])
     expect(value.layers).toEqual([])
     expect(value.packages).toEqual({})
@@ -105,7 +106,6 @@ describe('plan schema decoding', () => {
   it('rejects wrong field types and identifies the field', () => {
     const cases: ReadonlyArray<[Record<string, unknown>, ReadonlyArray<PropertyKey>]> = [
       [{ version: '1' }, ['version']],
-      [{ dsh: 1 }, ['dsh']],
       [{ layers: {} }, ['layers']],
       [{ profile: { name: 42 } }, ['profile', 'name']],
       [{ bundles: [{ kind: 'bundle', name: 'x', source: 3 }] }, ['bundles', 0, 'source']],
@@ -134,12 +134,9 @@ describe('plan schema decoding', () => {
   })
 
   it('rejects missing required fields with their location', () => {
-    const withoutDsh = plan()
-    delete withoutDsh.dsh
     const withoutBundles = plan()
     delete withoutBundles.bundles
     const cases: ReadonlyArray<[Record<string, unknown>, ReadonlyArray<PropertyKey>]> = [
-      [withoutDsh, ['dsh']],
       [withoutBundles, ['bundles']],
       [{ profile: {} }, ['profile', 'name']],
       [{ layers: [{ id: 'base' }] }, ['layers', 0, 'patches']],
@@ -175,12 +172,15 @@ describe('plan policy', () => {
     }
   })
 
-  it('requires an exact DSH pin', () => {
-    for (const dsh of ['0.2.1-rc.2', '1.0.0', '0.2.1-beta.1']) {
-      expect(Result.isSuccess(decode(plan({ dsh })))).toBe(true)
-    }
-    for (const dsh of ['latest', '^0.2.1', '0.2', 'v0.2.1', '0.2.1 ']) {
-      expectRejected(plan({ dsh }), ['dsh'], /exact version/)
+  it('accepts version 2 and rejects version 1', () => {
+    expect(Result.isSuccess(decode(plan({ version: 2 })))).toBe(true)
+    expectRejected(plan({ version: 1 }), ['version'])
+    expectRejected(plan({ version: 3 }), ['version'])
+  })
+
+  it('rejects a dsh field on a version-2 plan', () => {
+    for (const dsh of ['0.2.1-rc.2', 'latest', '^0.2.1', 1]) {
+      expectRejected(plan({ dsh }), ['dsh'], /excess property|Expected never/)
     }
   })
 

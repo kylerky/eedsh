@@ -9,8 +9,6 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-const dsh = '0.2.1-rc.2'
-
 /** A plain profile descriptor, valid under the plan contract. */
 function workProfile(): Record<string, unknown> {
   return {
@@ -33,9 +31,8 @@ function homeProfile(): Record<string, unknown> {
 function planDocument(name: string): Record<string, unknown> {
   return {
     format: 'eedsh/profile-plan',
-    version: 1,
+    version: 2,
     profile: { name },
-    dsh,
     bundles: [{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }],
     layers: [],
     packages: {},
@@ -52,7 +49,6 @@ function planOf(config: EedshConfig, name: string): ProfilePlan {
 describe('validateConfigValue', () => {
   it('normalizes a plain config object profile by profile', () => {
     const result = validateConfigValue({
-      dsh,
       defaultProfile: 'work',
       profiles: {
         work: workProfile(),
@@ -61,16 +57,32 @@ describe('validateConfigValue', () => {
     })
     if (Result.isFailure(result)) throw new Error(result.failure.message)
     const config = result.success
+    expect('dsh' in config).toBe(false)
     expect(planOf(config, 'work').profile.name).toBe('work')
     expect(planOf(config, 'home').profile.name).toBe('home')
+    expect(planOf(config, 'home').version).toBe(2)
     expect(planOf(config, 'home').bundles).toEqual([
       { kind: 'bundle', name: '@deepseek-ai/dsh-base' },
     ])
   })
 
+  it('accepts a config with no DSH value and rejects a plain dsh field', () => {
+    const accepted = validateConfigValue({ profiles: { work: workProfile() } })
+    expect(Result.isSuccess(accepted)).toBe(true)
+
+    const rejected = validateConfigValue({
+      dsh: '0.2.1-rc.2',
+      profiles: { work: workProfile() },
+    })
+    expect(Result.isFailure(rejected)).toBe(true)
+    if (Result.isFailure(rejected)) {
+      expect(Schema.isSchemaError(rejected.failure)).toBe(true)
+      expect(rejected.failure.message).toContain('dsh')
+    }
+  })
+
   it('revalidates profile Results so a forged success cannot bypass the plan', () => {
     const result = validateConfigValue({
-      dsh,
       profiles: {
         work: Result.succeed({
           bundles: [{ kind: 'bundle', name: '@eedsh/runtime' }],
@@ -87,7 +99,6 @@ describe('validateConfigValue', () => {
 
   it('accepts a config Result export and revalidates its success value', () => {
     const authored = Result.succeed({
-      dsh,
       profiles: { work: workProfile() },
     })
     const result = validateConfigValue(authored)
@@ -100,7 +111,7 @@ describe('validateConfigValue', () => {
     expect(Result.isFailure(forged)).toBe(true)
     if (Result.isFailure(forged)) {
       expect(Schema.isSchemaError(forged.failure)).toBe(true)
-      expect(forged.failure.message).toContain('"latest" is not an exact version')
+      expect(forged.failure.message).toContain('dsh')
     }
   })
 
@@ -129,13 +140,13 @@ describe('validateConfigValue', () => {
   it('revalidates a plan-shaped profile entry under the config envelope', () => {
     const validated = validatePlan(planDocument('work'))
     if (Result.isFailure(validated)) throw new Error(validated.failure.message)
-    const result = validateConfigValue({ dsh, profiles: { work: validated.success } })
+    const result = validateConfigValue({ profiles: { work: validated.success } })
     if (Result.isFailure(result)) throw new Error(result.failure.message)
     const profile = result.success.profiles.work
     expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
     if (profile !== undefined && Result.isSuccess(profile)) {
       expect(profile.success.profile.name).toBe('work')
-      expect(profile.success.dsh).toBe(dsh)
+      expect('dsh' in profile.success).toBe(false)
     }
   })
 
@@ -143,7 +154,7 @@ describe('validateConfigValue', () => {
     const decoded = Schema.decodeUnknownResult(EedshConfigSchema, {
       errors: 'all',
       onExcessProperty: 'error',
-    })({ dsh, profiles: { work: homeProfile() } })
+    })({ profiles: { work: homeProfile() } })
     expect(Result.isSuccess(decoded)).toBe(true)
   })
 })

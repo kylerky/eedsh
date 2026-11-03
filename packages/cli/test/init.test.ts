@@ -110,7 +110,7 @@ describe('init templates', () => {
     ).toBe(true)
     expect(tsconfig.compilerOptions.strict).toBe(true)
     expect(tsconfig.compilerOptions.noEmit).toBe(true)
-    expect(initConfigTemplate('0.2.1-rc.2')).toContain('@eedsh/config')
+    expect(initConfigTemplate()).toContain('@eedsh/config')
   })
 
   it('installs with pnpm by default', async () => {
@@ -221,7 +221,6 @@ describe('init on a real filesystem', () => {
     })
     expect(code).toBe(0)
     const { config } = await Effect.runPromise(loadConfig(join(home, 'eedsh', 'config.ts')))
-    expect(config.dsh).toBe('0.2.1-rc.2')
     expect(Object.keys(config.profiles)).toEqual(['default'])
     const profile = config.profiles.default
     expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)

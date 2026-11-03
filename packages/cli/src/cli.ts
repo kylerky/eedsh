@@ -39,7 +39,6 @@ import {
   INIT_PROFILE_NAME,
   type InitError,
   type InitService,
-  resolveDshPin,
   resolveInitDependencySpecs,
   runInit,
 } from './init'
@@ -925,13 +924,9 @@ function runInitCommand(
     runtime.setFailureContext(undefined)
     const specs = resolveInitDependencySpecs()
     if (Result.isFailure(specs)) return yield* Effect.fail(specs.failure)
-    const dsh = resolveDshPin()
-    if (Result.isFailure(dsh)) return yield* Effect.fail(dsh.failure)
-
     const configDir = configDirectory(runtime.env)
     const result = yield* runInit({
       configDir,
-      dsh: dsh.success,
       specs: specs.success,
       install: !input.noInstall,
       stdout: runtime.stdout,

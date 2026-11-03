@@ -10,9 +10,9 @@ import { planOf } from '../support/plan'
  * contract after the provenance change.
  */
 const CANONICAL_JSON =
-  '{"bundles":[{"kind":"bundle","name":"@deepseek-ai/dsh-base"},{"kind":"bundle","name":"@deepseek-ai/dsh-web-app"},{"kind":"generated"}],"dsh":"0.2.1-rc.2","format":"eedsh/profile-plan","layers":[{"patches":[{"insert":[{"config":{"enabled":true},"id":"my-plugin","name":"@scope/my-plugin"}]},{"disabled":true,"id":"repeat-tool-reminder"}]},{"patches":[{"config":{"model":"deepseek-chat","provider":"deepseek"},"id":"agent-default-model"},{"insert":[{"disabled":{"$eedsh":{"expr":"!ctx.get(\'profileContext\')"}},"id":"plugin-manager","name":"@deepseek-ai/dsh-plugin-manager"}]}]}],"packages":{"@scope/my-plugin":"link:../packages/my-plugin"},"profile":{"name":"work"},"version":1}'
+  "{\"bundles\":[{\"kind\":\"bundle\",\"name\":\"@deepseek-ai/dsh-base\"},{\"kind\":\"bundle\",\"name\":\"@deepseek-ai/dsh-web-app\"},{\"kind\":\"generated\"}],\"format\":\"eedsh/profile-plan\",\"layers\":[{\"patches\":[{\"insert\":[{\"config\":{\"enabled\":true},\"id\":\"my-plugin\",\"name\":\"@scope/my-plugin\"}]},{\"disabled\":true,\"id\":\"repeat-tool-reminder\"}]},{\"patches\":[{\"config\":{\"model\":\"deepseek-chat\",\"provider\":\"deepseek\"},\"id\":\"agent-default-model\"},{\"insert\":[{\"disabled\":{\"$eedsh\":{\"expr\":\"!ctx.get('profileContext')\"}},\"id\":\"plugin-manager\",\"name\":\"@deepseek-ai/dsh-plugin-manager\"}]}]}],\"packages\":{\"@scope/my-plugin\":\"link:../packages/my-plugin\"},\"profile\":{\"name\":\"work\"},\"version\":2}"
 
-const PLAN_HASH = '9b8b6b94301912bd5ac87fe8d935a93e112fdf46ec264d0ac7e2156eab305d10'
+const PLAN_HASH = 'af91a81f1fe3be1983eb8eee68df8fa4ad7014061ce9d150174423a345c0bd01'
 
 describe('plan hash parity', () => {
   it('keeps the canonical JSON and hash of the README example plan', async () => {
@@ -27,24 +27,21 @@ describe('canonical plan hashing', () => {
   it('is stable across key insertion order and changes with content', () => {
     const left = planOf({
       name: 'work',
-      dsh: '0.2.1-rc.2',
       packages: { alpha: '1.0.0', beta: '2.0.0' },
     })
     const right = planOf({
       name: 'work',
-      dsh: '0.2.1-rc.2',
       packages: { beta: '2.0.0', alpha: '1.0.0' },
     })
     expect(hashPlan(left)).toBe(hashPlan(right))
     const changed = planOf({
       name: 'work',
-      dsh: '0.2.2-rc.1',
-      packages: { alpha: '1.0.0', beta: '2.0.0' },
+      packages: { alpha: '2.0.0', beta: '2.0.0' },
     })
     expect(hashPlan(changed)).not.toBe(hashPlan(left))
   })
 
   it('produces a 64-character hex digest', () => {
-    expect(hashPlan(planOf({ name: 'work', dsh: '0.2.1-rc.2' }))).toMatch(/^[0-9a-f]{64}$/)
+    expect(hashPlan(planOf({ name: 'work' }))).toMatch(/^[0-9a-f]{64}$/)
   })
 })

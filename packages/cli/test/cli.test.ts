@@ -47,7 +47,6 @@ function loaded(config: EedshConfig, provenance?: ConfigProvenance) {
 /** Wrap validated plans in a config for the injected loader seam. */
 function configWith(...plans: ProfilePlan[]): EedshConfig {
   return {
-    dsh: '0.2.1-rc.2',
     profiles: Object.fromEntries(plans.map((plan) => [plan.profile.name, Result.succeed(plan)])),
   }
 }
@@ -67,7 +66,6 @@ function watchConfigSource(row: string): string {
   return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('cli-watch', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -198,7 +196,6 @@ describe('eedsh sync', () => {
   it('prints every native schema error line without reformatting', async () => {
     const h = harness()
     const decoded = validateConfigValue({
-      dsh: 'latest',
       profiles: { 'bad/name': { bundles: [] } },
     })
     if (Result.isSuccess(decoded)) throw new Error('expected an invalid config')
@@ -213,9 +210,7 @@ describe('eedsh sync', () => {
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('eedsh: profile key "bad/name" is not usable as a profile directory')
-    expect(errors).toContain('eedsh: "latest" is not an exact version')
     expect(errors).toMatch(/eedsh: {3}at \["profiles"\]\["bad\/name"\]/)
-    expect(errors).toMatch(/eedsh: {3}at \["dsh"\]/)
     expect(errors).not.toContain('profile.name:')
     expect(errors).not.toMatch(/\(\d+ more\)/)
     expect(h.fs.files.size).toBe(0)
@@ -253,7 +248,6 @@ describe('XDG config resolution', () => {
   const source = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('xdg-profile', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -479,7 +473,6 @@ describe('config export forms', () => {
   const successResult = `
 import * as Result from 'effect/Result'
 export default Result.succeed({
-  dsh: '0.2.1-rc.2',
   profiles: {
     'result-export': { bundles: [] },
   },
@@ -488,7 +481,6 @@ export default Result.succeed({
 
   const plainConfig = `
 export default {
-  dsh: '0.2.1-rc.2',
   profiles: {
     'plain-export': { bundles: [] },
   },
@@ -498,17 +490,15 @@ export default {
   const failureResult = `
 import { defineConfig } from '@eedsh/config'
 export default defineConfig()
-  .dsh('latest')
-  .profile('work', () => undefined)
+  .profile('bad/name', () => undefined)
   .build()
 `
 
   const forgedSuccess = `
 import * as Result from 'effect/Result'
 export default Result.succeed({
-  dsh: 'latest',
   profiles: {
-    'forged-export': { bundles: [] },
+    'bad/name': { bundles: [] },
   },
 })
 `
@@ -518,7 +508,6 @@ export default {
   format: 'eedsh/profile-plan',
   version: 1,
   profile: { name: 'legacy-plan' },
-  dsh: '0.2.1-rc.2',
   bundles: [],
   layers: [],
   packages: {},
@@ -529,8 +518,7 @@ export default {
 import { validateConfigValue } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 const result = validateConfigValue({
-  dsh: 'latest',
-  profiles: { 'thrown-export': { bundles: [] } },
+  profiles: { 'bad/name': { bundles: [] } },
 })
 if (Result.isFailure(result)) throw result.failure
 export default {}
@@ -560,7 +548,7 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).toContain('not usable as a profile directory')
     expect(errors).not.toContain('config.import_failed')
     expect(h.fs.files.size).toBe(0)
   })
@@ -581,7 +569,7 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).toContain('not usable as a profile directory')
     expect(errors).not.toContain('config.import_failed')
     expect(h.fs.files.size).toBe(0)
   })
@@ -592,7 +580,7 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
     const errors = h.err.join('\n')
-    expect(errors).toContain('"latest" is not an exact version')
+    expect(errors).toContain('not usable as a profile directory')
     expect(errors).not.toContain('config.import_failed')
     expect(h.fs.files.size).toBe(0)
   })
@@ -610,7 +598,6 @@ describe('multi-profile configs', () => {
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('home')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
@@ -625,7 +612,6 @@ export default defineConfig()
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('solo', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
   })
@@ -636,7 +622,6 @@ export default defineConfig()
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base')
@@ -689,7 +674,6 @@ describe('profile selection and all-profile sync', () => {
   const withDefault = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
@@ -703,7 +687,6 @@ export default defineConfig()
   const withoutDefault = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
   })
@@ -716,7 +699,6 @@ export default defineConfig()
   const invalidHome = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
@@ -730,7 +712,6 @@ export default defineConfig()
   const strictWork = `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -991,7 +972,6 @@ describe('strict mode', () => {
     const h = harness({ basePatches, realPreflight: true })
     const plan = planOf({
       name: 'cli-unmatched',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [{ patches: [override('missing-row', { interval: 1 })] }],
     })
@@ -1014,7 +994,6 @@ describe('strict mode', () => {
       `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('cli-empty', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated().layer('empty')
   })
@@ -1313,13 +1292,11 @@ describe('eedsh sync --watch', () => {
     const h = harness()
     const planA = planOf({
       name: 'cli-fixture',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-a', name: '@scope/row-a' })])],
     })
     const planB = planOf({
       name: 'cli-fixture',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-b', name: '@scope/row-b' })])],
     })
@@ -1510,13 +1487,11 @@ describe('eedsh sync --watch', () => {
     })
     const planA = planOf({
       name: 'cli-fixture',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-a', name: '@scope/row-a' })])],
     })
     const planB = planOf({
       name: 'cli-fixture',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [layer('cli', [insert({ id: 'row-b', name: '@scope/row-b' })])],
       packages: { '@scope/plugin': '1.0.0' },
@@ -1615,7 +1590,6 @@ describe('multi-profile sync --watch', () => {
     return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile
@@ -1641,7 +1615,6 @@ export default defineConfig()
     return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -1658,7 +1631,6 @@ export default defineConfig()
     return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile
@@ -1679,7 +1651,6 @@ export default defineConfig()
     return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile

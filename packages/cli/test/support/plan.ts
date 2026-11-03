@@ -4,7 +4,6 @@ import * as Result from 'effect/Result'
 /** A profile plan input for tests that need a plan value directly. */
 export interface TestPlanInput {
   name: string
-  dsh: string
   bundles?: readonly unknown[]
   layers?: readonly unknown[]
   packages?: Readonly<Record<string, string>>
@@ -21,7 +20,6 @@ export function planOf(input: TestPlanInput): ProfilePlan {
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
     profile: { name: input.name },
-    dsh: input.dsh,
     bundles: input.bundles ?? [],
     layers: input.layers ?? [],
     packages: input.packages ?? {},

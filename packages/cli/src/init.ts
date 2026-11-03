@@ -8,7 +8,6 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Data, Effect, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -105,40 +104,14 @@ export function resolveInitDependencySpecs(): Result.Result<InitDependencySpecs,
 }
 
 /**
- * Read the exact DSH pin the CLI declares. The CLI pins its DSH dependency, so
- * the declared version is the version the scaffold should carry; no DSH
- * installation or service layer is needed.
- * @returns the exact pin, or a resolution failure.
- */
-export function resolveDshPin(): Result.Result<string, InitError> {
-  const manifest = readManifest(fileURLToPath(new URL('../package.json', import.meta.url)))
-  if (Result.isFailure(manifest)) return Result.fail(manifest.failure)
-  const dependencies = manifest.success.dependencies
-  const pin =
-    dependencies !== null && typeof dependencies === 'object'
-      ? (dependencies as Record<string, unknown>)['@deepseek-ai/dsh']
-      : undefined
-  if (typeof pin !== 'string' || pin === '') {
-    return Result.fail(
-      new InitError({
-        code: 'init.dsh_pin_missing',
-        message: 'the CLI manifest declares no @deepseek-ai/dsh pin',
-      }),
-    )
-  }
-  return Result.succeed(pin)
-}
-
-/**
- * Build the generated `config.ts`.
- * @param dsh - exact DSH pin to write.
+ * Build the generated `config.ts`. The config declares profiles only; it has
+ * no DSH value because discovery selects the user's installation.
  * @returns the module source.
  */
-export function initConfigTemplate(dsh: string): string {
+export function initConfigTemplate(): string {
   return `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh(${JSON.stringify(dsh)})
   .profile('${INIT_PROFILE_NAME}', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -200,8 +173,6 @@ export function initTsconfigTemplate(): string {
 export interface InitInput {
   /** Absolute config directory to create. */
   configDir: string
-  /** Exact DSH pin for the generated config. */
-  dsh: string
   /** Dependency specifications for the generated manifest. */
   specs: InitDependencySpecs
   /** Run pnpm install after writing the files. */
@@ -236,7 +207,7 @@ export function runInit(
     yield* fs.makeDirectory(input.configDir, { recursive: true, mode: 0o700 })
 
     const files: readonly { name: string; content: string }[] = [
-      { name: 'config.ts', content: initConfigTemplate(input.dsh) },
+      { name: 'config.ts', content: initConfigTemplate() },
       { name: 'package.json', content: initPackageManifest(input.specs) },
       { name: 'tsconfig.json', content: initTsconfigTemplate() },
     ]

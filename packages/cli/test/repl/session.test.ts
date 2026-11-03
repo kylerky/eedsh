@@ -29,7 +29,7 @@ let work = ''
 const sessions: ReplSession[] = []
 
 function configWith(rows: readonly string[], defaultProfile?: 'work'): EedshConfig {
-  const builder = defineConfig().dsh('0.2.1-rc.2')
+  const builder = defineConfig()
   if (defaultProfile !== undefined) builder.defaultProfile(defaultProfile)
   const result = builder
     .profile('work', (profile) => {
@@ -46,7 +46,7 @@ function configWith(rows: readonly string[], defaultProfile?: 'work'): EedshConf
 }
 
 function configWithProfiles(names: readonly string[], defaultProfile?: string): EedshConfig {
-  const builder = defineConfig().dsh('0.2.1-rc.2')
+  const builder = defineConfig()
   if (defaultProfile !== undefined) builder.defaultProfile(defaultProfile)
   for (const name of names) builder.profile(name, (profile) => profile.generated())
   const result = builder.build()
@@ -172,7 +172,7 @@ describe('session evaluation', () => {
     expect(await h.session.evaluate('const x: number = 2; x')).toBe(2)
     expect(await h.session.evaluate('x + 5')).toBe(7)
     expect(await h.session.evaluate('await Promise.resolve(9)')).toBe(9)
-    expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
+    expect(await h.session.evaluate('config.profiles().length')).toBe(1)
     expect(await h.session.evaluate('typeof marker')).toBe('undefined')
     expect(await h.session.evaluate('typeof defineConfig')).toBe('function')
     expect(await h.session.evaluate('typeof definePreset')).toBe('function')
@@ -267,7 +267,7 @@ describe('session evaluation', () => {
 describe('typed domain bindings', () => {
   it('binds config, selectedProfile, and plan', async () => {
     const h = await session({ config: configWithProfiles(['work', 'home'], 'work') })
-    expect(await h.session.evaluate('config.dsh')).toBe('0.2.1-rc.2')
+    expect(await h.session.evaluate('config.defaultProfile')).toBe('work')
     expect(await h.session.evaluate('config.profiles().map((profile) => profile.name)')).toEqual([
       'work',
       'home',
@@ -421,7 +421,6 @@ describe('profile switching', () => {
 
   it('rejects an invalid profile and keeps the selection', async () => {
     const result = defineConfig()
-      .dsh('0.2.1-rc.2')
       .defaultProfile('work')
       .profile('work', (profile) => profile.generated())
       .profile('home', (profile) => profile.bundle('@eedsh/runtime'))

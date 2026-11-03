@@ -8,7 +8,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { PLAN_FORMAT, PLAN_VERSION } from './constants'
 import { isPlainObject } from './plain-object'
-import { DshPinSchema, isSafeProfileName, ProfileNameSchema, type ProfilePlan } from './schema'
+import { isSafeProfileName, ProfileNameSchema, type ProfilePlan } from './schema'
 import { validatePlan } from './validate'
 
 /** A config-level validation failure that is not Effect's native schema error. */
@@ -19,10 +19,8 @@ export interface InvalidConfigValue {
   readonly message: string
 }
 
-/** One validated config: a shared pin and one Result per named profile. */
+/** One validated config: one Result per named profile. */
 export interface EedshConfig {
-  /** Exact DSH runtime pin applied to every profile plan. */
-  readonly dsh: string
   /** Profile selected when a command needs one and none is named. */
   readonly defaultProfile?: string
   /** Profile key to its validated plan, or that profile's native schema error. */
@@ -31,7 +29,6 @@ export interface EedshConfig {
 
 /** A validated config envelope, before per-profile plans are built. */
 export interface ConfigEnvelope {
-  readonly dsh: string
   readonly defaultProfile?: string | undefined
   readonly profiles: Readonly<Record<string, unknown>>
 }
@@ -78,11 +75,10 @@ const ProfileRecordSchema = refine(
 
 const ConfigEnvelopeBaseSchema = plain(
   Schema.Struct({
-    dsh: DshPinSchema,
     defaultProfile: Schema.optional(ProfileNameSchema),
     profiles: ProfileRecordSchema,
   }),
-  'config must be a JSON object with dsh and profiles',
+  'config must be a JSON object with profiles',
 )
 
 /** A default profile name must be one of the declared keys. */
@@ -100,7 +96,7 @@ function defaultProfileIssues(config: {
   ]
 }
 
-/** The public config envelope schema: exact pin, safe keys, declared default. */
+/** The public config envelope schema: safe keys and a declared default. */
 export const EedshConfigSchema = refine(ConfigEnvelopeBaseSchema, defaultProfileIssues)
 
 const decodeEnvelope = Schema.decodeUnknownResult(EedshConfigSchema, {
@@ -109,8 +105,8 @@ const decodeEnvelope = Schema.decodeUnknownResult(EedshConfigSchema, {
 })
 
 /**
- * Decode the strict config envelope: an exact pin, safe profile keys, and a
- * declared default. Profile plans are not decoded here.
+ * Decode the strict config envelope: safe profile keys and a declared default.
+ * Profile plans are not decoded here.
  * @param value - the candidate config envelope.
  * @returns the envelope, or Effect's native schema error.
  */
@@ -133,16 +129,13 @@ const decodeProfileDefinition = Schema.decodeUnknownResult(ProfileDefinitionSche
 
 /**
  * Build and validate one profile plan from its descriptor. The key supplies
- * the profile name and the config supplies the shared DSH pin, so a plan
- * forged inside a profile Result cannot choose either.
+ * the profile name, so a plan forged inside a profile Result cannot choose it.
  * @param name - the profile key.
- * @param dsh - the config's shared DSH pin.
  * @param definition - the profile descriptor.
  * @returns the validated plan, or Effect's native schema error.
  */
 export function validateProfileDefinition(
   name: string,
-  dsh: string,
   definition: unknown,
 ): Result.Result<ProfilePlan, Schema.SchemaError> {
   const decoded = decodeProfileDefinition(definition)
@@ -151,7 +144,6 @@ export function validateProfileDefinition(
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
     profile: { name },
-    dsh,
     bundles: decoded.success.bundles ?? [],
     layers: decoded.success.layers ?? [],
     packages: decoded.success.packages ?? {},
@@ -168,7 +160,7 @@ export function configValue(
   envelope: ConfigEnvelope,
   profiles: Readonly<Record<string, Result.Result<ProfilePlan, Schema.SchemaError>>>,
 ): EedshConfig {
-  const base = { dsh: envelope.dsh, profiles }
+  const base = { profiles }
   return envelope.defaultProfile === undefined
     ? base
     : { ...base, defaultProfile: envelope.defaultProfile }
@@ -233,10 +225,10 @@ export function validateConfigValue(
         profiles[name] = Result.fail(entry.failure)
         continue
       }
-      profiles[name] = validateProfileDefinition(name, envelope.dsh, entry.success)
+      profiles[name] = validateProfileDefinition(name, entry.success)
       continue
     }
-    profiles[name] = validateProfileDefinition(name, envelope.dsh, entry)
+    profiles[name] = validateProfileDefinition(name, entry)
   }
   return Result.succeed(configValue(envelope, profiles))
 }

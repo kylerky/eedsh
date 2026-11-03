@@ -36,7 +36,6 @@ const generatedManifestPath = `${profileDir}/.eedsh/generated/package.json`
 function fixturePlan(): ProfilePlan {
   return planOf({
     name: 'work',
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base')],
     layers: [
       planLayer('base', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })]),
@@ -135,7 +134,6 @@ describe('Effect materialization', () => {
 
     const changedPlan = planOf({
       name: 'work',
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base')],
       layers: [
         planLayer('base', [

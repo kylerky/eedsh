@@ -42,7 +42,6 @@ function buildGenerated(plan: ProfilePlan): GeneratedBundle {
 function fixturePlan(layers: ProfilePlan['layers']): ProfilePlan {
   return planOf({
     name: 'work',
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), generatedMarker()],
     layers,
   })

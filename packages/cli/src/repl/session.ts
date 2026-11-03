@@ -167,6 +167,18 @@ interface ResolutionTrace {
 }
 
 const TRACE_KEY = Symbol.for('@eedsh/config.resolution-trace')
+/** The bridge the CLI installs for the selected DSH installation. */
+const DSH_BRIDGE_KEY = Symbol.for('@eedsh/config.dsh-bridge')
+
+/** The selected installation's version, when a bridge has been installed. */
+function activeDshVersion(): string {
+  const bridge = (globalThis as { [key: symbol]: unknown })[DSH_BRIDGE_KEY]
+  if (bridge !== null && typeof bridge === 'object') {
+    const version = (bridge as { version?: unknown }).version
+    if (typeof version === 'string') return version
+  }
+  return 'unknown'
+}
 /** The curated authoring factories bound into the prompt. */
 const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'definePreset', 'group', 'js'] as const
 
@@ -175,7 +187,7 @@ const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
 
 const HELP_LINES = [
   'bindings:',
-  '  config                the loaded config view: dsh, defaultProfile, profiles()',
+  '  config                the loaded config view: defaultProfile, profiles()',
   '  selectedProfile       the selected profile view: name, plan(), bundles(), layers()',
   '  plan                  selectedProfile.plan()',
   'Tab completes commands, chain methods, and profile, bundle, row, and preset names;',
@@ -1305,7 +1317,7 @@ export class ReplSession {
       prepared = await preparePreview({
         profileName: this.profileName,
         profileDir,
-        dshPin: this.config.dsh,
+        dshPin: activeDshVersion(),
         specs,
         env: this.env,
         ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),

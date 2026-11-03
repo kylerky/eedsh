@@ -31,7 +31,6 @@ describe('bootable profile integration', () => {
 
     const plan = planOf({
       name: profileName,
-      dsh: '0.2.1-rc.2',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [
         layer('integration', [

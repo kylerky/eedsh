@@ -16,7 +16,6 @@ export function plan(overrides: Record<string, unknown> = {}): Record<string, un
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
     profile: { name: 'work' },
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base')],
     layers: [],
     packages: {},

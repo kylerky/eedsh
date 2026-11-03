@@ -47,7 +47,6 @@ starting point. eedsh never discovers a config in the working directory.
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -175,7 +174,6 @@ profile-local package and shows the annotation points for the main helpers.
 import { defineConfig, js } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .package('@scope/my-plugin', 'link:../packages/my-plugin')

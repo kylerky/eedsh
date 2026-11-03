@@ -79,7 +79,6 @@ const fromDirectory = bundle('@fixture/vendored')
   .row('vendored-row')
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .generated()
@@ -147,7 +146,6 @@ const expressive = bundle('@fixture/expressive')
   .preset('expressive')
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile.generated().layer('preset', (layer) => layer.insert(expressive))
   })

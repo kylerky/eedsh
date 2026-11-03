@@ -270,19 +270,8 @@ export class ProfileBuilder {
  * chain method returns it and `.build()` validates once.
  */
 export class ConfigBuilder {
-  private pin: string | undefined
   private defaultName: string | undefined
   private readonly profiles: ProfileBuilder[] = []
-
-  /**
-   * Set the exact DSH runtime pin.
-   * @param pin - an exact version such as `0.2.1-rc.2`.
-   * @returns this config.
-   */
-  dsh(pin: string): this {
-    this.pin = pin
-    return this
-  }
 
   /**
    * Name the profile a command selects when none is named.
@@ -317,7 +306,6 @@ export class ConfigBuilder {
       recordProfileProvenance(profile.name, profile.provenance())
     }
     const authored: Record<string, unknown> = {
-      dsh: this.pin,
       profiles: Object.fromEntries(
         this.profiles.map((profile) => [profile.name, profile.toJSON()]),
       ),
@@ -328,7 +316,7 @@ export class ConfigBuilder {
     const envelope = decoded.success
     const profiles: Record<string, Result.Result<ProfilePlan, Schema.SchemaError>> = {}
     for (const [name, definition] of Object.entries(envelope.profiles)) {
-      profiles[name] = validateProfileDefinition(name, envelope.dsh, definition)
+      profiles[name] = validateProfileDefinition(name, definition)
     }
     return Result.succeed(configValue(envelope, profiles))
   }

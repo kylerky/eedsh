@@ -117,7 +117,6 @@ describe('layer builder patches', () => {
 describe('defineConfig profile boundary', () => {
   it('stores the native failure Result synchronously', () => {
     const result = defineConfig()
-      .dsh('0.2.1-rc.2')
       .profile('work', (profile) => profile.bundle('@eedsh/runtime'))
       .build()
     expect(Result.isSuccess(result)).toBe(true)
@@ -135,7 +134,6 @@ describe('defineConfig profile boundary', () => {
 
   it('returns one plain plan per profile synchronously', () => {
     const result = defineConfig()
-      .dsh('0.2.1-rc.2')
       .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
       .build()
     expect(Result.isSuccess(result)).toBe(true)
@@ -146,6 +144,12 @@ describe('defineConfig profile boundary', () => {
       expect(profile.success.format).toBe(PLAN_FORMAT)
       expect(profile.success.profile.name).toBe('work')
     }
+  })
+
+  it('does not expose the removed DSH declaration', () => {
+    const builder = defineConfig()
+    expect('dsh' in builder).toBe(false)
+    expect((builder as unknown as { dsh?: unknown }).dsh).toBeUndefined()
   })
 
   it('keeps plan validation in @eedsh/plan and assertPlan absent', async () => {

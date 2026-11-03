@@ -45,7 +45,6 @@ async function waitForServerUrl(
 function webPlan(name: string, layers: ProfilePlan['layers']): ProfilePlan {
   return planOf({
     name,
-    dsh: '0.2.1-rc.2',
     bundles: [bundle('@deepseek-ai/dsh-base'), bundle('@deepseek-ai/dsh-web-app'), generated()],
     layers,
   })

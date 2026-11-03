@@ -1,7 +1,6 @@
 import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('cli-unmatched', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')

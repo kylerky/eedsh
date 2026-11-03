@@ -54,7 +54,7 @@ describe('built CLI integration', () => {
       { cwd: root, env: { ...process.env, DSH_HOME: home } },
     )
     const output = `${result.stdout}\n${result.stderr}`
-    expect(output).toContain('generated #1 "cli" (config.ts:10:15) [missing-row]:')
+    expect(output).toContain('generated #1 "cli" (config.ts:9:15) [missing-row]:')
     expect(output).toContain('missing-row')
     expect(output).not.toContain('add --explain')
   }, 180_000)
@@ -155,7 +155,6 @@ describe('built CLI integration', () => {
       `import { defineConfig } from '@eedsh/config'
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()

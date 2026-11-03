@@ -12,7 +12,6 @@ function planWith(layers: readonly unknown[]): ProfilePlan {
     format: PLAN_FORMAT,
     version: PLAN_VERSION,
     profile: { name: 'work' },
-    dsh: '0.2.1-rc.2',
     bundles: [{ kind: 'bundle', name: '@deepseek-ai/dsh-base' }, { kind: 'generated' }],
     layers,
     packages: {},

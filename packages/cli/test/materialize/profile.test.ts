@@ -16,7 +16,7 @@ const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'
 
 function plan(bundles: readonly PlanBundle[], packages: Record<string, string> = {}): ProfilePlan {
-  return planOf({ name: 'work', dsh: '0.2.1-rc.2', bundles, packages })
+  return planOf({ name: 'work', bundles, packages })
 }
 
 function reconcile(

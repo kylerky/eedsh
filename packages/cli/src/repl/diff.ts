@@ -83,8 +83,6 @@ function layerLabel(layer: { readonly id?: string | undefined }, index: number):
 
 function diffPlan(profile: string, before: ProfilePlan, after: ProfilePlan): string[] {
   const lines: string[] = []
-  if (before.dsh !== after.dsh)
-    lines.push(`~ profile ${quote(profile)} dsh ${before.dsh} -> ${after.dsh}`)
 
   const beforeBundles = new Map(
     before.bundles.map((item) => [item.kind === 'generated' ? 'generated' : item.name, item]),
