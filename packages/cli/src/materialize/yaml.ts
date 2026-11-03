@@ -4,9 +4,10 @@
  * Loader's patch parser instead of being string-concatenated.
  * @module @eedsh/cli/materialize/yaml
  */
-import { entryListSchema } from './yaml-schema'
+
 import type { PlanPatch } from '@eedsh/plan'
 import * as yaml from 'js-yaml'
+import { entryListSchema } from './yaml-schema'
 
 /**
  * Convert plan expression nodes into the `!!js` data shape DSH's schema

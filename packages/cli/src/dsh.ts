@@ -9,13 +9,13 @@ import { activeDshBridge, bridgeCapability } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import { DshResolveFailure } from './internal/effect/errors'
 
-export { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
-export { discoverDshInstallation, validateDshVersion } from './dsh-discovery'
 export type {
-  DiscoveredDshInstallation,
   DiscoverDshOptions,
+  DiscoveredDshInstallation,
   DshSource,
 } from './dsh-discovery'
+export { discoverDshInstallation, validateDshVersion } from './dsh-discovery'
+export { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
 
 /** Resolved facts about one DSH installation. */
 export interface DshInstallationInfo {

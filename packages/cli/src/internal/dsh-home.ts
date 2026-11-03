@@ -34,7 +34,8 @@ export function resolveDshHome(
 ): string {
   const fromEnv = env.DSH_HOME
   const chosen =
-    configured ?? (fromEnv !== undefined && fromEnv.trim().length > 0 ? fromEnv : defaultDshHome(env))
+    configured ??
+    (fromEnv !== undefined && fromEnv.trim().length > 0 ? fromEnv : defaultDshHome(env))
   return resolve(expandHomePath(chosen))
 }
 

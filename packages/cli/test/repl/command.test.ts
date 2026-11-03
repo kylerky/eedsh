@@ -37,7 +37,10 @@ function options(env: Record<string, string> = {}) {
 describe('eedsh repl command surface', () => {
   it('evaluates one expression without starting a prompt', async () => {
     const h = options()
-    const code = await runEedsh(['repl', '--config', fixture, '--eval', 'selectedProfile.name'], h.options)
+    const code = await runEedsh(
+      ['repl', '--config', fixture, '--eval', 'selectedProfile.name'],
+      h.options,
+    )
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain("'cli-fixture'")
   })

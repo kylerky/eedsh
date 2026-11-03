@@ -8,9 +8,7 @@ describe('local DSH home resolution', () => {
   })
 
   it('treats an empty or whitespace DSH_HOME as unset', () => {
-    expect(resolveDshHome(undefined, { HOME: '/home/user', DSH_HOME: '' })).toBe(
-      '/home/user/.dsh',
-    )
+    expect(resolveDshHome(undefined, { HOME: '/home/user', DSH_HOME: '' })).toBe('/home/user/.dsh')
     expect(resolveDshHome(undefined, { HOME: '/home/user', DSH_HOME: '   ' })).toBe(
       '/home/user/.dsh',
     )

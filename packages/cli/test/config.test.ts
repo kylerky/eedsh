@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
-import { beforeAll, afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   ConfigError,
   loadConfig,

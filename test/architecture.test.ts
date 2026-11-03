@@ -111,8 +111,7 @@ function exceptionViolations(): { file: string; sites: string[] }[] {
 
 /** Production dependencies a published package may not declare. */
 const FORBIDDEN_DSH_DEPENDENCY = (dependency: string): boolean =>
-  dependency.startsWith('@deepseek-ai/dsh') ||
-  dependency === '@deepseek-ai/cordis-plugin-include'
+  dependency.startsWith('@deepseek-ai/dsh') || dependency === '@deepseek-ai/cordis-plugin-include'
 
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 

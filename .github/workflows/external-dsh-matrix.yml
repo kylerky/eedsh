@@ -1,0 +1,57 @@
+name: external-dsh-matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+jobs:
+  matrix:
+    if: github.event_name != 'schedule'
+    name: DSH ${{ matrix.dsh }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh:
+          - 0.2.1-rc.2
+          - 0.2.1-rc.5
+          - 0.2.2-alpha.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --trust-lockfile
+      - run: pnpm build:packages
+      - run: EEDSH_MATRIX_VERSIONS='${{ matrix.dsh }}' node test/matrix/run.mjs
+      - run: EEDSH_MATRIX_DSH_DIR="$PWD/.tmp/matrix/${{ matrix.dsh }}" pnpm test:slow
+
+  canary:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: DSH ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [latest, alpha]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --trust-lockfile
+      - run: pnpm build:packages
+      - run: EEDSH_MATRIX_VERSIONS='${{ matrix.tag }}' node test/matrix/run.mjs
+      - run: EEDSH_MATRIX_DSH_DIR="$PWD/.tmp/matrix/${{ matrix.tag }}" pnpm test:slow

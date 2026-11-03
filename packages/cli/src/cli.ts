@@ -113,9 +113,7 @@ export interface CliRunOptions {
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
   /** Replace DSH discovery. */
-  discoverDsh?: (
-    input: DshDiscoveryInput,
-  ) => Result.Result<DiscoveredDshInstallation, DshFailure>
+  discoverDsh?: (input: DshDiscoveryInput) => Result.Result<DiscoveredDshInstallation, DshFailure>
   /** Replace bridge loading; the default imports app-boot from the installation. */
   loadDshBridge?: (
     installation: DiscoveredDshInstallation,

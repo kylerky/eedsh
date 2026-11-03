@@ -7,8 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { discoverDshInstallation } from '../src/dsh'
 import { loadDshBridge } from '../src/dsh-bridge'
 
-
-
 const CAPABILITIES = [
   'resolveProfileDir',
   'resolveBundleDir',
@@ -33,7 +31,12 @@ async function fakeInstallation(
   await mkdir(boot, { recursive: true })
   await writeFile(
     join(boot, 'package.json'),
-    JSON.stringify({ name: '@deepseek-ai/dsh-app-boot', version, type: 'module', main: 'index.js' }),
+    JSON.stringify({
+      name: '@deepseek-ai/dsh-app-boot',
+      version,
+      type: 'module',
+      main: 'index.js',
+    }),
   )
   const exports = capabilities
     .map((name) => `export function ${name}() { return '${name}' }`)
@@ -78,7 +81,9 @@ describe('DSH capability bridge', () => {
   })
 
   it('validates all six required capabilities and names a missing one', async () => {
-    const installation = await installationOf(CAPABILITIES.filter((name) => name !== 'composeEntries'))
+    const installation = await installationOf(
+      CAPABILITIES.filter((name) => name !== 'composeEntries'),
+    )
     const loaded = await loadDshBridge(installation)
     expect(Result.isFailure(loaded)).toBe(true)
     if (Result.isFailure(loaded)) {
@@ -94,7 +99,11 @@ describe('DSH capability bridge', () => {
     const boot = join(installation.packageDir, 'node_modules', '@deepseek-ai', 'dsh-app-boot')
     await writeFile(
       join(boot, 'package.json'),
-      JSON.stringify({ name: '@deepseek-ai/dsh-app-boot', version: '0.2.1-rc.5', main: 'missing.js' }),
+      JSON.stringify({
+        name: '@deepseek-ai/dsh-app-boot',
+        version: '0.2.1-rc.5',
+        main: 'missing.js',
+      }),
     )
     const { rm } = await import('node:fs/promises')
     await rm(join(boot, 'index.js'), { force: true })

@@ -4,9 +4,12 @@ import { entryListSchema, isJsExpr } from '../../src/materialize/yaml-schema'
 
 describe('vendored !!js YAML schema', () => {
   it('emits an expression node as a !!js scalar', () => {
-    const text = yaml.dump({ disabled: { __jsExpr: "!ctx.get('profileContext')" } }, {
-      schema: entryListSchema,
-    })
+    const text = yaml.dump(
+      { disabled: { __jsExpr: "!ctx.get('profileContext')" } },
+      {
+        schema: entryListSchema,
+      },
+    )
     expect(text).toContain('!!js')
     expect(yaml.load(text, { schema: entryListSchema })).toEqual({
       disabled: { __jsExpr: "!ctx.get('profileContext')" },
@@ -23,9 +26,7 @@ describe('vendored !!js YAML schema', () => {
   it('round-trips a nested patch list', () => {
     const patches = [
       {
-        insert: [
-          { id: 'row', name: '@scope/plugin', disabled: { __jsExpr: 'flag' } },
-        ],
+        insert: [{ id: 'row', name: '@scope/plugin', disabled: { __jsExpr: 'flag' } }],
       },
     ]
     const text = yaml.dump(patches, { schema: entryListSchema })

@@ -59,11 +59,7 @@ async function tempProfile(): Promise<string> {
   return dir
 }
 
-async function writeRecord(
-  dir: string,
-  generationId: string,
-  dshVersion?: string,
-): Promise<void> {
+async function writeRecord(dir: string, generationId: string, dshVersion?: string): Promise<void> {
   const eedsh = {
     format: 'eedsh/generation',
     generationId,

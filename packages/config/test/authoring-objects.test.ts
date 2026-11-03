@@ -19,9 +19,9 @@ import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type AuthoringFixture,
+  clearFixtureBridge,
   createAuthoringFixture,
   originalEnv,
-  clearFixtureBridge,
   useFixtureBridge,
   useFixtureEnv,
 } from './support/fixture'

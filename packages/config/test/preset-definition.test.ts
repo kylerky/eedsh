@@ -16,9 +16,9 @@ import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type AuthoringFixture,
+  clearFixtureBridge,
   createAuthoringFixture,
   originalEnv,
-  clearFixtureBridge,
   useFixtureBridge,
   useFixtureEnv,
 } from './support/fixture'
@@ -215,7 +215,7 @@ describe('preset selection', () => {
     build: (layer: LayerBuilder) => void,
   ): ReturnType<typeof planOfDefinition> {
     const built = defineConfig()
-        .profile('work', (profile) => {
+      .profile('work', (profile) => {
         profile.generated().layer('registry', build)
       })
       .build()

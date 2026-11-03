@@ -4,10 +4,10 @@
  * plan that cannot compose never becomes the published profile.
  * @module @eedsh/cli/preflight
  */
-import { entryListSchema } from './materialize/yaml-schema'
+
 import {
-  activeDshBridge,
   type AuthoringSite,
+  activeDshBridge,
   bridgeCapability,
   type DshBridge,
   type PatchGroupProvenance,
@@ -25,6 +25,7 @@ import {
 } from './internal/effect/services'
 import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
+import { entryListSchema } from './materialize/yaml-schema'
 
 /** The selected DSH's entry composer. */
 type ComposeEntries = DshBridge['composeEntries']

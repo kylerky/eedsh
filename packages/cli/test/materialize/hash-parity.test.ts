@@ -10,7 +10,7 @@ import { planOf } from '../support/plan'
  * contract after the provenance change.
  */
 const CANONICAL_JSON =
-  "{\"bundles\":[{\"kind\":\"bundle\",\"name\":\"@deepseek-ai/dsh-base\"},{\"kind\":\"bundle\",\"name\":\"@deepseek-ai/dsh-web-app\"},{\"kind\":\"generated\"}],\"format\":\"eedsh/profile-plan\",\"layers\":[{\"patches\":[{\"insert\":[{\"config\":{\"enabled\":true},\"id\":\"my-plugin\",\"name\":\"@scope/my-plugin\"}]},{\"disabled\":true,\"id\":\"repeat-tool-reminder\"}]},{\"patches\":[{\"config\":{\"model\":\"deepseek-chat\",\"provider\":\"deepseek\"},\"id\":\"agent-default-model\"},{\"insert\":[{\"disabled\":{\"$eedsh\":{\"expr\":\"!ctx.get('profileContext')\"}},\"id\":\"plugin-manager\",\"name\":\"@deepseek-ai/dsh-plugin-manager\"}]}]}],\"packages\":{\"@scope/my-plugin\":\"link:../packages/my-plugin\"},\"profile\":{\"name\":\"work\"},\"version\":2}"
+  '{"bundles":[{"kind":"bundle","name":"@deepseek-ai/dsh-base"},{"kind":"bundle","name":"@deepseek-ai/dsh-web-app"},{"kind":"generated"}],"format":"eedsh/profile-plan","layers":[{"patches":[{"insert":[{"config":{"enabled":true},"id":"my-plugin","name":"@scope/my-plugin"}]},{"disabled":true,"id":"repeat-tool-reminder"}]},{"patches":[{"config":{"model":"deepseek-chat","provider":"deepseek"},"id":"agent-default-model"},{"insert":[{"disabled":{"$eedsh":{"expr":"!ctx.get(\'profileContext\')"}},"id":"plugin-manager","name":"@deepseek-ai/dsh-plugin-manager"}]}]}],"packages":{"@scope/my-plugin":"link:../packages/my-plugin"},"profile":{"name":"work"},"version":2}'
 
 const PLAN_HASH = 'af91a81f1fe3be1983eb8eee68df8fa4ad7014061ce9d150174423a345c0bd01'
 

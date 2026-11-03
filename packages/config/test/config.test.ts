@@ -285,7 +285,11 @@ describe('builder defects', () => {
   })
 
   it('fails with the native schema error and never throws', () => {
-    expect(() => defineConfig().profile('a/b', () => undefined).build()).not.toThrow()
+    expect(() =>
+      defineConfig()
+        .profile('a/b', () => undefined)
+        .build(),
+    ).not.toThrow()
     const failure = failureOf(defineConfig().build())
     expect(issuesOf(failure).map((issue) => issue.path)).toContainEqual(['profiles'])
     expect(SchemaIssue.isIssue(failure.issue)).toBe(true)

@@ -585,7 +585,8 @@ export class ReplSession {
           return Promise.resolve({
             rowCount: 0,
             warnings: [],
-            error: 'the REPL needs the active DSH installation; run "eedsh repl" or select one with --dsh',
+            error:
+              'the REPL needs the active DSH installation; run "eedsh repl" or select one with --dsh',
           })
         }
         return defaultCompose(

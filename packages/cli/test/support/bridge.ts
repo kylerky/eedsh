@@ -14,10 +14,9 @@ import type { DiscoveredDshInstallation } from '../../src/dsh'
 export async function installTestBridge(version = '0.2.1-rc.2'): Promise<DshBridge> {
   const require = createRequire(import.meta.url)
   const anchor = require.resolve('@deepseek-ai/dsh/package.json')
-  const boot = (await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href)) as Record<
-    string,
-    (...args: never[]) => unknown
-  >
+  const boot = (await import(
+    pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href
+  )) as Record<string, (...args: never[]) => unknown>
   const bridge: DshBridge = {
     version,
     installation: {

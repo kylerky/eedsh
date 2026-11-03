@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DoctorResult } from '../../src/doctor'
 import { touchedRowIds } from '../../src/preflight'
 import { ReplSession } from '../../src/repl/session'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
 import {
   ConfigView,
   EntryView,
@@ -20,6 +19,7 @@ import {
   type PublishedSnapshot,
   ViewError,
 } from '../../src/repl/views'
+import { clearTestBridge, installTestBridge } from '../support/bridge'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 let work = ''

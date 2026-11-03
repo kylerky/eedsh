@@ -6,11 +6,7 @@
  */
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-import {
-  type DshBridge,
-  installDshBridge,
-  REQUIRED_DSH_CAPABILITIES,
-} from '@eedsh/config'
+import { type DshBridge, installDshBridge, REQUIRED_DSH_CAPABILITIES } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import type { DiscoveredDshInstallation } from './dsh-discovery'
 import { DshFailure } from './internal/effect/errors'

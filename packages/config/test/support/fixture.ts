@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { clearDshBridge, type DshBridge, installDshBridge } from '@eedsh/config'
@@ -164,10 +164,9 @@ export async function useFixtureBridge(
   version = '0.2.1-rc.2',
 ): Promise<DshBridge> {
   const require = createRequire(import.meta.url)
-  const boot = (await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href)) as Record<
-    string,
-    (...args: never[]) => unknown
-  >
+  const boot = (await import(
+    pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href
+  )) as Record<string, (...args: never[]) => unknown>
   const bridge: DshBridge = {
     version,
     installation: {

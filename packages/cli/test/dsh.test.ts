@@ -23,7 +23,11 @@ interface InstallationFixture {
   readonly version: string
 }
 
-async function writeInstallation(parent: string, name: string, version: string): Promise<InstallationFixture> {
+async function writeInstallation(
+  parent: string,
+  name: string,
+  version: string,
+): Promise<InstallationFixture> {
   const dir = join(parent, name)
   await mkdir(join(dir, 'lib'), { recursive: true })
   const anchor = join(dir, 'package.json')
@@ -148,7 +152,10 @@ describe('DSH discovery precedence', () => {
     await writeFile(join(pathDir, 'dsh'), pathInstall.bin)
     const notDsh = join(rootDir, 'other')
     await mkdir(notDsh, { recursive: true })
-    await writeFile(join(notDsh, 'package.json'), JSON.stringify({ name: 'other', version: '1.0.0' }))
+    await writeFile(
+      join(notDsh, 'package.json'),
+      JSON.stringify({ name: 'other', version: '1.0.0' }),
+    )
 
     for (const explicit of [join(rootDir, 'missing'), notDsh]) {
       const failure = failureOf(
@@ -211,7 +218,11 @@ describe('DSH version validation', () => {
   it('accepts a supported installation and returns it', async () => {
     const rootDir = await tempDir('discovery-version-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.2.2-alpha.2')
-    const discovered = discoverDshInstallation({ explicit: installation.dir, env: {}, cwd: rootDir })
+    const discovered = discoverDshInstallation({
+      explicit: installation.dir,
+      env: {},
+      cwd: rootDir,
+    })
     if (Result.isFailure(discovered)) throw discovered.failure
     const result = validateDshVersion(discovered.success)
     expect(Result.isSuccess(result)).toBe(true)
@@ -220,7 +231,11 @@ describe('DSH version validation', () => {
   it('rejects an unsupported installation with its version and range', async () => {
     const rootDir = await tempDir('discovery-unsupported-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.3.0')
-    const discovered = discoverDshInstallation({ explicit: installation.dir, env: {}, cwd: rootDir })
+    const discovered = discoverDshInstallation({
+      explicit: installation.dir,
+      env: {},
+      cwd: rootDir,
+    })
     if (Result.isFailure(discovered)) throw discovered.failure
     const failure = failureOf(validateDshVersion(discovered.success))
     expect(failure.code).toBe('dsh.unsupported_version')

@@ -1,21 +1,30 @@
 import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
+import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { defaultServices } from '../../src/cli'
+import { type DiscoveredDshInstallation, discoverDshInstallation } from '../../src/dsh'
+import { loadDshBridge } from '../../src/dsh-bridge'
 import { materialize } from '../../src/materialize/program'
 import { delay, waitFor } from '../support/async'
-import { clearTestBridge, devDshInstallation, installTestBridge } from '../support/bridge'
+import {
+  clearDshBridge,
+  clearTestBridge,
+  devDshInstallation,
+  installTestBridge,
+} from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, disable, generated, layer } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
-const installation = devDshInstallation()
+let installation: DiscoveredDshInstallation = devDshInstallation()
 
 async function freePort(): Promise<number> {
   const server = createServer()
@@ -53,7 +62,19 @@ function webPlan(name: string, layers: ProfilePlan['layers']): ProfilePlan {
 describe('slow Web HMR integration', () => {
   beforeAll(async () => {
     await execFileAsync('pnpm', ['--filter', '@eedsh/runtime', 'build'], { cwd: root })
-    await installTestBridge(installation.version)
+    const matrixDir = process.env.EEDSH_MATRIX_DSH_DIR
+    if (matrixDir !== undefined && matrixDir !== '') {
+      const nested = join(matrixDir, 'node_modules', '@deepseek-ai', 'dsh')
+      const explicit = existsSync(nested) ? nested : matrixDir
+      const discovered = discoverDshInstallation({ explicit, env: {}, cwd: root })
+      if (Result.isFailure(discovered)) throw discovered.failure
+      installation = discovered.success
+      clearDshBridge()
+      const loaded = await loadDshBridge(installation)
+      if (Result.isFailure(loaded)) throw loaded.failure
+    } else {
+      await installTestBridge(installation.version)
+    }
   }, 120_000)
 
   afterAll(() => {

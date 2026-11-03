@@ -8,9 +8,9 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import * as Result from 'effect/Result'
-import { DshFailure } from './internal/effect/errors'
 import type { DshInstallationInfo } from './dsh'
 import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
+import { DshFailure } from './internal/effect/errors'
 
 /** How the selected installation was discovered. */
 export type DshSource = 'explicit' | 'anchor' | 'path' | 'project'
@@ -80,7 +80,13 @@ function installationFromAnchor(
   source: DshSource,
   pathShown: string,
 ): Result.Result<DiscoveredDshInstallation, DshFailure> {
-  const manifest = readManifest(anchor)
+  let physical = anchor
+  try {
+    physical = realpathSync(anchor)
+  } catch {
+    physical = anchor
+  }
+  const manifest = readManifest(physical)
   if (manifest === undefined) {
     return Result.fail(
       failure({
@@ -108,11 +114,11 @@ function installationFromAnchor(
       }),
     )
   }
-  const packageDir = dirname(anchor)
+  const packageDir = dirname(physical)
   const binPath = join(packageDir, DSH_LAUNCHER)
   return Result.succeed({
     version: manifest.version,
-    installAnchor: anchor,
+    installAnchor: physical,
     packageDir,
     binPath,
     launcher: binPath,
@@ -219,7 +225,9 @@ function discoverFromPath(
   return undefined
 }
 
-function discoverFromProject(cwd: string): Result.Result<DiscoveredDshInstallation, DshFailure> | undefined {
+function discoverFromProject(
+  cwd: string,
+): Result.Result<DiscoveredDshInstallation, DshFailure> | undefined {
   let current = resolve(cwd)
   while (true) {
     const anchor = join(current, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')

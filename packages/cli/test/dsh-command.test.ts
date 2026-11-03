@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import { runEedsh } from '../src/cli'
 import { DshFailure } from '../src/internal/effect/errors'
 import {
@@ -114,12 +114,21 @@ describe('command DSH requirements', () => {
   it('lets --dsh win over the environment and fails an invalid explicit selection', async () => {
     const unsupported = await writeFakeInstallation('0.3.0')
     const h = harness({ EEDSH_DSH_ANCHOR: join(unsupported, 'package.json') })
-    const code = await runEedsh(['sync', '--dsh', installation.packageDir, '--config', fixture('basic')], h.options)
+    const code = await runEedsh(
+      ['sync', '--dsh', installation.packageDir, '--config', fixture('basic')],
+      h.options,
+    )
     expect(code).toBe(0)
 
     const invalid = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
     const failed = await runEedsh(
-      ['sync', '--dsh', join(await tempDir('eedsh-missing-'), 'nope'), '--config', fixture('basic')],
+      [
+        'sync',
+        '--dsh',
+        join(await tempDir('eedsh-missing-'), 'nope'),
+        '--config',
+        fixture('basic'),
+      ],
       invalid.options,
     )
     expect(failed).toBe(1)
@@ -130,10 +139,11 @@ describe('command DSH requirements', () => {
   it('requires DSH for run and boots the discovered launcher', async () => {
     const missing = harness({})
     const spawn = fakeSpawner()
-    const code = await runEedsh(
-      ['run', '--no-sync', '--config', fixture('basic')],
-      { ...missing.options, cwd: await tempDir('eedsh-run-no-dsh-'), spawn: spawn.spawn },
-    )
+    const code = await runEedsh(['run', '--no-sync', '--config', fixture('basic')], {
+      ...missing.options,
+      cwd: await tempDir('eedsh-run-no-dsh-'),
+      spawn: spawn.spawn,
+    })
     expect(code).toBe(1)
     expect(spawn.calls).toHaveLength(0)
 
@@ -152,10 +162,10 @@ describe('command DSH requirements', () => {
 
   it('requires DSH for repl', async () => {
     const missing = harness({})
-    const code = await runEedsh(
-      ['repl', '--eval', '1', '--config', fixture('basic')],
-      { ...missing.options, cwd: await tempDir('eedsh-repl-no-dsh-') },
-    )
+    const code = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], {
+      ...missing.options,
+      cwd: await tempDir('eedsh-repl-no-dsh-'),
+    })
     expect(code).toBe(1)
     expect(missing.text().err).toContain('dsh.not_found')
 

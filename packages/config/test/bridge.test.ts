@@ -1,11 +1,11 @@
 import {
   activeDshBridge,
   clearDshBridge,
+  type DshBridge,
   defineConfig,
   dshVersion,
   installDshBridge,
   ResolutionError,
-  type DshBridge,
 } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import { afterEach, describe, expect, it } from 'vitest'
