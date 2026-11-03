@@ -8,11 +8,17 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
+import {
+  decodeInstallationAnchor,
+  encodeInstallationAnchor,
+} from '@eedsh/runtime/installation-anchor'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Data, Effect, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
+import { validateRecordedInstallation } from './installation-anchor'
 import { writeFileAtomic } from './internal/atomic-write'
 import type { PackageInstallFailure } from './internal/effect/errors'
 import { pnpmPackageManagerLayer } from './internal/effect/layer'
@@ -179,14 +185,26 @@ export interface InitInput {
   install: boolean
   /** Sink for the "kept" report. */
   stdout: (line: string) => void
+  /** Absolute path of the machine-local installation anchor record. */
+  anchorPath?: string | undefined
+  /** A validated explicit installation to record after the project files. */
+  anchorRecord?: InstallationAnchor | undefined
+  /** Sink for non-fatal warnings, such as a failed anchor write. */
+  warn?: ((line: string) => void) | undefined
 }
 
-/** What an init run wrote and kept. */
+/** What an init run wrote, kept, and reported. */
 export interface InitResult {
   readonly kept: readonly string[]
   readonly written: readonly string[]
   /** The exact install command for the config directory. */
   readonly installCommand: string
+  /** The anchor recorded from an explicit `--dsh`, when the write succeeded. */
+  readonly recordedAnchor?: InstallationAnchor | undefined
+  /** An existing valid anchor reported when no `--dsh` was supplied. */
+  readonly existingAnchor?: InstallationAnchor | undefined
+  /** Why the anchor write failed, when it did. */
+  readonly anchorError?: string | undefined
 }
 
 /**
@@ -224,12 +242,46 @@ export function runInit(
       written.push(file.name)
     }
 
+    let recordedAnchor: InstallationAnchor | undefined
+    let existingAnchor: InstallationAnchor | undefined
+    let anchorError: string | undefined
+    const anchorPath = input.anchorPath
+    const anchorRecord = input.anchorRecord
+    if (anchorPath !== undefined) {
+      if (anchorRecord !== undefined) {
+        const writtenAnchor = yield* Effect.result(
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(dirname(anchorPath), { recursive: true, mode: 0o700 })
+            yield* writeFileAtomic(fs, anchorPath, encodeInstallationAnchor(anchorRecord))
+          }),
+        )
+        if (Result.isFailure(writtenAnchor)) {
+          anchorError = messageOf(writtenAnchor.failure)
+          input.warn?.(`eedsh: warning: cannot record the installation anchor: ${anchorError}`)
+        } else {
+          recordedAnchor = anchorRecord
+        }
+      } else {
+        const read = yield* Effect.result(fs.readFileString(anchorPath))
+        if (Result.isSuccess(read)) {
+          const decoded = decodeInstallationAnchor(read.success)
+          if (decoded.ok) {
+            const validated = validateRecordedInstallation(decoded.anchor)
+            if (Result.isSuccess(validated)) existingAnchor = decoded.anchor
+          }
+        }
+      }
+    }
+
     if (input.install) yield* packages.install(input.configDir)
 
     return {
       kept,
       written,
       installCommand: `cd ${input.configDir} && pnpm install`,
+      ...(recordedAnchor === undefined ? {} : { recordedAnchor }),
+      ...(existingAnchor === undefined ? {} : { existingAnchor }),
+      ...(anchorError === undefined ? {} : { anchorError }),
     }
   })
 }

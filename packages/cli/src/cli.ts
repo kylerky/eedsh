@@ -12,6 +12,7 @@ import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import type { ConfigProvenance, DshBridge } from '@eedsh/config'
 import { isSafeProfileName, type ProfilePlan } from '@eedsh/plan'
+import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
 import * as Console from 'effect/Console'
@@ -52,6 +53,8 @@ import {
   anchorForInstallation,
   defaultInstallationAnchorStore,
   type InstallationAnchorStore,
+  installationAnchorPathForEnv,
+  installationFromSelection,
 } from './installation-anchor'
 import { presetDefinitionErrorLines } from './internal/authoring-error'
 import { resolveDshHome, resolveProfileDir } from './internal/dsh-home'
@@ -1066,23 +1069,39 @@ function runReplCommand(
 
 interface InitCommandInput {
   noInstall: boolean
+  dsh: Option.Option<string>
 }
 
 /** Create the XDG config project and print what to do next. */
 function runInitCommand(
   input: InitCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<number, InitError | PackageInstallFailure | PlatformError.PlatformError> {
+): Effect.Effect<
+  number,
+  InitError | PackageInstallFailure | PlatformError.PlatformError | DshFailure
+> {
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
+    let anchorRecord: InstallationAnchor | undefined
+    if (Option.isSome(input.dsh)) {
+      const selected = installationFromSelection(input.dsh.value, runtime.cwd, {
+        requireSupported: true,
+      })
+      if (Result.isFailure(selected)) return yield* Effect.fail(selected.failure)
+      anchorRecord = anchorForInstallation(selected.success, { recordedBy: 'init' })
+    }
     const specs = resolveInitDependencySpecs()
     if (Result.isFailure(specs)) return yield* Effect.fail(specs.failure)
     const configDir = configDirectory(runtime.env)
+    const anchorPath = installationAnchorPathForEnv(runtime.env)
     const result = yield* runInit({
       configDir,
       specs: specs.success,
       install: !input.noInstall,
       stdout: runtime.stdout,
+      anchorPath,
+      ...(anchorRecord === undefined ? {} : { anchorRecord }),
+      warn: (line: string) => runtime.stderr(line),
     }).pipe(Effect.provide((runtime.options.initServices ?? defaultInitServices)()))
 
     runtime.stdout(`eedsh: initialized ${configDir}`)
@@ -1092,6 +1111,21 @@ function runInitCommand(
     }
     if (input.noInstall) runtime.stdout(`eedsh: ${result.installCommand}`)
     else runtime.stdout('eedsh: installed dependencies with pnpm')
+    if (result.recordedAnchor !== undefined) {
+      const version =
+        result.recordedAnchor.version === undefined ? '' : ` (DSH ${result.recordedAnchor.version})`
+      runtime.stdout(
+        `eedsh: recorded installation anchor${version} at ${result.recordedAnchor.installAnchor}`,
+      )
+    } else if (result.existingAnchor !== undefined) {
+      const version =
+        result.existingAnchor.version === undefined ? '' : ` (DSH ${result.existingAnchor.version})`
+      runtime.stdout(`eedsh: installation: ${result.existingAnchor.installAnchor}${version}`)
+    } else {
+      runtime.stdout(
+        'eedsh: no installation anchor; the first "eedsh sync" bootstraps one through pnpm or npm, or pass --dsh <package dir|package.json>',
+      )
+    }
     runtime.stdout('eedsh: next: eedsh check')
     runtime.stdout('eedsh: next: eedsh sync')
     runtime.stdout('eedsh: next: eedsh run')
@@ -1199,10 +1233,13 @@ export async function runEedsh(
     Flag.optional,
   )
 
-  const initCommandLine = Command.make('init', { noInstall: noInstallFlag }, (parsed) =>
-    Effect.gen(function* () {
-      exitCode = yield* runInitCommand({ noInstall: parsed.noInstall }, runtime)
-    }),
+  const initCommandLine = Command.make(
+    'init',
+    { noInstall: noInstallFlag, dsh: dshFlag },
+    (parsed) =>
+      Effect.gen(function* () {
+        exitCode = yield* runInitCommand({ noInstall: parsed.noInstall, dsh: parsed.dsh }, runtime)
+      }),
   ).pipe(
     Command.withDescription(
       'create the XDG config project and install its dependencies (needs no DSH installation)',

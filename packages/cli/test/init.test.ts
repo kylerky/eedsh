@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
@@ -26,6 +27,8 @@ const tsconfigPath = `${configDir}/tsconfig.json`
 interface HarnessOptions {
   files?: Record<string, string>
   failInstall?: boolean
+  env?: Record<string, string | undefined>
+  failAnchorWrite?: boolean
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -33,9 +36,26 @@ function harness(options: HarnessOptions = {}) {
   const packages = fakePackageManager(options.failInstall === true ? { fail: true } : {})
   const out: string[] = []
   const err: string[] = []
+  const fileSystem =
+    options.failAnchorWrite === true
+      ? {
+          ...fs.fs,
+          writeFileString: (path: string, content: string) =>
+            path.startsWith('/dsh-home/.eedsh')
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: 'PermissionDenied',
+                    module: 'FileSystem',
+                    method: 'writeFileString',
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fs.fs.writeFileString(path, content),
+        }
+      : fs.fs
   const services = () =>
     Layer.mergeAll(
-      Layer.succeed(FileSystem.FileSystem, fs.fs),
+      Layer.succeed(FileSystem.FileSystem, fileSystem),
       Layer.succeed(PackageManager, packages.shape),
     )
   return {
@@ -44,7 +64,7 @@ function harness(options: HarnessOptions = {}) {
     out,
     err,
     options: {
-      env: { XDG_CONFIG_HOME: '/xdg' },
+      env: { XDG_CONFIG_HOME: '/xdg', ...options.env },
       stdout: (line: string) => out.push(line),
       stderr: (line: string) => err.push(line),
       initServices: services,
@@ -235,5 +255,132 @@ describe('init on a real filesystem', () => {
     })
     expect(code).toBe(0)
     expect((await stat(join(home, 'eedsh'))).mode & 0o077).toBe(0)
+  })
+})
+const anchorHome = '/dsh-home'
+const anchorPath = join(anchorHome, '.eedsh', 'installation.json')
+
+interface DshFixture {
+  readonly dir: string
+  readonly anchor: string
+  readonly version: string
+}
+
+async function writeDshFixture(version = '0.2.1-rc.2'): Promise<DshFixture> {
+  await mkdir(tempRoot, { recursive: true })
+  const dir = await mkdtemp(join(tempRoot, 'init-dsh-'))
+  await mkdir(join(dir, 'lib'), { recursive: true })
+  const anchor = join(dir, 'package.json')
+  await writeFile(
+    anchor,
+    JSON.stringify({ name: '@deepseek-ai/dsh', version, bin: { dsh: './lib/bin.js' } }, null, 2),
+  )
+  await writeFile(join(dir, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
+  return { dir, anchor, version }
+}
+
+function anchorJson(fixture: DshFixture): string {
+  return JSON.stringify(
+    { format: 1, installAnchor: fixture.anchor, version: fixture.version },
+    null,
+    2,
+  )
+}
+
+describe('init installation anchor', () => {
+  it('validates and records an explicit --dsh installation', async () => {
+    const fixture = await writeDshFixture()
+    const h = harness({ env: { DSH_HOME: anchorHome } })
+    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], h.options)
+    expect(code).toBe(0)
+    expect(h.fs.files.has(configPath)).toBe(true)
+    expect(h.fs.files.has(packagePath)).toBe(true)
+    expect(h.fs.files.has(tsconfigPath)).toBe(true)
+    const record = JSON.parse(h.fs.files.get(anchorPath) ?? '{}') as Record<string, unknown>
+    expect(record).toMatchObject({
+      format: 1,
+      installAnchor: fixture.anchor,
+      version: fixture.version,
+      recordedBy: 'init',
+    })
+    const manifest = json(h.fs.files.get(packagePath))
+    expect(Object.keys(manifest.devDependencies)).not.toContain('@deepseek-ai/dsh')
+    expect(h.fs.files.get(configPath)).not.toContain('.dsh(')
+    expect(h.text().out).toContain('recorded installation anchor')
+    expect(h.text().out).toContain(fixture.version)
+  })
+
+  it('reports an existing anchor without querying anything', async () => {
+    const fixture = await writeDshFixture('0.2.1-rc.5')
+    const h = harness({
+      env: { DSH_HOME: anchorHome },
+      files: { [anchorPath]: anchorJson(fixture) },
+    })
+    const code = await runEedsh(['init', '--no-install'], h.options)
+    expect(code).toBe(0)
+    expect(h.text().out).toContain('installation:')
+    expect(h.text().out).toContain(fixture.anchor)
+    expect(h.text().out).toContain(fixture.version)
+    expect(h.fs.files.get(anchorPath)).toBe(anchorJson(fixture))
+    expect(h.packages.installs).toEqual([])
+  })
+
+  it('succeeds without DSH and explains the first-sync bootstrap', async () => {
+    const h = harness({ env: { DSH_HOME: anchorHome } })
+    const code = await runEedsh(['init', '--no-install'], h.options)
+    expect(code).toBe(0)
+    expect(h.fs.files.has(configPath)).toBe(true)
+    expect(h.fs.files.has(anchorPath)).toBe(false)
+    expect(h.text().out).toContain('eedsh sync')
+    expect(h.text().out).toContain('pnpm')
+  })
+
+  it('rejects an invalid --dsh without writing the project', async () => {
+    const h = harness({ env: { DSH_HOME: anchorHome } })
+    const missing = join(tempRoot, 'missing-dsh')
+    const code = await runEedsh(['init', '--no-install', '--dsh', missing], h.options)
+    expect(code).toBe(1)
+    expect(h.fs.files.size).toBe(0)
+    expect(h.fs.createdDirectories).toEqual([])
+    expect(h.text().err).toContain('dsh.anchor_invalid')
+  })
+
+  it('keeps the project files and refreshes the anchor on a re-run', async () => {
+    const first = await writeDshFixture('0.2.1-rc.2')
+    const second = await writeDshFixture('0.2.1-rc.5')
+    const h = harness({ env: { DSH_HOME: anchorHome } })
+    expect(await runEedsh(['init', '--no-install', '--dsh', first.dir], h.options)).toBe(0)
+    const config = h.fs.files.get(configPath)
+    const manifest = h.fs.files.get(packagePath)
+    const tsconfig = h.fs.files.get(tsconfigPath)
+
+    expect(await runEedsh(['init', '--no-install', '--dsh', second.dir], h.options)).toBe(0)
+    expect(h.fs.files.get(configPath)).toBe(config)
+    expect(h.fs.files.get(packagePath)).toBe(manifest)
+    expect(h.fs.files.get(tsconfigPath)).toBe(tsconfig)
+    const record = JSON.parse(h.fs.files.get(anchorPath) ?? '{}') as Record<string, unknown>
+    expect(record.installAnchor).toBe(second.anchor)
+    expect(record.version).toBe(second.version)
+  })
+
+  it('keeps a usable project when the anchor write fails', async () => {
+    const fixture = await writeDshFixture()
+    const h = harness({
+      env: { DSH_HOME: anchorHome },
+      failAnchorWrite: true,
+    })
+    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], h.options)
+    expect(code).toBe(0)
+    expect(h.fs.files.has(configPath)).toBe(true)
+    expect(h.fs.files.has(packagePath)).toBe(true)
+    expect(h.fs.files.has(tsconfigPath)).toBe(true)
+    expect(h.fs.files.has(anchorPath)).toBe(false)
+    expect(h.text().err).toContain('cannot record the installation anchor')
+  })
+
+  it('lists --dsh in init --help', async () => {
+    const h = harness()
+    expect(await runEedsh(['init', '--help'], h.options)).toBe(0)
+    expect(h.text().out).toContain('--dsh')
   })
 })
