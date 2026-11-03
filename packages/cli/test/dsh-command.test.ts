@@ -557,6 +557,21 @@ describe('installation bootstrap boundaries', () => {
     expect(f.calls).toHaveLength(0)
   })
 
+  it('names the sync-once remedy when repl has no launcher and no anchor', async () => {
+    const home = await tempDir('eedsh-repl-nolauncher-home-')
+    const h = harness({ DSH_HOME: home, PATH: '' })
+    const code = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], {
+      ...h.options,
+      cwd: await tempDir('eedsh-repl-nolauncher-'),
+    })
+    expect(code).toBe(1)
+    const errors = h.text().err
+    expect(errors).toContain('dsh.not_found')
+    expect(errors).toContain('eedsh sync')
+    expect(errors).toContain('--dsh')
+    expect(errors).toContain('EEDSH_DSH_ANCHOR')
+  })
+
   it('rejects repl and run --no-sync without querying a package manager', async () => {
     const f = await fakeBootstrap()
     const repl = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], f.h.options)

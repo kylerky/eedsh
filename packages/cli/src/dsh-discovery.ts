@@ -285,7 +285,10 @@ export function discoverDshInstallation(
   return Result.fail(
     dshFailure({
       code: 'dsh.not_found',
-      message: `cannot find a ${DSH_PACKAGE_NAME} installation; install dsh with "npm install -g ${DSH_PACKAGE_NAME}", pass --dsh <path>, or set EEDSH_DSH_ANCHOR`,
+      message:
+        `cannot find a ${DSH_PACKAGE_NAME} installation; install dsh with "npm install -g ${DSH_PACKAGE_NAME}", ` +
+        'pass --dsh <path>, set EEDSH_DSH_ANCHOR, or run "eedsh sync" so a pnpm/npm global installation is ' +
+        'bootstrapped (booting an eedsh-managed profile once also records the installation anchor)',
     }),
   )
 }
