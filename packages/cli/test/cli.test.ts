@@ -8,6 +8,7 @@ import type { ConfigProvenance } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -25,6 +26,7 @@ import { preflightLayer } from '../src/preflight'
 import { delay, waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
+  fakeChildProcessSpawner,
   fakeDsh,
   fakePackageManager,
   fakePreflight,
@@ -141,6 +143,7 @@ function harness(options: HarnessOptions = {}) {
         ? preflightLayer.pipe(Layer.provide(dshLayer))
         : Layer.succeed(Preflight, preflight.shape),
       Layer.succeed(SyncLock, lock.shape),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
     )
   const out: string[] = []
   const err: string[] = []

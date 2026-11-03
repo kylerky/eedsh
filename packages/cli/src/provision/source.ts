@@ -106,6 +106,16 @@ export function sourceStatePath(home: string, key: string): string {
 }
 
 /**
+ * The profile dependency specification for one provisioned source: a link to
+ * the provisioned directory, written with forward slashes for portability.
+ * @param checkoutDir - the provisioned directory.
+ * @returns the link specification.
+ */
+export function sourceLinkSpec(checkoutDir: string): string {
+  return `link:${checkoutDir.replaceAll('\\', '/')}`
+}
+
+/**
  * The provision lock for one source key.
  * @param home - the absolute DSH home.
  * @param key - the source key.

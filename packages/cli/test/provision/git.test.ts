@@ -59,6 +59,14 @@ function fakeCommand(setup: { failStep?: number } = {}) {
 const checkoutDir = sourceCheckoutDir(home, sourceKey(defaults))
 const statePath = sourceStatePath(home, sourceKey(defaults))
 
+/** A valid provisioned package manifest and its main entry. */
+function gitFiles(): Record<string, string> {
+  return {
+    [`${checkoutDir}/package.json`]: JSON.stringify({ name, main: './lib/index.js' }),
+    [`${checkoutDir}/lib/index.js`]: 'export {}\n',
+  }
+}
+
 /** A record matching the default declaration, with optional overrides. */
 function recordOf(overrides: Partial<SourceRecord> = {}): string {
   return JSON.stringify({
@@ -75,7 +83,12 @@ function recordOf(overrides: Partial<SourceRecord> = {}): string {
 
 /** A file system already holding one provisioned checkout and record. */
 function seeded(overrides: Partial<SourceRecord> = {}) {
-  return memoryFileSystem({ [statePath]: recordOf(overrides) }, { directories: [checkoutDir] })
+  return memoryFileSystem(
+    { ...gitFiles(), [statePath]: recordOf(overrides) },
+    {
+      directories: [checkoutDir],
+    },
+  )
 }
 
 function provide(fs: ReturnType<typeof memoryFileSystem>) {
@@ -87,7 +100,7 @@ function provide(fs: ReturnType<typeof memoryFileSystem>) {
 
 function run(
   command: ProvisionCommand,
-  fs = memoryFileSystem(),
+  fs = memoryFileSystem(gitFiles()),
   declaration: PlanSource = defaults,
 ) {
   return provisionSource({ home, configDir, name, declaration, command }).pipe(
@@ -97,7 +110,7 @@ function run(
 
 describe('git source preparation', () => {
   it('runs the default steps in order with the checkout as the working directory', async () => {
-    const fs = memoryFileSystem()
+    const fs = memoryFileSystem(gitFiles())
     const fake = fakeCommand()
     const result = await Effect.runPromise(run(fake.command, fs))
 
@@ -134,7 +147,7 @@ describe('git source preparation', () => {
   })
 
   it('stops at a failing step and names the step and status', async () => {
-    const fs = memoryFileSystem()
+    const fs = memoryFileSystem(gitFiles())
     const fake = fakeCommand({ failStep: 0 })
     const failure = await failureOf(run(fake.command, fs))
 

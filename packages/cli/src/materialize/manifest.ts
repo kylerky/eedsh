@@ -26,6 +26,8 @@ export interface ReconcileManifestInput {
   runtimeSpec: string
   /** Dependency specification for `@eedsh/generated`. */
   generatedSpec: string
+  /** Dependency specifications derived for provisioned sources, keyed by package. */
+  sourceSpecs?: Readonly<Record<string, string>>
 }
 
 /** The reconciled manifest and the sets it declares. */
@@ -188,10 +190,16 @@ function reconcileBundles(input: ReconcileManifestInput): {
   return { bundles: [...managedBundles, ...userBundles], managedBundles }
 }
 
-/** Build the managed package map: plan packages plus the runtime and generated specs. */
+/**
+ * Build the managed package map: plan packages, the derived source
+ * specifications, and the runtime and generated specs. A derived source
+ * specification is managed exactly like an authored one, so a moved location
+ * rewrites it and a removed declaration removes it.
+ */
 function managedPackageSpecs(input: ReconcileManifestInput): Record<string, string> {
   return sortedRecord({
     ...input.plan.packages,
+    ...input.sourceSpecs,
     [RUNTIME_PACKAGE_NAME]: input.runtimeSpec,
     [GENERATED_PACKAGE_NAME]: input.generatedSpec,
   })

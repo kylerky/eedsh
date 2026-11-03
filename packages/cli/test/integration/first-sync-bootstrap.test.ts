@@ -13,6 +13,7 @@ import type { DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { runEedsh } from '../../src/cli'
@@ -24,6 +25,7 @@ import {
   SyncLock,
 } from '../../src/internal/effect/services'
 import {
+  fakeChildProcessSpawner,
   fakeDsh,
   fakePackageManager,
   fakePreflight,
@@ -94,6 +96,7 @@ describe('first-sync bootstrap integration', () => {
         Layer.succeed(DshInstallation, fakeDsh().shape),
         Layer.succeed(Preflight, fakePreflight().shape),
         Layer.succeed(SyncLock, fakeSyncLock().shape),
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
       )
     const out: string[] = []
     const err: string[] = []

@@ -24,6 +24,7 @@ function reconcile(
   options: {
     manifest?: Record<string, unknown>
     previous?: { bundles: readonly string[]; packages: Record<string, string> }
+    sourceSpecs?: Record<string, string>
   } = {},
 ) {
   return reconcileManifest({
@@ -33,6 +34,7 @@ function reconcile(
     previous: Option.fromUndefinedOr(options.previous),
     runtimeSpec,
     generatedSpec,
+    ...(options.sourceSpecs === undefined ? {} : { sourceSpecs: options.sourceSpecs }),
   })
 }
 
@@ -172,6 +174,45 @@ describe('manifest reconciliation', () => {
       '@eedsh/runtime': runtimeSpec,
       '@scope/plugin': '1.2.3',
     })
+  })
+
+  const SOURCE_NAME = '@scope/plugin'
+  const OLD_LINK = 'link:/dsh-home/.local/sources/plugin-old'
+  const NEW_LINK = 'link:/dsh-home/.local/sources/plugin-new'
+
+  it('declares a derived source link specification as a managed dependency', () => {
+    const result = reconcile(plan([bundle(BUNDLE)]), {
+      sourceSpecs: { [SOURCE_NAME]: NEW_LINK },
+    })
+    expect(result.managedPackages[SOURCE_NAME]).toBe(NEW_LINK)
+    expect(result.dependencies[SOURCE_NAME]).toBe(NEW_LINK)
+    expect(result.manifest.dependencies).toMatchObject({ [SOURCE_NAME]: NEW_LINK })
+  })
+
+  it('rewrites the manifest when the provisioned location changes', () => {
+    const result = reconcile(plan([bundle(BUNDLE)]), {
+      manifest: { dependencies: { [SOURCE_NAME]: OLD_LINK } },
+      previous: {
+        bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'],
+        packages: { [SOURCE_NAME]: OLD_LINK },
+      },
+      sourceSpecs: { [SOURCE_NAME]: NEW_LINK },
+    })
+    expect(result.dependencies[SOURCE_NAME]).toBe(NEW_LINK)
+    expect(result.manifest.dependencies).toMatchObject({ [SOURCE_NAME]: NEW_LINK })
+  })
+
+  it('removes a source dependency that is no longer declared', () => {
+    const result = reconcile(plan([bundle(BUNDLE)]), {
+      manifest: { dependencies: { [SOURCE_NAME]: OLD_LINK } },
+      previous: {
+        bundles: [BUNDLE, '@eedsh/runtime', '@eedsh/generated'],
+        packages: { [SOURCE_NAME]: OLD_LINK },
+      },
+      sourceSpecs: {},
+    })
+    expect(result.dependencies).not.toHaveProperty(SOURCE_NAME)
+    expect(result.manifest.dependencies).not.toHaveProperty(SOURCE_NAME)
   })
 
   it('exposes an empty notice list for a first reconciliation', () => {

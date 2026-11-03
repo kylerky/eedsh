@@ -6,6 +6,7 @@ import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
@@ -21,6 +22,7 @@ import {
 import { delay, waitFor } from './support/async'
 import { devDshInstallation } from './support/bridge'
 import {
+  fakeChildProcessSpawner,
   fakeDsh,
   fakePackageManager,
   fakePreflight,
@@ -47,6 +49,7 @@ function harness(env: Record<string, string | undefined>, options: Record<string
       Layer.succeed(DshInstallation, dsh.shape),
       Layer.succeed(Preflight, preflight.shape),
       Layer.succeed(SyncLock, lock.shape),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
     )
   const out: string[] = []
   const err: string[] = []

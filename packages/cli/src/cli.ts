@@ -20,6 +20,7 @@ import { CliError, Command, Flag } from 'effect/cli'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import type * as PlatformError from 'effect/PlatformError'
+import type { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
@@ -79,6 +80,7 @@ import { readVersion } from './internal/schema-readers'
 import { describeInvalidRecord } from './materialize/generation-record'
 import { type MaterializeResult, materialize } from './materialize/program'
 import { preflightLayer } from './preflight'
+import { provisionPlanSources } from './provision/plan'
 import { runReplLoop } from './repl/prompt'
 import { ReplSession } from './repl/session'
 import {
@@ -99,6 +101,7 @@ type CliService =
   | DshInstallationShape
   | PreflightShape
   | SyncLockShape
+  | ChildProcessSpawner.ChildProcessSpawner
 
 /** A layer providing every CLI service. */
 export type CliServiceLayer = Layer.Layer<CliService, DshResolveFailure, never>
@@ -388,7 +391,14 @@ function programFor(
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
   return Effect.gen(function* () {
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
-    return yield* materialize({
+    // Provision declared sources before reconciliation so the derived link
+    // specifications take part in the same managed dependency decision.
+    const provisioned = yield* provisionPlanSources({
+      home: resolveDshHome(undefined, env),
+      configDir,
+      plan,
+    })
+    const result = yield* materialize({
       plan,
       profileDir: profileDirFor(plan, env),
       eedshVersion: cliVersion(),
@@ -399,7 +409,9 @@ function programFor(
       adoptOwnership,
       ...(provenance === undefined ? {} : { provenance }),
       configDir,
+      sourceSpecs: provisioned.specs,
     })
+    return { ...result, warnings: [...provisioned.warnings, ...result.warnings] }
   })
 }
 

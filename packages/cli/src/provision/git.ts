@@ -28,6 +28,7 @@ import {
   sourceKey,
   sourceStatePath,
 } from './source'
+import { verifyProvisionedPackage } from './verify'
 
 /** A command failure naming the argv, the directory, and the status. */
 function commandFailure(input: {
@@ -229,7 +230,7 @@ function provisionLocal(input: {
 }): Effect.Effect<
   ProvisionedSource,
   ProvisionFailure | PlatformError.PlatformError,
-  ChildProcessSpawner.ChildProcessSpawner
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
 > {
   return Effect.gen(function* () {
     if (!(yield* input.fs.exists(input.location))) {
@@ -259,6 +260,7 @@ function provisionLocal(input: {
       }
       yield* writeSourceRecord(input.fs, input.statePath, record)
     }
+    yield* verifyProvisionedPackage({ name: input.name, packageDir: input.location })
     return {
       name: input.name,
       key: input.key,
@@ -372,6 +374,7 @@ export function provisionSource(
       })
       prepared = true
     }
+    yield* verifyProvisionedPackage({ name: input.name, packageDir: checkoutDir })
 
     const changed = fresh || commitChanged || prepared
     if (changed || record === undefined) {

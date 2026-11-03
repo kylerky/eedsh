@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
@@ -23,6 +24,7 @@ import { preflightLayer } from '../src/preflight'
 import { waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
+  fakeChildProcessSpawner,
   fakeDsh,
   fakePackageManager,
   fakePreflight,
@@ -61,6 +63,7 @@ function harness(options: HarnessOptions = {}) {
         ? preflightLayer.pipe(Layer.provide(dshLayer))
         : Layer.succeed(Preflight, preflight.shape),
       Layer.succeed(SyncLock, lock.shape),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
     )
   const out: string[] = []
   const err: string[] = []

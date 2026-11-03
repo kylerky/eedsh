@@ -69,6 +69,8 @@ export interface MaterializeOptions {
   provenance?: ConfigProvenance
   /** Absolute directory of the evaluated config file, for relative sites. */
   configDir?: string
+  /** Dependency specifications derived for provisioned sources. */
+  sourceSpecs?: Readonly<Record<string, string>>
 }
 
 /** What a materialization run did. */
@@ -260,6 +262,7 @@ export function materialize(
         generatedSpec: options.generatedSpec,
         manifest: existingManifest,
         previous: baseline.previous,
+        ...(options.sourceSpecs === undefined ? {} : { sourceSpecs: options.sourceSpecs }),
       }
       const reconciled = reconcileManifest(reconcileInput)
       const generated = buildGeneratedBundle({

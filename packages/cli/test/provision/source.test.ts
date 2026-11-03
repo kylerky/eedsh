@@ -4,6 +4,7 @@ import {
   sourceAcquisitionKind,
   sourceCheckoutDir,
   sourceKey,
+  sourceLinkSpec,
   sourceLockPath,
   sourceStatePath,
 } from '../../src/provision/source'
@@ -111,6 +112,15 @@ describe('source identity', () => {
     ]) {
       expect(sourceKey({ from })).toMatch(/^(bundle|acme-bundle)-[0-9a-f]{16}$/)
     }
+  })
+
+  it('writes the profile link specification with forward slashes', () => {
+    expect(sourceLinkSpec('/dsh-home/.local/sources/plugin-abc')).toBe(
+      'link:/dsh-home/.local/sources/plugin-abc',
+    )
+    expect(sourceLinkSpec('C:\\dsh-home\\sources\\plugin-abc')).toBe(
+      'link:C:/dsh-home/sources/plugin-abc',
+    )
   })
 
   it('places checkouts, state, and locks below the DSH home .local directory', () => {
