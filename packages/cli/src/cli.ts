@@ -10,7 +10,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
-import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import type { ConfigProvenance } from '@eedsh/config'
 import { isSafeProfileName, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -43,6 +42,7 @@ import {
   runInit,
 } from './init'
 import { presetDefinitionErrorLines } from './internal/authoring-error'
+import { resolveDshHome, resolveProfileDir } from './internal/dsh-home'
 import {
   type CheckFailure,
   type DshResolveFailure,
@@ -326,8 +326,7 @@ export function defaultServices(): CliServiceLayer {
 }
 
 function profileDirForName(name: string, env: Record<string, string | undefined>): string {
-  const home = env.DSH_HOME
-  return home === undefined || home === '' ? resolveProfileDir(name) : resolveProfileDir(name, home)
+  return resolveProfileDir(name, resolveDshHome(undefined, env))
 }
 
 function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {

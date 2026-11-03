@@ -4,7 +4,7 @@
  * plan that cannot compose never becomes the published profile.
  * @module @eedsh/cli/preflight
  */
-import { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
+import { entryListSchema } from './materialize/yaml-schema'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import type { AuthoringSite, PatchGroupProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
@@ -20,6 +20,9 @@ import {
 } from './internal/effect/services'
 import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
+
+/** One composition layer as the selected DSH's composer accepts it. */
+type ComposeLayer = Parameters<typeof composeEntries>[0][number]
 
 /** The recorded identity of one generated patch group. */
 export interface GeneratedGroup {
@@ -136,7 +139,7 @@ function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
 function composeWarnings(patches: readonly Record<string, unknown>[]): string[] {
   if (patches.length === 0) return []
   const warnings: string[] = []
-  composeEntries([patches as PatchOptions[]], (message) => warnings.push(message))
+  composeEntries([patches as unknown as ComposeLayer], (message) => warnings.push(message))
   return warnings
 }
 
@@ -150,7 +153,7 @@ function composeWarnings(patches: readonly Record<string, unknown>[]): string[] 
 export function composePreflightLayers(layers: readonly PreflightLayer[]): PreflightComposition {
   const warnings: string[] = []
   const entries = composeEntries(
-    layers.map((layer) => layer.patches as PatchOptions[]),
+    layers.map((layer) => layer.patches as unknown as ComposeLayer),
     (message) => warnings.push(message),
   ) as unknown as Record<string, unknown>[]
 

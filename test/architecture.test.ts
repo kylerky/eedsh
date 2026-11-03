@@ -61,7 +61,8 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * preview installs), the exploration views report an invalid plan lookup as a
  * tagged session failure, and completion contains failing catalog or evaluator
  * lookups so Tab never ends the session; all convert those failures to
- * printable session state.
+ * printable session state. The local DSH path boundary throws for a profile
+ * name that cannot be a directory, before any filesystem work.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
@@ -73,6 +74,7 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/repl/prompt.ts',
   'packages/cli/src/repl/session.ts',
   'packages/cli/src/repl/views.ts',
+  'packages/cli/src/internal/dsh-home.ts',
 ])
 
 /** JavaScript exception control flow in one source text. */

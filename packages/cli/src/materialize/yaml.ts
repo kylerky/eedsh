@@ -4,7 +4,7 @@
  * Loader's patch parser instead of being string-concatenated.
  * @module @eedsh/cli/materialize/yaml
  */
-import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
+import { entryListSchema } from './yaml-schema'
 import type { PlanPatch } from '@eedsh/plan'
 import * as yaml from 'js-yaml'
 

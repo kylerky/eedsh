@@ -11,7 +11,6 @@ import type { REPLServer } from 'node:repl'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
-import { resolveProfileDir } from '@deepseek-ai/dsh-app-boot'
 import { type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -25,6 +24,7 @@ import {
 import { type DoctorResult, doctor } from '../doctor'
 import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
 import { presetDefinitionErrorLines } from '../internal/authoring-error'
+import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
@@ -425,10 +425,7 @@ async function createEvaluator(): Promise<{
 }
 
 function profileDirectory(name: string, env: Record<string, string | undefined>): string {
-  const home = env.DSH_HOME
-  return home === undefined || home.trim() === ''
-    ? resolveProfileDir(name)
-    : resolveProfileDir(name, home)
+  return resolveProfileDir(name, resolveDshHome(undefined, env))
 }
 
 async function defaultDoctor(profileDir: string): Promise<DoctorResult> {

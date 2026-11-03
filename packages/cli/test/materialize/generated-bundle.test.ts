@@ -212,7 +212,7 @@ describe('generated bundle', () => {
 describe('yaml emission', () => {
   it('emits expressions as !!js scalars that survive a DSH patch parse', async () => {
     const yaml = await import('js-yaml')
-    const { entryListSchema } = await import('@deepseek-ai/cordis-plugin-include')
+    const { entryListSchema } = await import('../../src/materialize/yaml-schema')
     const text = emitPatchesYaml([
       {
         insert: [
@@ -242,7 +242,7 @@ describe('yaml emission', () => {
 describe('preset expression emission', () => {
   it('emits nested preset child expressions that survive the DSH patch parse', async () => {
     const yaml = await import('js-yaml')
-    const { entryListSchema } = await import('@deepseek-ai/cordis-plugin-include')
+    const { entryListSchema } = await import('../../src/materialize/yaml-schema')
     const plan = planOf({
       name: 'work',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],

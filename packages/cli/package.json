@@ -17,9 +17,7 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@deepseek-ai/cordis-plugin-include": "1.0.10",
     "@effect/platform-node": "4.0.6",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.6",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
     "@deepseek-ai/node-addon-system": "0.1.2",
