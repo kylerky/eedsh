@@ -1,19 +1,36 @@
 /**
  * Discovery of the user's DSH installation. One installation is selected per
  * invocation by explicit precedence: `--dsh`, `EEDSH_DSH_ANCHOR`, the `dsh`
- * launcher on `PATH`, then a project-local package. Discovery is synchronous
- * so commands can select the installation before config evaluation.
+ * launcher on `PATH`, the recorded installation anchor, then a project-local
+ * package. A PATH launcher that cannot be resolved fails instead of silently
+ * selecting a different installation. Discovery is synchronous so commands can
+ * select the installation before config evaluation. It never queries pnpm or npm
+ * and never parses launcher shims; the recorded anchor is validated on every
+ * read and guarded by one bounded `dsh --version` probe.
  * @module @eedsh/cli/dsh-discovery
  */
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { delimiter, dirname, join } from 'node:path'
+import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import * as Result from 'effect/Result'
+import { defaultCommandRunner, probeLauncherVersion } from './command-runner'
 import type { DshInstallationInfo } from './dsh'
 import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
-import { DshFailure } from './internal/effect/errors'
+import {
+  DSH_PACKAGE_NAME,
+  dshFailure,
+  installationFromManifestAnchor,
+  installationFromSelection,
+  launcherUnresolvedFailure,
+  readInstallationAnchorSnapshot,
+  readPackageManifest,
+  type ValidatedInstallation,
+  validateRecordedInstallation,
+} from './installation-anchor'
+import type { DshFailure } from './internal/effect/errors'
 
 /** How the selected installation was discovered. */
-export type DshSource = 'explicit' | 'anchor' | 'path' | 'project'
+export type DshSource = 'explicit' | 'anchor' | 'path' | 'recorded' | 'project'
 
 /** A selected DSH installation and where discovery found it. */
 export interface DiscoveredDshInstallation extends DshInstallationInfo {
@@ -33,130 +50,23 @@ export interface DiscoverDshOptions {
   readonly env?: Record<string, string | undefined> | undefined
   /** Directory for project-local resolution; defaults to the working directory. */
   readonly cwd?: string | undefined
+  /** Replace the recorded-anchor read; defaults to the DSH home record. */
+  readonly readAnchor?: (() => InstallationAnchor | undefined) | undefined
+  /** Replace the bounded `dsh --version` guard; defaults to the real probe. */
+  readonly probeVersion?: ((launcher: string) => string | undefined) | undefined
 }
 
-const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'
-const DSH_LAUNCHER = join('lib', 'bin.js')
 const DEFAULT_PATH_EXTENSIONS = ['.COM', '.EXE', '.BAT', '.CMD']
 
-function failure(input: {
-  code: ConstructorParameters<typeof DshFailure>[0]['code']
-  message: string
-  path?: string
-  version?: string
-  range?: string
-  capability?: string
-  cause?: unknown
-}): DshFailure {
-  return new DshFailure({
-    code: input.code,
-    message: input.message,
-    ...(input.path === undefined ? {} : { path: input.path }),
-    ...(input.version === undefined ? {} : { version: input.version }),
-    ...(input.range === undefined ? {} : { range: input.range }),
-    ...(input.capability === undefined ? {} : { capability: input.capability }),
-    ...(input.cause === undefined ? {} : { cause: input.cause }),
-  })
-}
-
-interface Manifest {
-  readonly name?: unknown
-  readonly version?: unknown
-  readonly bin?: unknown
-}
-
-function readManifest(anchor: string): Manifest | undefined {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(anchor, 'utf8'))
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return parsed as Manifest
-  } catch {
-    return undefined
-  }
-}
-
-function installationFromAnchor(
-  anchor: string,
+function selectedInstallation(
+  installation: ValidatedInstallation,
   source: DshSource,
-  pathShown: string,
-): Result.Result<DiscoveredDshInstallation, DshFailure> {
-  let physical = anchor
-  try {
-    physical = realpathSync(anchor)
-  } catch {
-    physical = anchor
-  }
-  const manifest = readManifest(physical)
-  if (manifest === undefined) {
-    return Result.fail(
-      failure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `cannot read a DSH manifest at ${pathShown}: expected a package.json`,
-      }),
-    )
-  }
-  if (manifest.name !== DSH_PACKAGE_NAME) {
-    return Result.fail(
-      failure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `${pathShown} is not a ${DSH_PACKAGE_NAME} package (found ${JSON.stringify(manifest.name)})`,
-      }),
-    )
-  }
-  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
-    return Result.fail(
-      failure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `${pathShown} declares no DSH version`,
-      }),
-    )
-  }
-  const packageDir = dirname(physical)
-  const binPath = join(packageDir, DSH_LAUNCHER)
-  return Result.succeed({
-    version: manifest.version,
-    installAnchor: physical,
-    packageDir,
-    binPath,
-    launcher: binPath,
+): DiscoveredDshInstallation {
+  return {
+    ...installation,
     source,
-  })
-}
-
-function installationFromPath(
-  input: string,
-  source: DshSource,
-  cwd: string,
-): Result.Result<DiscoveredDshInstallation, DshFailure> {
-  const absolute = isAbsolute(input) ? input : resolve(cwd, input)
-  let anchor: string
-  try {
-    const stats = statSync(absolute)
-    if (stats.isDirectory()) anchor = join(absolute, 'package.json')
-    else if (basename(absolute) === 'package.json') anchor = absolute
-    else {
-      return Result.fail(
-        failure({
-          code: 'dsh.anchor_invalid',
-          path: input,
-          message: `${input} is not a DSH package directory or package.json`,
-        }),
-      )
-    }
-  } catch (cause) {
-    return Result.fail(
-      failure({
-        code: 'dsh.anchor_invalid',
-        path: input,
-        message: `cannot read the DSH installation at ${input}`,
-        cause,
-      }),
-    )
+    launcher: installation.binPath,
   }
-  return installationFromAnchor(anchor, source, input)
 }
 
 /** Candidate launcher names for one base name, honoring PATHEXT. */
@@ -185,7 +95,7 @@ function packageAnchorForLauncher(launcher: string): string | undefined {
   while (true) {
     const anchor = join(current, 'package.json')
     if (existsSync(anchor)) {
-      const manifest = readManifest(anchor)
+      const manifest = readPackageManifest(anchor)
       if (manifest?.name === DSH_PACKAGE_NAME) return anchor
     }
     const parent = dirname(current)
@@ -194,9 +104,7 @@ function packageAnchorForLauncher(launcher: string): string | undefined {
   }
 }
 
-function installationFromPathLauncher(
-  launcher: string,
-): Result.Result<DiscoveredDshInstallation, DshFailure> | undefined {
+function installationFromPathLauncher(launcher: string): DiscoveredDshInstallation | undefined {
   let real: string
   try {
     real = realpathSync(launcher)
@@ -205,35 +113,110 @@ function installationFromPathLauncher(
   }
   const anchor = packageAnchorForLauncher(real)
   if (anchor === undefined) return undefined
-  const resolved = installationFromAnchor(anchor, 'path', launcher)
-  if (Result.isFailure(resolved)) return resolved
-  return Result.succeed({ ...resolved.success, binPath: real, launcher: real })
+  const resolved = installationFromManifestAnchor(anchor, launcher)
+  if (Result.isFailure(resolved)) return undefined
+  return {
+    ...resolved.success,
+    source: 'path',
+    binPath: real,
+    launcher: real,
+  }
 }
 
-function discoverFromPath(
-  env: Record<string, string | undefined>,
-): Result.Result<DiscoveredDshInstallation, DshFailure> | undefined {
+interface PathScan {
+  readonly launcher: string
+  readonly installation?: DiscoveredDshInstallation | undefined
+}
+
+function discoverFromPath(env: Record<string, string | undefined>): PathScan | undefined {
   const directories = (env.PATH ?? '').split(delimiter).filter((entry) => entry.length > 0)
+  let firstLauncher: string | undefined
   for (const directory of directories) {
     for (const name of launcherNames('dsh', env)) {
       const candidate = join(directory, name)
       if (!existsSync(candidate)) continue
+      firstLauncher ??= candidate
       const resolved = installationFromPathLauncher(candidate)
-      if (resolved !== undefined && Result.isSuccess(resolved)) return resolved
+      if (resolved !== undefined) return { launcher: candidate, installation: resolved }
     }
   }
-  return undefined
+  if (firstLauncher === undefined) return undefined
+  return { launcher: firstLauncher }
 }
 
-function discoverFromProject(
-  cwd: string,
-): Result.Result<DiscoveredDshInstallation, DshFailure> | undefined {
-  let current = resolve(cwd)
+function realpathOr(value: string): string {
+  try {
+    return realpathSync(value)
+  } catch {
+    return value
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = realpathOr(left)
+  const b = realpathOr(right)
+  if (process.platform === 'win32') return a.toLowerCase() === b.toLowerCase()
+  return a === b
+}
+
+interface RecordedResolution {
+  readonly installation?: DiscoveredDshInstallation | undefined
+  readonly reason?: string | undefined
+}
+
+/**
+ * Validate a recorded anchor and, when a PATH launcher exists, require the
+ * record to describe that launcher and its `dsh --version`.
+ */
+function resolveRecordedAnchor(input: {
+  record: InstallationAnchor
+  pathLauncher: string | undefined
+  probeVersion: (launcher: string) => string | undefined
+}): RecordedResolution {
+  const validated = validateRecordedInstallation(input.record)
+  if (Result.isFailure(validated)) return { reason: validated.failure.message }
+  const installation = validated.success
+  const pathLauncher = input.pathLauncher
+  if (pathLauncher !== undefined) {
+    if (input.record.launcher !== undefined && !samePath(input.record.launcher, pathLauncher)) {
+      return {
+        reason:
+          `the recorded anchor names launcher ${input.record.launcher} but PATH resolves ` +
+          `${pathLauncher}; the record no longer matches this installation`,
+      }
+    }
+    const probed = input.probeVersion(pathLauncher)
+    if (probed === undefined) {
+      return { reason: `cannot determine the version of ${pathLauncher} with "dsh --version"` }
+    }
+    if (probed !== installation.version) {
+      return {
+        reason:
+          `"dsh --version" reported ${probed} but the recorded installation is ` +
+          `${installation.version} at ${installation.installAnchor}`,
+      }
+    }
+  }
+  const launcher = pathLauncher ?? input.record.launcher ?? installation.binPath
+  return {
+    installation: {
+      ...installation,
+      source: 'recorded',
+      launcher: realpathOr(launcher),
+    },
+  }
+}
+
+function discoverFromProject(cwd: string): DiscoveredDshInstallation | undefined {
+  let current = cwd
   while (true) {
     const anchor = join(current, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
     if (existsSync(anchor)) {
-      const resolved = installationFromAnchor(anchor, 'project', anchor)
-      return Result.isSuccess(resolved) ? resolved : undefined
+      const resolved = installationFromManifestAnchor(anchor, anchor)
+      if (Result.isSuccess(resolved)) {
+        return selectedInstallation(resolved.success, 'project')
+      }
+      return undefined
     }
     const parent = dirname(current)
     if (parent === current) return undefined
@@ -243,9 +226,11 @@ function discoverFromProject(
 
 /**
  * Discover one DSH installation with explicit precedence. An invalid explicit
- * selection or anchor fails instead of falling through, so a typo never
- * silently selects a different installation.
- * @param options - explicit path, environment, and working directory.
+ * selection or `EEDSH_DSH_ANCHOR` fails instead of falling through, so a typo
+ * never silently selects a different installation. A PATH launcher that neither
+ * direct resolution nor a valid recorded anchor resolves produces
+ * `dsh.launcher_unresolved` and does not fall through to a project-local copy.
+ * @param options - explicit path, environment, working directory, and seams.
  * @returns the selected installation, or a tagged discovery failure.
  */
 export function discoverDshInstallation(
@@ -254,18 +239,51 @@ export function discoverDshInstallation(
   const env = options.env ?? process.env
   const cwd = options.cwd ?? process.cwd()
   if (options.explicit !== undefined && options.explicit.trim() !== '') {
-    return installationFromPath(options.explicit, 'explicit', cwd)
+    const selection = installationFromSelection(options.explicit, cwd)
+    return Result.isFailure(selection)
+      ? Result.fail(selection.failure)
+      : Result.succeed(selectedInstallation(selection.success, 'explicit'))
   }
   const anchor = env.EEDSH_DSH_ANCHOR
   if (anchor !== undefined && anchor.trim() !== '') {
-    return installationFromPath(anchor, 'anchor', cwd)
+    const selection = installationFromSelection(anchor, cwd)
+    return Result.isFailure(selection)
+      ? Result.fail(selection.failure)
+      : Result.succeed(selectedInstallation(selection.success, 'anchor'))
   }
-  const fromPath = discoverFromPath(env)
-  if (fromPath !== undefined) return fromPath
+
+  const pathScan = discoverFromPath(env)
+  if (pathScan?.installation !== undefined) return Result.succeed(pathScan.installation)
+
+  const readAnchor = options.readAnchor ?? (() => readInstallationAnchorSnapshot(env).record)
+  let record: InstallationAnchor | undefined
+  try {
+    record = readAnchor()
+  } catch {
+    record = undefined
+  }
+  const probeVersion =
+    options.probeVersion ??
+    ((launcher: string) => probeLauncherVersion(defaultCommandRunner, launcher))
+  const recorded =
+    record === undefined
+      ? {}
+      : resolveRecordedAnchor({
+          record,
+          pathLauncher: pathScan?.launcher,
+          probeVersion,
+        })
+  if (recorded.installation !== undefined) return Result.succeed(recorded.installation)
+
+  if (pathScan !== undefined) {
+    return Result.fail(launcherUnresolvedFailure(pathScan.launcher, recorded.reason))
+  }
+
   const fromProject = discoverFromProject(cwd)
-  if (fromProject !== undefined) return fromProject
+  if (fromProject !== undefined) return Result.succeed(fromProject)
+
   return Result.fail(
-    failure({
+    dshFailure({
       code: 'dsh.not_found',
       message: `cannot find a ${DSH_PACKAGE_NAME} installation; install dsh with "npm install -g ${DSH_PACKAGE_NAME}", pass --dsh <path>, or set EEDSH_DSH_ANCHOR`,
     }),
@@ -282,7 +300,7 @@ export function validateDshVersion(
 ): Result.Result<DiscoveredDshInstallation, DshFailure> {
   if (supportsDshVersion(installation.version)) return Result.succeed(installation)
   return Result.fail(
-    failure({
+    dshFailure({
       code: 'dsh.unsupported_version',
       version: installation.version,
       range: SUPPORTED_DSH_RANGE,

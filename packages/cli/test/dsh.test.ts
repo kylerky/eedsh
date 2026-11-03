@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
@@ -48,6 +49,27 @@ async function tempDir(prefix: string): Promise<string> {
 function failureOf(result: Result.Result<unknown, DshFailure>): DshFailure {
   if (Result.isSuccess(result)) throw new Error('expected discovery to fail')
   return result.failure
+}
+
+function recordedAnchor(
+  installation: InstallationFixture,
+  extras: Partial<InstallationAnchor> = {},
+): InstallationAnchor {
+  return {
+    format: 1,
+    installAnchor: installation.anchor,
+    version: installation.version,
+    ...extras,
+  }
+}
+
+/** A launcher that is a regular file, like a pnpm-generated shim. */
+async function unmappableLauncher(parent: string): Promise<{ dir: string; launcher: string }> {
+  const dir = join(parent, 'bin')
+  await mkdir(dir, { recursive: true })
+  const launcher = join(dir, 'dsh')
+  await writeFile(launcher, '#!/bin/sh\nexec dsh "$@"\n')
+  return { dir, launcher }
 }
 
 const require = createRequire(import.meta.url)
@@ -243,5 +265,213 @@ describe('DSH version validation', () => {
     expect(failure.range).toBe(SUPPORTED_DSH_RANGE)
     expect(failure.message).toContain('0.3.0')
     expect(failure.message).toContain(SUPPORTED_DSH_RANGE)
+  })
+})
+
+describe('recorded installation anchor', () => {
+  it('resolves an unmappable pnpm shim through a valid recorded anchor', async () => {
+    const rootDir = await tempDir('discovery-recorded-')
+    const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
+    const bin = await unmappableLauncher(rootDir)
+    const record = recordedAnchor(installation, { launcher: bin.launcher, manager: 'pnpm' })
+    const probes: string[] = []
+    const result = discoverDshInstallation({
+      env: { PATH: bin.dir },
+      cwd: rootDir,
+      readAnchor: () => record,
+      probeVersion: (launcher) => {
+        probes.push(launcher)
+        return '0.2.1-rc.2'
+      },
+    })
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.version).toBe('0.2.1-rc.2')
+    expect(result.success.source).toBe('recorded')
+    expect(result.success.installAnchor).toBe(installation.anchor)
+    expect(result.success.packageDir).toBe(installation.dir)
+    expect(result.success.binPath).toBe(installation.bin)
+    expect(probes).toEqual([bin.launcher])
+  })
+
+  it('keeps --dsh and EEDSH_DSH_ANCHOR ahead of the record', async () => {
+    const rootDir = await tempDir('discovery-recorded-explicit-')
+    const explicit = await writeInstallation(rootDir, 'explicit', '0.2.1-rc.2')
+    const envAnchor = await writeInstallation(rootDir, 'env-anchor', '0.2.1-rc.5')
+    const recorded = await writeInstallation(rootDir, 'recorded', '0.2.2-alpha.2')
+    const bin = await unmappableLauncher(rootDir)
+    const record = recordedAnchor(recorded, { launcher: bin.launcher })
+    const probe = () => {
+      throw new Error('the record must not be probed when an explicit selection wins')
+    }
+
+    const withExplicit = discoverDshInstallation({
+      explicit: explicit.dir,
+      env: { PATH: bin.dir, EEDSH_DSH_ANCHOR: envAnchor.anchor },
+      cwd: rootDir,
+      readAnchor: () => record,
+      probeVersion: probe,
+    })
+    if (Result.isFailure(withExplicit)) throw withExplicit.failure
+    expect(withExplicit.success.source).toBe('explicit')
+    expect(withExplicit.success.version).toBe('0.2.1-rc.2')
+
+    const withEnvAnchor = discoverDshInstallation({
+      env: { PATH: bin.dir, EEDSH_DSH_ANCHOR: envAnchor.anchor },
+      cwd: rootDir,
+      readAnchor: () => record,
+      probeVersion: probe,
+    })
+    if (Result.isFailure(withEnvAnchor)) throw withEnvAnchor.failure
+    expect(withEnvAnchor.success.source).toBe('anchor')
+    expect(withEnvAnchor.success.version).toBe('0.2.1-rc.5')
+  })
+
+  it('uses the record without a PATH launcher and never probes', async () => {
+    const rootDir = await tempDir('discovery-recorded-nopath-')
+    const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
+    let probes = 0
+    const result = discoverDshInstallation({
+      env: {},
+      cwd: rootDir,
+      readAnchor: () => recordedAnchor(installation),
+      probeVersion: () => {
+        probes += 1
+        return '0.2.1-rc.2'
+      },
+    })
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.source).toBe('recorded')
+    expect(probes).toBe(0)
+  })
+
+  it('ignores a stale record and fails the launcher without project fallback', async () => {
+    const rootDir = await tempDir('discovery-recorded-stale-')
+    const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
+    const project = join(rootDir, 'project')
+    await writeInstallation(join(project, 'node_modules', '@deepseek-ai'), 'dsh', '0.2.1-rc.2')
+    const bin = await unmappableLauncher(rootDir)
+    const record = recordedAnchor(installation, { launcher: join(rootDir, 'elsewhere', 'dsh') })
+    let probes = 0
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: project,
+        readAnchor: () => record,
+        probeVersion: () => {
+          probes += 1
+          return '0.2.1-rc.2'
+        },
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+    expect(failure.path).toBe(bin.launcher)
+    expect(failure.message).toContain(bin.launcher)
+    expect(failure.message).toContain('pnpm')
+    expect(failure.message).toContain('npm')
+    expect(failure.message).toContain('--dsh')
+    expect(failure.message).toContain('EEDSH_DSH_ANCHOR')
+    expect(failure.message).toContain('eedsh sync')
+    expect(probes).toBe(0)
+  })
+
+  it('ignores a record whose package no longer exists', async () => {
+    const rootDir = await tempDir('discovery-recorded-missing-')
+    const bin = await unmappableLauncher(rootDir)
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: rootDir,
+        readAnchor: () => ({
+          format: 1,
+          installAnchor: join(rootDir, 'gone', 'package.json'),
+          version: '0.2.1-rc.2',
+        }),
+        probeVersion: () => '0.2.1-rc.2',
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+    expect(failure.message).toContain('pnpm and npm only')
+  })
+
+  it('does not fall through to a project package when a PATH launcher is unresolved', async () => {
+    const rootDir = await tempDir('discovery-recorded-nofallback-')
+    await writeInstallation(join(rootDir, 'node_modules', '@deepseek-ai'), 'dsh', '0.2.1-rc.2')
+    const bin = await unmappableLauncher(rootDir)
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: rootDir,
+        readAnchor: () => undefined,
+        probeVersion: () => undefined,
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+  })
+
+  it('keeps project-local as the last fallback when no launcher and no record exist', async () => {
+    const rootDir = await tempDir('discovery-recorded-project-')
+    await writeInstallation(join(rootDir, 'node_modules', '@deepseek-ai'), 'dsh', '0.2.1-rc.2')
+    const result = discoverDshInstallation({
+      env: {},
+      cwd: rootDir,
+      readAnchor: () => undefined,
+      probeVersion: () => {
+        throw new Error('no launcher exists to probe')
+      },
+    })
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.source).toBe('project')
+  })
+
+  it('rejects the record when dsh --version differs', async () => {
+    const rootDir = await tempDir('discovery-recorded-mismatch-')
+    const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
+    const bin = await unmappableLauncher(rootDir)
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: rootDir,
+        readAnchor: () => recordedAnchor(installation, { launcher: bin.launcher }),
+        probeVersion: () => '0.2.1-rc.5',
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+    expect(failure.message).toContain('0.2.1-rc.5')
+    expect(failure.message).toContain('0.2.1-rc.2')
+  })
+
+  it('rejects the record when the launcher probe fails', async () => {
+    const rootDir = await tempDir('discovery-recorded-probefail-')
+    const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
+    const bin = await unmappableLauncher(rootDir)
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: rootDir,
+        readAnchor: () => recordedAnchor(installation, { launcher: bin.launcher }),
+        probeVersion: () => undefined,
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+    expect(failure.message).toContain('dsh --version')
+  })
+
+  it('does not probe when no record exists', async () => {
+    const rootDir = await tempDir('discovery-recorded-noprobe-')
+    const bin = await unmappableLauncher(rootDir)
+    let probes = 0
+    const failure = failureOf(
+      discoverDshInstallation({
+        env: { PATH: bin.dir },
+        cwd: rootDir,
+        readAnchor: () => undefined,
+        probeVersion: () => {
+          probes += 1
+          return undefined
+        },
+      }),
+    )
+    expect(failure.code).toBe('dsh.launcher_unresolved')
+    expect(probes).toBe(0)
   })
 })
