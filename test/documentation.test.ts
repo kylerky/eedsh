@@ -40,8 +40,30 @@ describe('installation anchor documentation', () => {
     expect(text).toContain('re-bootstraps')
     expect(text).toContain('runtime refreshes the anchor')
     expect(text).toContain('adopt-external-dsh')
-    expect(text).toContain('no config or plan migration')
-    expect(text).toContain('ignores')
-    expect(text).toContain('`$DSH_HOME/.eedsh/installation.json`')
+    expect(text).toContain('re-bootstraps')
+    expect(text).toContain('`$DSH_HOME/.local/state/installation.json`')
+  })
+
+  it('documents the .eedsh to .local state migration', () => {
+    for (const path of ['README.md', 'packages/cli/README.md']) {
+      const text = read(path)
+      expect(text, path).toContain('$DSH_HOME/.local/')
+      expect(text, path).toContain('moved from')
+      expect(text, path).toContain('retired')
+    }
+  })
+
+  it('documents source provisioning in the authoring and configuration references', () => {
+    for (const path of ['README.md', 'packages/cli/README.md']) {
+      const text = read(path)
+      expect(text, path).toContain('.source(')
+      expect(text, path).toContain('file://')
+      expect(text, path).toContain('`prepare`')
+      expect(text, path).toContain('pnpm')
+      expect(text, path).toContain('`--rebuild`')
+      expect(text, path).toContain('`--no-build`')
+      expect(text, path).toContain('sources/<key>')
+      expect(text, path).toContain("['pnpm', 'install']")
+    }
   })
 })

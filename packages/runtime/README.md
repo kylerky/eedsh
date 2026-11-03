@@ -27,9 +27,11 @@ inside the generated bundle.
 
 ## Behavior
 
-- Records `$DSH_HOME/.eedsh/installation.json` from `profileContext.home` and
-  `profileContext.installAnchor` on every profile boot, whether or not HMR is
-  present. The running manifest must name `@deepseek-ai/dsh` and declare a
+- Records `$DSH_HOME/.local/state/installation.json` from `profileContext.home`
+  and `profileContext.installAnchor` on every profile boot, whether or not HMR is
+  present. A successful write also removes the retired
+  `$DSH_HOME/.eedsh/installation.json` and then its directory when it holds nothing
+  else. The running manifest must name `@deepseek-ai/dsh` and declare a
   readable version; otherwise the runtime warns and writes nothing. The write is
   atomic and owner-only, and a write failure is reported without failing or
   altering the profile. This is the authoritative self-heal path after a DSH

@@ -39,7 +39,7 @@ eedsh init
 `eedsh sync`, `eedsh run`, and `eedsh repl` discover exactly one installation
 per invocation: `--dsh <path>`, then `EEDSH_DSH_ANCHOR`, then a `dsh` launcher
 on `PATH`, then the recorded installation anchor at
-`$DSH_HOME/.eedsh/installation.json`, then a project-local `@deepseek-ai/dsh`.
+`$DSH_HOME/.local/state/installation.json`, then a project-local `@deepseek-ai/dsh`.
 When a `dsh` launcher is on `PATH` but its package cannot be located (for
 example a pnpm or npm shim), `eedsh sync` and the sync step of `eedsh run`
 bootstrap the installation through pnpm or npm global metadata on that first
@@ -106,7 +106,7 @@ Working from a checkout? Build it first; see [Build from source](#build-from-sou
 
 ```sh
 eedsh init   [--no-install] [--dsh <path>]
-eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership] [--rebuild] [--no-build]
 eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
 eedsh run    [--profile <name>] [--config <path>] [--dsh <path>] [--no-sync] [-- <dsh args>]
@@ -160,6 +160,11 @@ eedsh --help | --version
   generation record cannot be read. Without it, sync fails closed on an eedsh-managed
   profile instead of silently treating managed entries as user-owned. It is not for
   re-adopting a removal you already published.
+- `--rebuild` runs every declared source preparation step even when the resolved
+  commit and the recorded steps are unchanged. `--no-build` refuses to prepare and
+  fails naming the source and the commands it would run; a source that needs no
+  preparation still syncs. The two flags are mutually exclusive and a usage error
+  together. See [Source provisioning](#source-provisioning).
 - `doctor` inspects a published profile without changing it. When a DSH is
   discoverable it prints its path and version, errors when the version is
   outside the supported range, and warns when the generation record names a
@@ -167,7 +172,10 @@ eedsh --help | --version
   reports a version-1 plan as unreadable instead of reading it. It verifies the
   generation record, the authoritative `plans/<generationId>.json`, the
   `.eedsh/plan.json` mirror, managed bundles and dependencies, dependency-section
-  conflicts, scaffolding, the lockfile, and installed package resolution. The
+  conflicts, scaffolding, the lockfile, installed package resolution, and
+  provisioned sources: a missing checkout, a specification drift, or an unbuilt
+  entry point is an error, and a working tree at a different commit than the
+  recorded one is a warning. It never provisions, prepares, or fetches. The
   advisory `.eedsh/provenance.json` sidecar is outside every check: it may be
   absent, malformed, or from another generation without affecting findings or
   exit status. It takes no lock and never repairs; findings point at `eedsh sync` or
@@ -272,6 +280,7 @@ row; methods never reach the persisted plan.
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
 | `ProfileBuilder.layer(build)` | Declare an ordered, anonymous patch group scoped to its callback; identity is position. `.layer(label, build)` attaches an optional non-unique display label. |
 | `ProfileBuilder.package(name, spec)` | Add a profile-local package dependency. |
+| `ProfileBuilder.source(name, { from, ref?, prepare? })` | Declare a package eedsh provisions from a git source or a local checkout, prepares, and links. Defaults are resolved at build time. It declares a dependency only; select the bundle separately with `.bundle(name)`. |
 | `LayerBuilder.insert(entries)` | Insert Loader entries, typed rows, presets, or preset definitions. |
 | `LayerBuilder.override(target, config)` | Replace a row's whole config; no merge. |
 | `LayerBuilder.disable(target)` / `.enable(target)` | Toggle a row or preset by id or typed handle. |
@@ -521,6 +530,83 @@ reported.
 
 For project typechecking with the config project's own compiler, see [`eedsh check`](#cli-reference).
 
+### Source provisioning
+
+A bundle that ships only as source is declared with `.source()`. The declaration
+names a package dependency, not a bundle selection, so a source package that
+contributes a patch layer still needs `.bundle(name)`:
+
+```ts
+import { defineConfig } from '@eedsh/config'
+
+export default defineConfig()
+  .profile('work', (profile) => {
+    profile
+      .bundle('@acme/dsh-bundle')
+      .source('@acme/dsh-bundle', {
+        from: 'https://example.test/acme/bundle.git',
+        ref: 'v1.2.3',
+      })
+      .generated()
+      .layer('acme', (layer) => {
+        layer.override('acme-panel', { theme: 'dark' })
+      })
+  })
+  .build()
+```
+
+The acquisition kind comes from `from` alone. A `git`, `http`, `https`, `ssh`,
+or `file` scheme, or an scp-like `user@host:path` form, is a git source;
+anything else is a local checkout path. `file://` is the explicit way to name a
+local directory that holds a git repository, which is cloned; a plain path is
+linked in place. Both kinds are named by a directory, so a `.git` suffix is
+neither required nor implied. Relative paths resolve against the config file's
+directory, and a leading `~/` expands to the user home.
+
+`ref` applies to git sources only; naming it on a local checkout is a config
+error that names the field. `prepare` is an ordered list of fixed argv arrays,
+run in order with the checkout as the working directory and no shell. A git
+source defaults to `[['pnpm', 'install'], ['pnpm', 'run', 'build']]`; a local
+checkout defaults to no steps, so eedsh never builds a tree you are working in
+unless you ask. The resolved list is recorded in the plan, so no reader applies
+its own defaults.
+
+`eedsh sync` provisions every declared source before reconciling the profile:
+
+```
+$DSH_HOME/.local/
+  state/installation.json        installation anchor
+  state/sources/<key>.json       resolved commit, preparation steps, timestamp
+  sources/<key>/                 provisioned git working tree
+  locks/<key>.lock               per-source provision lock
+```
+
+The key derives from the authored location and ref, so one repository and ref
+pair maps to one checkout and distinct refs never fight over a working tree. A
+git checkout is resolved against the remote and prepared only when it is new,
+when the resolved commit differs from the recorded one, or when the declared
+steps changed; a sync with nothing changed fetches nothing it does not need and
+builds nothing. A local checkout is read in place and never written unless its
+declaration asks for preparation steps. Acquisition and preparation hold the
+per-source kernel lock, so concurrent syncs cannot race over one checkout.
+
+The profile dependency is derived at materialization as
+`link:<absolute checkout>` and reconciled as a managed dependency: a moved DSH
+home or location rewrites the manifest and installs, while removing the
+declaration removes the dependency and leaves the checkout in place. The plan
+records the declaration only, so the same config produces the same plan on every
+machine. After preparation the provisioned manifest must name the declared
+package, and its main (or `.`) and client entries must exist; a missing entry
+fails the sync instead of surfacing at DSH boot. `eedsh doctor` reports a missing
+checkout, specification drift, and an unbuilt package as errors without
+provisioning anything.
+
+When a git remote cannot be reached, a sync with an existing checkout and record
+warns and keeps the recorded commit; with no usable checkout it fails and names
+the source. `eedsh sync --rebuild` forces every preparation step, and
+`eedsh sync --no-build` fails naming the source and the commands rather than
+preparing. The two flags are mutually exclusive.
+
 ## Migrating from the free-function API
 
 This earlier release replaced the free-function authoring surface with typed
@@ -571,9 +657,22 @@ plans published by this release. Rolling back requires restoring the old config
 with `.dsh(...)` and re-syncing with the older release; there is no downgrade
 reader.
 
-The installation anchor is additive state: no config or plan migration is
-required, and the previous eedsh release ignores
-`$DSH_HOME/.eedsh/installation.json`. In this repository's OpenSpec workflow,
+The installation anchor lives at `$DSH_HOME/.local/state/installation.json`,
+alongside the rest of eedsh's machine-local state:
+
+```
+$DSH_HOME/.local/
+  state/installation.json        installation anchor (moved from .eedsh/)
+  state/sources/<key>.json       provisioning record
+  sources/<key>/                 provisioned git working tree
+  locks/<key>.lock               per-source provision lock
+```
+
+The move from `$DSH_HOME/.eedsh/` is additive: a missing anchor simply
+re-bootstraps on the next sync, and the first successful anchor write removes the
+retired `$DSH_HOME/.eedsh/installation.json`, then the retired directory when it
+holds nothing else. A retired directory holding any other file is left alone. In
+this repository's OpenSpec workflow,
 archive `adopt-external-dsh` before `add-dsh-anchor-bootstrap` so the pending
 external-DSH discovery contract applies first.
 
@@ -843,6 +942,7 @@ packages/config   @eedsh/config
 packages/cli      @eedsh/cli (bin: eedsh)
 packages/runtime  @eedsh/runtime (DSH bundle + HMR watcher)
 test/             workspace smoke, architecture, and (slow) integration tests
+docs/             manual acceptance notes
 ```
 
 ## Deferred

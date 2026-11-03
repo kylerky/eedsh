@@ -23,7 +23,7 @@ synchronous at the config boundary and returns the native validation Result.
 
 ```sh
 eedsh init   [--no-install] [--dsh <path>]
-eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership] [--rebuild] [--no-build]
 eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
 eedsh run    [--profile <name>] [--config <path>] [--dsh <path>] [--no-sync] [-- <dsh args>]
@@ -85,6 +85,12 @@ eedsh --help | --version
 - `--adopt-ownership` re-baselines ownership from the current manifest when the
   generation record cannot be read. Sync fails closed without it, and it is not a way
   to re-adopt a removal already published.
+- `--rebuild` runs every declared source preparation step even when the resolved
+  commit and recorded steps are unchanged. `--no-build` fails with
+  `provision.no_build`, naming the source and the commands it would run, instead of
+  preparing; a source that needs no preparation still syncs. The two flags are
+  mutually exclusive and a usage error together. See
+  [Source provisioning](#source-provisioning).
 - `check` typechecks the config's project with its own `tsc --noEmit -p <tsconfig>`,
   forwards arguments after `--`, never evaluates the config or publishes a profile,
   takes no `--profile` (it is a usage error), and exits with the compiler's exit code.
@@ -145,18 +151,26 @@ is repaired by re-running init. Install failure leaves the files in place and ex
 `1`; `--no-install` writes the project and prints
 `cd <config dir> && pnpm install`. Init performs no git initialization, writes no
 DSH declaration, and resolves no DSH pin or installation. `init --dsh` records
-the validated installation in `$DSH_HOME/.eedsh/installation.json` after the
-project files; a failed anchor write is reported and keeps the usable project.
+the validated installation in `$DSH_HOME/.local/state/installation.json` after
+the project files; a failed anchor write is reported and keeps the usable project.
 Without `--dsh`, init reads and reports an existing valid anchor and prints how
 the first sync bootstraps one when none exists.
 
 ## Installation anchor
 
-The machine-local anchor is `$DSH_HOME/.eedsh/installation.json`. It records
-`format: 1`, the absolute `installAnchor` package.json, the exact version, and
-the recording source, plus the launcher and package manager when known. It lives
-outside the config project, so it is never committed and the project manifest
-gains no DSH dependency or version. Writes are atomic and owner-only.
+The machine-local anchor is `$DSH_HOME/.local/state/installation.json`. It
+records `format: 1`, the absolute `installAnchor` package.json, the exact
+version, and the recording source, plus the launcher and package manager when
+known. It lives outside the config project, so it is never committed and the
+project manifest gains no DSH dependency or version. Writes are atomic and
+owner-only.
+
+The state directory moved from `$DSH_HOME/.eedsh/` to `$DSH_HOME/.local/`; the
+anchor is the only file that moves. After a successful anchor write, eedsh
+removes the retired `$DSH_HOME/.eedsh/installation.json` and then the retired
+directory when it holds nothing else, leaving a directory with other content
+alone. A missing anchor re-bootstraps on the next sync, so no manual migration is
+needed.
 
 `eedsh sync` and the sync step of `eedsh run` bootstrap only when a `PATH`
 launcher exists but its package cannot be located. The bootstrap asks pnpm
@@ -181,6 +195,62 @@ unrelated project's mappings out. Registration is keyed by that tsconfig and the
 previous hooks are unregistered when a different config project is loaded in the
 same process; `TSX_TSCONFIG_PATH` is never set.
 
+## Source provisioning
+
+`.source(name, { from, ref?, prepare? })` declares a profile package dependency
+whose contents eedsh acquires from a git repository or a local checkout, prepares,
+and links into the published profile. It is a dependency, not a bundle selection,
+so a package that contributes a patch layer still needs `.bundle(name)`.
+
+The acquisition kind comes from `from` alone. A `git`, `http`, `https`, `ssh`,
+or `file` scheme, or an scp-like `user@host:path` form, is a git source; any
+other value is a local checkout path. `file://` is the explicit way to name a
+local directory that holds a git repository (it is cloned); a plain path is
+linked in place. Both kinds name a directory, so no `.git` suffix is implied. A
+relative path resolves against the config directory and `~/` expands to the user
+home.
+
+`ref` applies to git sources only and is a config error on a local checkout.
+`prepare` is an ordered list of fixed argv arrays run without a shell in the
+checkout. The git default is `[['pnpm', 'install'], ['pnpm', 'run', 'build']]`;
+the local default is no steps. The resolved list is recorded in the plan.
+Declaring one package through both `.package()` and `.source()` is a tagged
+`SourceDeclarationError` that config loading preserves.
+
+Every sync provisions declared sources before reconciliation, under
+`$DSH_HOME/.local/`:
+
+```
+state/installation.json        installation anchor
+state/sources/<key>.json       resolved commit, preparation steps, timestamp
+sources/<key>/                 provisioned git working tree
+locks/<key>.lock               per-source kernel lock
+```
+
+The key derives from the authored location and ref, so one repository and ref
+pair maps to one checkout and distinct refs get distinct checkouts. A git
+checkout is resolved against the remote and prepared only when new, when the
+commit moved, or when the declared steps changed; an unchanged source is neither
+fetched nor built. A local checkout is read in place and written only when its
+declaration asks for preparation. The per-source lock serializes acquisition and
+preparation.
+
+The profile manifest receives a derived `link:<absolute checkout>` dependency,
+reconciled as managed: a moved location rewrites it and installs, and removing
+the declaration removes it while the checkout stays on disk. The plan records the
+declaration without the path, so plans stay machine-independent. After
+preparation, verification requires the manifest to name the declared package and
+its main (or `.`) and client entries to exist; a missing entry fails the sync
+before a generation is published.
+
+When the remote cannot be reached, a sync with a checkout and record warns and
+keeps the recorded commit; with no usable checkout it fails naming the source.
+`--rebuild` forces preparation and `--no-build` refuses it, naming the source
+and the commands; the flags are mutually exclusive. `eedsh doctor` reports a
+missing checkout, a specification mismatch, and an unbuilt package as errors and
+a working tree at a different commit than the record as a warning, without
+provisioning.
+
 ## Doctor
 
 `eedsh doctor` inspects one published profile and reports findings without taking a
@@ -194,7 +264,11 @@ lock, writing files, or repairing anything.
 - It verifies the generation record, the authoritative
   `plans/<generationId>.json`, the `.eedsh/plan.json` mirror, managed bundles and
   dependencies, dependency-section conflicts, profile scaffolding, the lockfile, and
-  installed package resolution.
+  installed package resolution. It also reads the published plan's source
+  declarations: a missing provisioned location, a manifest specification that
+  does not name that location, and an unbuilt entry point are errors, and a
+  working tree at a commit other than the recorded one is a warning. Doctor never
+  provisions, prepares, fetches, or repairs a source.
 - `--profile <name>` selects a profile under `DSH_HOME` without evaluating a
   config; without it, doctor evaluates the config only to take the declared default
   or the sole profile, and a config with several profiles and no default is a usage
