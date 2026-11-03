@@ -54,9 +54,9 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * The only production exception sites the architecture check permits. The
  * malformed-expression branch is unreachable after plan validation, and the
  * Effect-free runtime is outside this scan. Author-time resolution, the typed
- * query handles, and the preset-definition child editor throw structured
- * failures at a synchronous API boundary so fluent config composition stays
- * direct;
+ * query handles, the preset-definition child editor, and the source-declaration
+ * builder throw structured failures at a synchronous API boundary so fluent
+ * config composition stays direct;
  * the REPL owns Node's exception-shaped I/O (dynamic imports, REPL evaluation,
  * preview installs), the exploration views report an invalid plan lookup as a
  * tagged session failure, and completion contains failing catalog or evaluator
@@ -78,6 +78,8 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/config/src/query.ts',
   'packages/config/src/resolve.ts',
   'packages/config/src/bridge.ts',
+  'packages/config/src/builders.ts',
+  'packages/config/src/source.ts',
   'packages/cli/src/repl/completion.ts',
   'packages/cli/src/repl/preview.ts',
   'packages/cli/src/repl/prompt.ts',

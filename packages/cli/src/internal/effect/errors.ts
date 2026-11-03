@@ -83,6 +83,26 @@ export class OwnershipRecordInvalid extends Data.TaggedError('OwnershipRecordInv
   readonly adoptable: boolean
 }> {}
 
+/** Provisioning a declared source failed. */
+export class ProvisionFailure extends Data.TaggedError('ProvisionFailure')<{
+  readonly code:
+    | 'provision.command_failed'
+    | 'provision.fetch_failed'
+    | 'provision.source_missing'
+    | 'provision.record_invalid'
+    | 'provision.verify_failed'
+    | 'provision.no_build'
+  readonly packageName: string
+  readonly message: string
+  /** The checkout, record, or offending path. */
+  readonly path?: string
+  /** The fixed argv of the command that failed, when one did. */
+  readonly command?: readonly string[]
+  /** The command's exit status, when it ran and exited non-zero. */
+  readonly status?: number
+  readonly cause?: unknown
+}> {}
+
 /** Every failure the materializer can report. */
 export type MaterializeError =
   | PlatformError.PlatformError
@@ -91,3 +111,4 @@ export type MaterializeError =
   | SyncLocked
   | DshResolveFailure
   | OwnershipRecordInvalid
+  | ProvisionFailure
