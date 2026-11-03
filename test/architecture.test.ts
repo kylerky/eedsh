@@ -62,7 +62,9 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * tagged session failure, and completion contains failing catalog or evaluator
  * lookups so Tab never ends the session; all convert those failures to
  * printable session state. The local DSH path boundary throws for a profile
- * name that cannot be a directory, before any filesystem work.
+ * name that cannot be a directory, before any filesystem work. Discovery probes
+ * the filesystem through Node's synchronous, exception-shaped APIs and converts
+ * every expected failure to a tagged DshFailure.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
@@ -75,6 +77,7 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/repl/session.ts',
   'packages/cli/src/repl/views.ts',
   'packages/cli/src/internal/dsh-home.ts',
+  'packages/cli/src/dsh-discovery.ts',
 ])
 
 /** JavaScript exception control flow in one source text. */

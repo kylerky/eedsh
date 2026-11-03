@@ -18,6 +18,12 @@ import { DshResolveFailure } from './internal/effect/errors'
 import { readVersion } from './internal/schema-readers'
 
 export { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
+export { discoverDshInstallation, validateDshVersion } from './dsh-discovery'
+export type {
+  DiscoveredDshInstallation,
+  DiscoverDshOptions,
+  DshSource,
+} from './dsh-discovery'
 
 /** Resolved facts about the DSH installation this CLI is pinned to. */
 export interface DshInstallationInfo {

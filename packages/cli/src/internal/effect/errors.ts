@@ -39,6 +39,27 @@ export class SpawnFailure extends Data.TaggedError('SpawnFailure')<{
   readonly cause: unknown
 }> {}
 
+/** A DSH installation could not be discovered, validated, or bridged. */
+export class DshFailure extends Data.TaggedError('DshFailure')<{
+  readonly code:
+    | 'dsh.not_found'
+    | 'dsh.anchor_invalid'
+    | 'dsh.unsupported_version'
+    | 'dsh.bridge_unavailable'
+    | 'dsh.bridge_load_failed'
+    | 'dsh.capability_missing'
+  readonly message: string
+  /** The path, capability, or other fact that explains the failure. */
+  readonly path?: string
+  /** The discovered DSH version, when one was read. */
+  readonly version?: string
+  /** The supported range, for an unsupported version. */
+  readonly range?: string
+  /** The missing composition capability. */
+  readonly capability?: string
+  readonly cause?: unknown
+}> {}
+
 /** A DSH package or bundle could not be resolved. */
 export class DshResolveFailure extends Data.TaggedError('DshResolveFailure')<{
   readonly packageName: string
