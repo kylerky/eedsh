@@ -5,17 +5,17 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
-import * as Result from 'effect/Result'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { defaultServices } from '../../src/cli'
-import { resolveDshInstallation } from '../../src/dsh'
 import { materialize } from '../../src/materialize/program'
 import { delay, waitFor } from '../support/async'
+import { clearTestBridge, devDshInstallation, installTestBridge } from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, disable, generated, layer } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
+const installation = devDshInstallation()
 
 async function freePort(): Promise<number> {
   const server = createServer()
@@ -53,7 +53,12 @@ function webPlan(name: string, layers: ProfilePlan['layers']): ProfilePlan {
 describe('slow Web HMR integration', () => {
   beforeAll(async () => {
     await execFileAsync('pnpm', ['--filter', '@eedsh/runtime', 'build'], { cwd: root })
+    await installTestBridge(installation.version)
   }, 120_000)
+
+  afterAll(() => {
+    clearTestBridge()
+  })
 
   it('reloads a published generation in a running web profile', async () => {
     await mkdir(join(root, '.tmp'), { recursive: true })
@@ -73,13 +78,13 @@ describe('slow Web HMR integration', () => {
           generatedSpec: 'link:./.eedsh/generated',
           strict: false,
           explain: false,
-        }).pipe(Effect.provide(defaultServices())),
+        }).pipe(Effect.provide(defaultServices(installation))),
       )
 
     const first = await publish(webPlan(profileName, []))
     expect(first.changed).toBe(true)
 
-    const { binPath } = Result.getOrThrow(resolveDshInstallation())
+    const { binPath } = installation
     const child = spawn(
       process.execPath,
       [binPath, '--profile', profileName, '--no-open', '--port', String(port)],

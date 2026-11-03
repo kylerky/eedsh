@@ -23,7 +23,7 @@ import {
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import { delay, waitFor } from './support/async'
-import { installTestBridge } from './support/bridge'
+import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
   fakeDsh,
   fakePackageManager,
@@ -149,6 +149,7 @@ function harness(options: HarnessOptions = {}) {
     stdout: (line: string) => out.push(line),
     stderr: (line: string) => err.push(line),
     services,
+    discoverDsh: () => Result.succeed(devDshInstallation()),
   }
   return {
     options: runOptions,

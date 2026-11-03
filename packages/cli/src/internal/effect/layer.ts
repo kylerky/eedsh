@@ -7,7 +7,8 @@
 import { Effect, Layer, Stream } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
-import { resolveBundleLayers, resolveDshInstallation } from '../../dsh'
+import type { DiscoveredDshInstallation } from '../../dsh-discovery'
+import { resolveBundleLayers } from '../../dsh'
 import { posixSyncLock } from '../lock-posix'
 import { win32SyncLock } from '../lock-win32'
 import { PackageInstallFailure } from './errors'
@@ -81,19 +82,19 @@ export const pnpmPackageManagerLayer: Layer.Layer<
   }),
 )
 
-/** The pinned DSH installation layer; construction fails when DSH is missing. */
-export const dshInstallationLayer = Layer.effect(
-  DshInstallation,
-  Effect.gen(function* () {
-    const info = yield* Effect.fromResult(resolveDshInstallation())
-    const shape: DshInstallationShape = {
-      ...info,
-      resolveBundlePatches: (packageName, profileDir) =>
-        Effect.fromResult(resolveBundleLayers(packageName, profileDir, info.installAnchor)),
-    }
-    return shape
-  }),
-)
+/** The discovered DSH installation as a service. */
+export function dshInstallationLayerFor(
+  installation: DiscoveredDshInstallation,
+): Layer.Layer<DshInstallationShape> {
+  const shape: DshInstallationShape = {
+    version: installation.version,
+    installAnchor: installation.installAnchor,
+    binPath: installation.binPath,
+    resolveBundlePatches: (packageName, profileDir) =>
+      Effect.fromResult(resolveBundleLayers(packageName, profileDir, installation.installAnchor)),
+  }
+  return Layer.succeed(DshInstallation, shape)
+}
 
 /** Injectable platform implementations for tests and alternate hosts. */
 export interface SyncLockPlatforms {
@@ -138,8 +139,16 @@ function unsupportedSyncLock(platform: NodeJS.Platform): SyncLockShape {
 }
 
 /** Every live service the pipeline needs except preflight. */
-export const liveServiceLayer = Layer.mergeAll(
-  pnpmPackageManagerLayer,
-  dshInstallationLayer,
-  syncLockLayer(),
-)
+export function liveServiceLayerFor(
+  installation: DiscoveredDshInstallation,
+): Layer.Layer<
+  PackageManagerShape | DshInstallationShape | SyncLockShape,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  return Layer.mergeAll(
+    pnpmPackageManagerLayer,
+    dshInstallationLayerFor(installation),
+    syncLockLayer(),
+  )
+}

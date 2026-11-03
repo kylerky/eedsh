@@ -9,7 +9,6 @@ import {
   ResolutionError,
   takeResolutionTrace,
 } from '@eedsh/config'
-import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../cli/src/config'
 import {
@@ -223,10 +222,7 @@ export default defineConfig()
     )
     const { Effect } = await import('effect')
     await Effect.runPromise(loadConfig(configPath))
-    const { resolveDshInstallation } = await import('../../cli/src/dsh')
-    const installation = resolveDshInstallation()
-    if (Result.isFailure(installation)) throw installation.failure
-    expect(await readFile(marker, 'utf8')).toBe(installation.success.installAnchor)
+    expect(await readFile(marker, 'utf8')).toBe(fixture.anchor)
     expect(process.env.EEDSH_DSH_ANCHOR).toBeUndefined()
     expect(process.env.EEDSH_CONFIG_DIR).toBeUndefined()
   })

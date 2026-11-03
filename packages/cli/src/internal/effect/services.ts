@@ -1,6 +1,6 @@
 /**
- * Service tags for the Effect island: package installation, the pinned DSH
- * installation, and preflight composition. File access is the core
+ * Service tags for the Effect island: package installation, the discovered
+ * DSH installation, and preflight composition. File access is the core
  * `effect/FileSystem` service, and child processes are the core
  * `effect/process` spawner, so the pipeline has no hand-written Node seam.
  * @module @eedsh/cli/internal/effect/services
@@ -38,7 +38,7 @@ export interface PackageManagerShape {
 /** Package installation service tag. */
 export const PackageManager = Context.Service<PackageManagerShape>('eedsh/PackageManager')
 
-/** The pinned DSH installation. */
+/** The discovered DSH installation. */
 export interface DshInstallationShape {
   /** Installed DSH version, used as the generation's runtime provenance. */
   readonly version: string

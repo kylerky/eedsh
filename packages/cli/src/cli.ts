@@ -1,6 +1,6 @@
 /**
  * The `eedsh` command: evaluate the typed config, publish it into a DSH
- * profile, optionally boot the pinned launcher, or run the config project's
+ * profile, optionally boot the discovered launcher, or run the config project's
  * TypeScript compiler. The command surface is parsed by `effect/cli`; each
  * invocation is one Effect program observed by one `Effect.runPromiseExit`, and
  * watch mode is one scoped Effect program that builds the materializer's services
@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
-import type { ConfigProvenance } from '@eedsh/config'
+import type { ConfigProvenance, DshBridge } from '@eedsh/config'
 import { isSafeProfileName, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Layer, Queue } from 'effect'
@@ -31,7 +31,8 @@ import {
 } from './config'
 import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
-import { resolveDshInstallation } from './dsh'
+import { type DiscoveredDshInstallation, discoverDshInstallation, validateDshVersion } from './dsh'
+import { loadDshBridge } from './dsh-bridge'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import {
   defaultInitServices,
@@ -45,12 +46,13 @@ import { presetDefinitionErrorLines } from './internal/authoring-error'
 import { resolveDshHome, resolveProfileDir } from './internal/dsh-home'
 import {
   type CheckFailure,
+  type DshFailure,
   type DshResolveFailure,
   type MaterializeError,
   type PackageInstallFailure,
   SpawnFailure,
 } from './internal/effect/errors'
-import { liveServiceLayer } from './internal/effect/layer'
+import { liveServiceLayerFor } from './internal/effect/layer'
 import type {
   DshInstallationShape,
   PackageManagerShape,
@@ -90,6 +92,13 @@ export type CliServiceLayer = Layer.Layer<CliService, DshResolveFailure, never>
 /** Watch seam for `eedsh sync --watch`. */
 export type WatchFactory = (dir: string, onChange: () => void) => Promise<WatchSession>
 
+/** The discovery input a command passes to an injected seam. */
+export interface DshDiscoveryInput {
+  readonly explicit?: string | undefined
+  readonly env: Record<string, string | undefined>
+  readonly cwd: string
+}
+
 /** Overridable dependencies, for tests and embedders. */
 export interface CliRunOptions {
   cwd?: string
@@ -103,6 +112,14 @@ export interface CliRunOptions {
   ) => Effect.Effect<LoadedConfig, ConfigLoadFailure>
   /** Replace the materializer's service layer. */
   services?: () => CliServiceLayer
+  /** Replace DSH discovery. */
+  discoverDsh?: (
+    input: DshDiscoveryInput,
+  ) => Result.Result<DiscoveredDshInstallation, DshFailure>
+  /** Replace bridge loading; the default imports app-boot from the installation. */
+  loadDshBridge?: (
+    installation: DiscoveredDshInstallation,
+  ) => Promise<Result.Result<DshBridge, DshFailure>>
   /** Replace the file system `doctor` inspects. */
   fileSystem?: () => Layer.Layer<FileSystem.FileSystem>
   /** Replace the launcher spawn. */
@@ -244,6 +261,8 @@ function describeError(error: unknown): string[] {
         ]
       case 'DshResolveFailure':
         return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
+      case 'DshFailure':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'InitError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'ReplSessionError':
@@ -304,11 +323,14 @@ interface CommandRuntime {
   env: Record<string, string | undefined>
   cwd: string
   options: CliRunOptions
+  /** The installation selected for this invocation, once discovery ran. */
+  installation?: DiscoveredDshInstallation
   setFailureContext: (context: FailureContext | undefined) => void
 }
 
 interface CommandContext extends CommandRuntime {
   configPath: string
+  installation: DiscoveredDshInstallation
   plan: ProfilePlan
   /** The evaluated config's recorded provenance, when it has any. */
   provenance: ConfigProvenance | undefined
@@ -318,11 +340,11 @@ interface CommandContext extends CommandRuntime {
   profile: Option.Option<string>
 }
 
-export function defaultServices(): CliServiceLayer {
-  return Layer.mergeAll(
-    liveServiceLayer,
-    preflightLayer.pipe(Layer.provide(liveServiceLayer)),
-  ).pipe(Layer.provideMerge(NodeServices.layer))
+export function defaultServices(installation: DiscoveredDshInstallation): CliServiceLayer {
+  const live = liveServiceLayerFor(installation)
+  return Layer.mergeAll(live, preflightLayer.pipe(Layer.provide(live))).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  )
 }
 
 function profileDirForName(name: string, env: Record<string, string | undefined>): string {
@@ -360,8 +382,40 @@ function programFor(
 }
 
 /** Build the materializer's service layer for one command invocation. */
-function serviceLayerFor(options: CliRunOptions): CliServiceLayer {
-  return (options.services ?? defaultServices)()
+function serviceLayerFor(
+  options: CliRunOptions,
+  installation: DiscoveredDshInstallation,
+): CliServiceLayer {
+  if (options.services !== undefined) return options.services()
+  return defaultServices(installation)
+}
+
+/**
+ * Discover and validate one installation, then install its bridge. Runs before
+ * any config import so a top-level query or dshVersion() resolves.
+ */
+function requireDsh(
+  runtime: CommandRuntime,
+  explicit: Option.Option<string>,
+): Effect.Effect<DiscoveredDshInstallation, DshFailure> {
+  return Effect.gen(function* () {
+    const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
+    const discovered = yield* Effect.sync(() =>
+      discovery({
+        ...(Option.isSome(explicit) ? { explicit: explicit.value } : {}),
+        env: runtime.env,
+        cwd: runtime.cwd,
+      }),
+    )
+    if (Result.isFailure(discovered)) return yield* Effect.fail(discovered.failure)
+    const validated = validateDshVersion(discovered.success)
+    if (Result.isFailure(validated)) return yield* Effect.fail(validated.failure)
+    const load = runtime.options.loadDshBridge ?? loadDshBridge
+    const loaded = yield* Effect.promise(() => load(validated.success))
+    if (Result.isFailure(loaded)) return yield* Effect.fail(loaded.failure)
+    runtime.installation = validated.success
+    return validated.success
+  })
 }
 
 /** The materialization program before its service layer is provided. */
@@ -383,7 +437,7 @@ function syncOnce(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
-): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshResolveFailure> {
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshFailure> {
   return Effect.suspend(() =>
     syncProgram(
       context.env,
@@ -393,7 +447,7 @@ function syncOnce(
       adoptOwnership,
       context.provenance,
       context.configDir,
-    ).pipe(Effect.provide(serviceLayerFor(context.options))),
+    ).pipe(Effect.provide(serviceLayerFor(context.options, context.installation))),
   )
 }
 
@@ -422,6 +476,7 @@ function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
 /** The context one watch session runs against. */
 interface WatchContext extends CommandRuntime {
   configPath: string
+  installation: DiscoveredDshInstallation
   /** The `--profile` value, or none to watch every profile. */
   profile: Option.Option<string>
 }
@@ -551,7 +606,9 @@ function syncWatch(
         stopSignal(context.options.signal),
       )
     })
-    yield* Effect.scoped(program).pipe(Effect.provide(serviceLayerFor(context.options)))
+    yield* Effect.scoped(program).pipe(
+      Effect.provide(serviceLayerFor(context.options, context.installation)),
+    )
   })
 }
 
@@ -582,12 +639,10 @@ function spawnDsh(
 
 function runBoot(
   context: CommandContext,
+  installation: DiscoveredDshInstallation,
   dshArgs: readonly string[],
-): Effect.Effect<number, DshResolveFailure | SpawnFailure> {
-  return Effect.gen(function* () {
-    const installation = yield* Effect.fromResult(resolveDshInstallation())
-    return yield* spawnDsh(context, installation.binPath, dshArgs)
-  })
+): Effect.Effect<number, SpawnFailure> {
+  return spawnDsh(context, installation.binPath, dshArgs)
 }
 
 function resolveConfigPath(
@@ -645,6 +700,7 @@ function reportProfileSyncFailure(
 interface SyncCommandInput {
   configPath: Option.Option<string>
   profile: Option.Option<string>
+  dsh: Option.Option<string>
   strict: boolean
   watch: boolean
   explain: boolean
@@ -654,15 +710,21 @@ interface SyncCommandInput {
 function runSyncCommand(
   input: SyncCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshResolveFailure> {
+): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext({ sync: true, explain: input.explain })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
+    const installation = yield* requireDsh(runtime, input.dsh)
 
     if (input.watch) {
-      const context: WatchContext = { ...runtime, configPath: path, profile: input.profile }
+      const context: WatchContext = {
+        ...runtime,
+        configPath: path,
+        profile: input.profile,
+        installation,
+      }
       yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
       return EXIT_OK
     }
@@ -685,6 +747,7 @@ function runSyncCommand(
       const context: CommandContext = {
         ...runtime,
         configPath: path,
+        installation,
         plan,
         provenance: loaded.provenance,
         configDir: loaded.configDir,
@@ -713,6 +776,7 @@ function runSyncCommand(
 interface RunCommandInput {
   configPath: Option.Option<string>
   profile: Option.Option<string>
+  dsh: Option.Option<string>
   noSync: boolean
   dshArgs: readonly string[]
 }
@@ -720,11 +784,12 @@ interface RunCommandInput {
 function runRunCommand(
   input: RunCommandInput,
   runtime: CommandRuntime,
-): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshResolveFailure | SpawnFailure> {
+): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure | SpawnFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
+    const installation = yield* requireDsh(runtime, input.dsh)
     const loaded = yield* loadConfigValue(configPath.value, runtime)
     const selection = selectProfile(loaded.config, input.profile)
     if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
@@ -737,6 +802,7 @@ function runRunCommand(
     const context: CommandContext = {
       ...runtime,
       configPath: configPath.value,
+      installation,
       plan,
       provenance: loaded.provenance,
       configDir: loaded.configDir,
@@ -746,7 +812,7 @@ function runRunCommand(
       const result = yield* syncOnce(context, false, false, false)
       yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
     }
-    return yield* runBoot(context, input.dshArgs)
+    return yield* runBoot(context, installation, input.dshArgs)
   })
 }
 
@@ -778,6 +844,7 @@ function runCheckCommand(
 interface DoctorCommandInput {
   configPath: Option.Option<string>
   profile: Option.Option<string>
+  dsh: Option.Option<string>
   strict: boolean
 }
 
@@ -792,6 +859,21 @@ function runDoctorCommand(
       runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
+    const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
+    const discovered = discovery({
+      ...(Option.isSome(input.dsh) ? { explicit: input.dsh.value } : {}),
+      env: runtime.env,
+      cwd: runtime.cwd,
+    })
+    if (Result.isSuccess(discovered)) {
+      const validated = validateDshVersion(discovered.success)
+      if (Result.isSuccess(validated)) {
+        const load = runtime.options.loadDshBridge ?? loadDshBridge
+        const loaded = yield* Effect.promise(() => load(validated.success))
+        if (Result.isSuccess(loaded)) runtime.installation = validated.success
+      }
+    }
+
     let profileName: string
     if (Option.isSome(input.profile)) {
       if (!isSafeProfileName(input.profile.value)) {
@@ -820,6 +902,7 @@ function runDoctorCommand(
 interface ReplCommandInput {
   configPath: Option.Option<string>
   profile: Option.Option<string>
+  dsh: Option.Option<string>
   sync: boolean
   eval: Option.Option<string>
 }
@@ -833,13 +916,14 @@ function runReplCommand(
     runtime.setFailureContext(undefined)
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
+    const installation = yield* requireDsh(runtime, input.dsh)
     const profile = Option.getOrUndefined(input.profile)
     const configDir = dirname(configPath.value)
     const syncPlan = async (plan: ProfilePlan, provenance: ConfigProvenance | undefined) => {
       const exit = await Effect.runPromiseExit(
         Effect.suspend(() =>
           syncProgram(runtime.env, plan, false, false, false, provenance, configDir).pipe(
-            Effect.provide(serviceLayerFor(runtime.options)),
+            Effect.provide(serviceLayerFor(runtime.options, installation)),
           ),
         ),
       )
@@ -986,6 +1070,10 @@ export async function runEedsh(
     Flag.withDescription('config file to load (default: $XDG_CONFIG_HOME/eedsh/config.ts)'),
     Flag.optional,
   )
+  const dshFlag = Flag.String('dsh').pipe(
+    Flag.withDescription('DSH installation package directory or its package.json'),
+    Flag.optional,
+  )
   const strictFlag = Flag.Boolean('strict').pipe(
     Flag.withDescription('treat preflight warnings as failures'),
     Flag.withDefault(false),
@@ -1050,6 +1138,7 @@ export async function runEedsh(
     {
       config: configFlag,
       profile: syncProfileFlag,
+      dsh: dshFlag,
       strict: strictFlag,
       watch: watchFlag,
       explain: explainFlag,
@@ -1061,6 +1150,7 @@ export async function runEedsh(
           {
             configPath: parsed.config,
             profile: parsed.profile,
+            dsh: parsed.dsh,
             strict: parsed.strict,
             watch: parsed.watch,
             explain: parsed.explain,
@@ -1073,20 +1163,21 @@ export async function runEedsh(
 
   const runCommandLine = Command.make(
     'run',
-    { config: configFlag, profile: runProfileFlag, noSync: noSyncFlag },
+    { config: configFlag, profile: runProfileFlag, dsh: dshFlag, noSync: noSyncFlag },
     (parsed) =>
       Effect.gen(function* () {
         exitCode = yield* runRunCommand(
           {
             configPath: parsed.config,
             profile: parsed.profile,
+            dsh: parsed.dsh,
             noSync: parsed.noSync,
             dshArgs: split.passthrough,
           },
           runtime,
         )
       }),
-  ).pipe(Command.withDescription('sync (unless --no-sync) and boot the pinned dsh'))
+  ).pipe(Command.withDescription('sync (unless --no-sync) and boot the discovered dsh'))
 
   const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>
     Effect.gen(function* () {
@@ -1102,13 +1193,14 @@ export async function runEedsh(
 
   const doctorCommandLine = Command.make(
     'doctor',
-    { config: configFlag, profile: profileFlag, strict: doctorStrictFlag },
+    { config: configFlag, profile: profileFlag, dsh: dshFlag, strict: doctorStrictFlag },
     (parsed) =>
       Effect.gen(function* () {
         const program = runDoctorCommand(
           {
             configPath: parsed.config,
             profile: parsed.profile,
+            dsh: parsed.dsh,
             strict: parsed.strict,
           },
           runtime,
@@ -1125,6 +1217,7 @@ export async function runEedsh(
     {
       config: configFlag,
       profile: profileFlag,
+      dsh: dshFlag,
       sync: replSyncFlag,
       eval: evalFlag,
     },
@@ -1134,6 +1227,7 @@ export async function runEedsh(
           {
             configPath: parsed.config,
             profile: parsed.profile,
+            dsh: parsed.dsh,
             sync: parsed.sync,
             eval: parsed.eval,
           },

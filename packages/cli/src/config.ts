@@ -9,13 +9,17 @@
 import { statSync } from 'node:fs'
 import { dirname, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { type ConfigProvenance, clearProvenance, configProvenance } from '@eedsh/config'
+import {
+  activeDshBridge,
+  type ConfigProvenance,
+  clearProvenance,
+  configProvenance,
+} from '@eedsh/config'
 import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { CONFIG_FILENAME } from './config-path'
-import { resolveDshInstallation } from './dsh'
 import { type AuthoringError, isAuthoringError } from './internal/authoring-error'
 import { findTsconfigPath } from './internal/tsconfig'
 
@@ -168,18 +172,17 @@ function restoreEnv(name: string, previous: string | undefined): void {
 
 /**
  * Set the authoring environment for one config import and return its restore
- * function. The pinned DSH manifest survives module duplication and is visible
- * to config-project's own copy of `@eedsh/config`; the config directory lets a
- * relative package root resolve against the file rather than the CLI's cwd.
+ * function. The selected installation's manifest keeps `EEDSH_DSH_ANCHOR` as
+ * the explicit discovery override and compatibility signal; the bridge stays the
+ * query-time source of truth. The config directory lets a relative package root
+ * resolve against the file rather than the CLI's cwd.
  */
 function importEnvironment(configPath: string): () => void {
   const previousAnchor = process.env.EEDSH_DSH_ANCHOR
   const previousConfigDir = process.env.EEDSH_CONFIG_DIR
-  const installation = resolveDshInstallation()
-  if (Result.isSuccess(installation)) {
-    process.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
-  } else {
-    delete process.env.EEDSH_DSH_ANCHOR
+  const bridge = activeDshBridge()
+  if (bridge !== undefined) {
+    process.env.EEDSH_DSH_ANCHOR = bridge.installation.installAnchor
   }
   process.env.EEDSH_CONFIG_DIR = dirname(configPath)
   return () => {

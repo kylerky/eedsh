@@ -2,12 +2,13 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { resolveDshInstallation } from '../../src/dsh'
+import { devDshInstallation } from '../support/bridge'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
+const installation = devDshInstallation()
+const dshEnv = { EEDSH_DSH_ANCHOR: installation.installAnchor }
 
 /** The TypeScript version the repository itself pins in its root manifest. */
 async function pinnedTypeScriptVersion(): Promise<string> {
@@ -28,14 +29,13 @@ describe('built CLI integration', () => {
 
     const sync = await execFileAsync(process.execPath, [cli, 'sync', '--config', fixture], {
       cwd: root,
-      env: { ...process.env, DSH_HOME: home },
+      env: { ...process.env, ...dshEnv, DSH_HOME: home },
     })
     expect(sync.stdout).toContain('published profile built-cli')
 
-    const { binPath } = Result.getOrThrow(resolveDshInstallation())
     const dump = await execFileAsync(
       process.execPath,
-      [binPath, '--profile', 'built-cli', '--dump-config'],
+      [installation.binPath, '--profile', 'built-cli', '--dump-config'],
       { cwd: home, env: { ...process.env, DSH_HOME: home } },
     )
     expect(dump.stdout).toContain('id: built-row')
@@ -51,7 +51,7 @@ describe('built CLI integration', () => {
     const result = await execFileAsync(
       process.execPath,
       [cli, 'sync', '--explain', '--config', fixture],
-      { cwd: root, env: { ...process.env, DSH_HOME: home } },
+      { cwd: root, env: { ...process.env, ...dshEnv, DSH_HOME: home } },
     )
     const output = `${result.stdout}\n${result.stderr}`
     expect(output).toContain('generated #1 "cli" (config.ts:9:15) [missing-row]:')
@@ -119,6 +119,7 @@ describe('built CLI integration', () => {
     const home = await mkdtemp(join(root, 'packages/cli/.tmp', 'built-init-'))
     const env = {
       ...process.env,
+      ...dshEnv,
       XDG_CONFIG_HOME: home,
       DSH_HOME: join(home, 'dsh'),
     }

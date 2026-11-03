@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { Layer } from 'effect'
+import * as Result from 'effect/Result'
 import * as FileSystem from 'effect/FileSystem'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runEedsh } from '../src/cli'
@@ -19,7 +20,7 @@ import {
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import { waitFor } from './support/async'
-import { installTestBridge } from './support/bridge'
+import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
   fakeDsh,
   fakePackageManager,
@@ -72,6 +73,7 @@ function harness(options: HarnessOptions = {}) {
       stdout: (line: string) => out.push(line),
       stderr: (line: string) => err.push(line),
       services,
+      discoverDsh: () => Result.succeed(devDshInstallation()),
     },
   }
 }

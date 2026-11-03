@@ -11,7 +11,7 @@ import type { REPLServer } from 'node:repl'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
-import { type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
+import { activeDshBridge, type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
@@ -22,7 +22,7 @@ import {
   type LoadedConfig,
 } from '../config'
 import { type DoctorResult, doctor } from '../doctor'
-import { resolveBundleLayers, resolveDshInstallation } from '../dsh'
+import { resolveBundleLayers } from '../dsh'
 import { presetDefinitionErrorLines } from '../internal/authoring-error'
 import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
 import type { GenerationRecord } from '../materialize/generated-bundle'
@@ -572,18 +572,18 @@ export class ReplSession {
     this.compose =
       options.compose ??
       ((plan, profileDir, provenance, configDir) => {
-        const installation = resolveDshInstallation()
-        if (Result.isFailure(installation)) {
+        const bridge = activeDshBridge()
+        if (bridge === undefined) {
           return Promise.resolve({
             rowCount: 0,
             warnings: [],
-            error: messageOf(installation.failure),
+            error: 'the REPL needs the active DSH installation; run "eedsh repl" or select one with --dsh',
           })
         }
         return defaultCompose(
           plan,
           profileDir,
-          installation.success.installAnchor,
+          bridge.installation.installAnchor,
           provenance,
           configDir,
         )
@@ -633,12 +633,19 @@ export class ReplSession {
   }
 
   private async initialize(): Promise<void> {
-    const installation = resolveDshInstallation()
-    if (Result.isFailure(installation)) throw installation.failure
+    const bridge = activeDshBridge()
+    if (bridge === undefined) {
+      throw new ReplSessionError({
+        code: 'repl.bridge_missing',
+        message:
+          'the REPL needs the active DSH installation; run through "eedsh repl" or select one with --dsh',
+      })
+    }
+    const installation = { installAnchor: bridge.installation.installAnchor }
     try {
-      this.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
+      this.env.EEDSH_DSH_ANCHOR = installation.installAnchor
       this.env.EEDSH_CONFIG_DIR = this.configDir
-      process.env.EEDSH_DSH_ANCHOR = installation.success.installAnchor
+      process.env.EEDSH_DSH_ANCHOR = installation.installAnchor
       process.env.EEDSH_CONFIG_DIR = this.configDir
       const dshHome = this.env.DSH_HOME
       if (dshHome === undefined) delete process.env.DSH_HOME
@@ -923,9 +930,9 @@ export class ReplSession {
   }
 
   private pinnedBundles(): readonly string[] {
-    const installation = resolveDshInstallation()
-    if (Result.isFailure(installation)) return []
-    const anchor = installation.success.installAnchor
+    const bridge = activeDshBridge()
+    if (bridge === undefined) return []
+    const anchor = bridge.installation.installAnchor
     try {
       const manifest = JSON.parse(readFileSync(anchor, 'utf8')) as Record<string, unknown>
       const names: string[] = []

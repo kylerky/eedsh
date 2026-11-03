@@ -4,17 +4,25 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
-import * as Result from 'effect/Result'
-import { describe, expect, it } from 'vitest'
-import { resolveDshInstallation } from '../../src/dsh'
-import { liveServiceLayer } from '../../src/internal/effect/layer'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { liveServiceLayerFor } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
 import { preflightLayer } from '../../src/preflight'
+import { clearTestBridge, devDshInstallation, installTestBridge } from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, layer, override } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
+const installation = devDshInstallation()
+
+beforeAll(async () => {
+  await installTestBridge(installation.version)
+})
+
+afterAll(() => {
+  clearTestBridge()
+})
 
 describe('bootable profile integration', () => {
   it('composes generated rows and keeps the profile override on top', async () => {
@@ -41,10 +49,10 @@ describe('bootable profile integration', () => {
       ],
     })
 
-    const services = Layer.mergeAll(
-      liveServiceLayer,
-      preflightLayer.pipe(Layer.provide(liveServiceLayer)),
-    ).pipe(Layer.provideMerge(NodeServices.layer))
+    const live = liveServiceLayerFor(installation)
+    const services = Layer.mergeAll(live, preflightLayer.pipe(Layer.provide(live))).pipe(
+      Layer.provideMerge(NodeServices.layer),
+    )
     const result = await Effect.runPromise(
       materialize({
         plan,
@@ -58,7 +66,7 @@ describe('bootable profile integration', () => {
     )
     expect(result.changed).toBe(true)
 
-    const { binPath } = Result.getOrThrow(resolveDshInstallation())
+    const { binPath } = installation
     const { stdout } = await execFileAsync(
       process.execPath,
       [binPath, '--profile', profileName, '--dump-config'],

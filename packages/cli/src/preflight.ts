@@ -404,7 +404,7 @@ function bundleLayers(
   })
 }
 
-/** The live preflight implementation; it needs the pinned DSH installation. */
+/** The live preflight implementation; it needs the discovered DSH installation. */
 export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationShape> =
   Layer.effect(
     Preflight,

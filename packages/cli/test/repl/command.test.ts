@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runEedsh } from '../../src/cli'
+import { devDshInstallation } from '../support/bridge'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -27,6 +29,7 @@ function options(env: Record<string, string> = {}) {
       env: { DSH_HOME: home, XDG_CONFIG_HOME: join(home, 'xdg'), ...env },
       stdout: (line: string) => out.push(line),
       stderr: (line: string) => err.push(line),
+      discoverDsh: () => Result.succeed(devDshInstallation()),
     },
   }
 }
