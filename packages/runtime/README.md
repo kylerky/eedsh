@@ -1,17 +1,23 @@
 # @eedsh/runtime
 
-The static eedsh profile bundle and plugin. It mounts a watcher on the published
-generated bundle manifest and reloads a new generation through DSH's HMR service.
-It has no Effect dependency and imports only Node builtins at runtime.
+The static eedsh profile bundle and plugin. On every profile boot it records or
+refreshes the machine-local DSH installation anchor from the profile context, and
+it mounts a watcher on the published generated bundle manifest to reload a new
+generation through DSH's HMR service. It has no Effect dependency and imports only
+Node builtins at runtime.
 
 ```
-cordis.patch.yml   inserts the '@eedsh/runtime' row
-lib/index.js       the bundled Cordis plugin (exports name + apply) and watcher
+cordis.patch.yml            inserts the '@eedsh/runtime' row
+lib/index.js                the bundled Cordis plugin (exports name + apply) and startup
+lib/installation-anchor.js  the shared anchor path, format, and validation helpers
 ```
 
-The package builds one bundled ESM entry, `lib/index.js`, with its declaration and
-source maps in `lib/`; the watcher is inlined and tests import the source module
-directly.
+The package builds two bundled ESM entries, `lib/index.js` and
+`lib/installation-anchor.js`, with their declarations and source maps in `lib/`;
+the startup and watcher modules are inlined into the plugin and tests import the
+source modules directly. The `./installation-anchor` subpath export is the
+Node-only helper the CLI shares for the anchor record; it contains no Effect and
+no DSH import.
 
 `dsh.bundle.patch` points at `./cordis.patch.yml`. The package declares
 `engines.node` and no `engines.dsh`: DSH does not gate eedsh bundles by version,
@@ -21,11 +27,20 @@ inside the generated bundle.
 
 ## Behavior
 
-- Registers only inside `ctx.inject(['hmr'], ...)` and only when
-  `profileContext` is present and the HMR service provides `watchConfig` and
-  `reconcileProfile`. Without HMR, profile context, or either method, nothing is
-  mounted and the composition keeps running unchanged until the next start; a
-  missing method is reported as a warning.
+- Records `$DSH_HOME/.eedsh/installation.json` from `profileContext.home` and
+  `profileContext.installAnchor` on every profile boot, whether or not HMR is
+  present. The running manifest must name `@deepseek-ai/dsh` and declare a
+  readable version; otherwise the runtime warns and writes nothing. The write is
+  atomic and owner-only, and a write failure is reported without failing or
+  altering the profile. This is the authoritative self-heal path after a DSH
+  upgrade: the next boot replaces the recorded anchor.
+- A boot without profile context writes nothing and continues normally.
+- Registers the generated-layer watcher only inside `ctx.inject(['hmr'], ...)` and
+  only when `profileContext` is present and the HMR service provides
+  `watchConfig` and `reconcileProfile`. Without HMR, profile context, or either
+  method, no watcher is mounted and the composition keeps running unchanged until
+  the next start; a missing method is reported as a warning. Anchor recording is
+  independent of this watcher registration.
 - Watches `<profile>/.eedsh/generated/package.json` through
   `hmr.watchConfig`, reading `eedsh.generationId`.
 - A repeated generation id is ignored. A new one calls `hmr.reconcileProfile()`,

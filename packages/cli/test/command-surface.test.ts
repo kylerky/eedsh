@@ -5,6 +5,7 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { Layer } from 'effect'
@@ -173,5 +174,41 @@ describe('command surface characterization', () => {
     const runText = runHelp.out.join('\n')
     expect(runText).toContain('--profile')
     expect(runText).toContain('--no-sync')
+
+    const initHelp = harness()
+    expect(await runEedsh(['init', '--help'], initHelp.options)).toBe(0)
+    expect(initHelp.out.join('\n')).toContain('--dsh')
+  })
+
+  it('prints the launcher_unresolved remedies once', async () => {
+    await mkdir(join(root, '.tmp'), { recursive: true })
+    const home = await mkdtemp(join(root, '.tmp', 'launcher-remedy-'))
+    const bin = join(home, 'bin')
+    await mkdir(bin, { recursive: true })
+    const launcher = join(bin, 'dsh')
+    await writeFile(launcher, '#!/bin/sh\nexec dsh "$@"\n')
+
+    const h = harness()
+    const options = {
+      env: { DSH_HOME: home, PATH: bin, XDG_CONFIG_HOME: join(home, 'xdg') },
+      stdout: h.options.stdout,
+      stderr: h.options.stderr,
+      services: h.options.services,
+      commandRunner: () => ({ status: 1, stdout: '', stderr: '' }),
+    }
+    const code = await runEedsh(['sync', '--config', fixture('basic')], options)
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('dsh.launcher_unresolved')
+    expect(errors).toContain(launcher)
+    expect(errors).toContain('pnpm and npm only')
+    expect(errors).toContain('--dsh')
+    expect(errors).toContain('EEDSH_DSH_ANCHOR')
+    expect(errors).toContain('eedsh run')
+    expect(errors).toContain('eedsh sync')
+    expect(
+      errors.split('\n').filter((line) => line.includes('dsh.launcher_unresolved')),
+    ).toHaveLength(1)
+    expect(h.fs.writeCount()).toBe(0)
   })
 })

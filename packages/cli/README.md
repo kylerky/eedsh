@@ -22,7 +22,7 @@ synchronous at the config boundary and returns the native validation Result.
 ## Commands
 
 ```sh
-eedsh init   [--no-install]
+eedsh init   [--no-install] [--dsh <path>]
 eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
 eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
@@ -36,13 +36,19 @@ eedsh --help | --version
   CLI's own `@eedsh/config` and `effect` in an unpublished workspace, declares the
   single `TYPESCRIPT_SPEC` TypeScript version, never overwrites an existing file,
   and creates no repository. It installs with pnpm unless `--no-install` is given.
+  `--dsh <path>` validates an explicit installation and records the machine-local
+  anchor; without it, init reports an existing anchor, queries no package manager,
+  and still succeeds when neither DSH nor an anchor exists.
 - `sync`, `run`, and `repl` must discover one `@deepseek-ai/dsh` installation
   before evaluating a config: `--dsh <path>`, then `EEDSH_DSH_ANCHOR`, then a
-  `dsh` launcher on `PATH`, then a project-local package. The path may be the
-  package directory or its `package.json`. An invalid explicit selection fails
-  instead of falling through, and the discovered version must satisfy
-  `^0.2.1-rc.2`. `init`, `check`, and `doctor --profile` need no installation;
-  `doctor` uses one only when it is discoverable.
+  `dsh` launcher on `PATH`, then the recorded anchor, then a project-local
+  package. The path may be the package directory or its `package.json`. An
+  invalid explicit selection fails instead of falling through, and the discovered
+  version must satisfy `^0.2.1-rc.2`. Only `sync` and the sync step of `run`
+  bootstrap an unresolved `PATH` launcher through pnpm or npm global metadata;
+  `doctor`, `repl`, and `run --no-sync` never query a package manager.
+  `init`, `check`, and `doctor --profile` need no installation; `doctor` uses
+  one only when it is discoverable.
 - `--config` accepts an absolute or working-directory-relative `.ts` path. Without
   it, the CLI resolves `$XDG_CONFIG_HOME/eedsh/config.ts` and never searches the
   working directory. `.mts`, `.js`, and `.mjs` fail with
@@ -138,7 +144,35 @@ Existing files are kept byte-for-byte and reported, so a partially created proje
 is repaired by re-running init. Install failure leaves the files in place and exits
 `1`; `--no-install` writes the project and prints
 `cd <config dir> && pnpm install`. Init performs no git initialization, writes no
-DSH declaration, and resolves no DSH pin or installation.
+DSH declaration, and resolves no DSH pin or installation. `init --dsh` records
+the validated installation in `$DSH_HOME/.eedsh/installation.json` after the
+project files; a failed anchor write is reported and keeps the usable project.
+Without `--dsh`, init reads and reports an existing valid anchor and prints how
+the first sync bootstraps one when none exists.
+
+## Installation anchor
+
+The machine-local anchor is `$DSH_HOME/.eedsh/installation.json`. It records
+`format: 1`, the absolute `installAnchor` package.json, the exact version, and
+the recording source, plus the launcher and package manager when known. It lives
+outside the config project, so it is never committed and the project manifest
+gains no DSH dependency or version. Writes are atomic and owner-only.
+
+`eedsh sync` and the sync step of `eedsh run` bootstrap only when a `PATH`
+launcher exists but its package cannot be located. The bootstrap asks pnpm
+(`pnpm list -g --depth=0 --json`) and npm (`npm root -g`) for global metadata,
+requires one candidate whose version equals `dsh --version`, and records the
+anchor. When pnpm and npm both match, the launcher path selects the manager;
+otherwise the command fails with `dsh.launcher_unresolved` instead of guessing.
+A malformed, missing, or version-mismatched anchor is ignored and the next sync
+bootstraps again.
+
+`doctor`, `repl`, and `run --no-sync` never query pnpm or npm and never write
+the anchor. They select `--dsh`, `EEDSH_DSH_ANCHOR`, direct `PATH` resolution,
+or the anchor, and otherwise report `dsh.launcher_unresolved` or
+`dsh.not_found` with the remedies. Other package managers and custom wrappers
+are not introspected; use `--dsh`, `EEDSH_DSH_ANCHOR`, or boot an eedsh-managed
+profile once so the runtime records the anchor.
 
 Config evaluation registers tsx against the nearest `tsconfig.json` at or above
 `config.ts` (or no tsconfig when there is none), never against the caller's working
@@ -155,7 +189,8 @@ lock, writing files, or repairing anything.
 - It reports the discovered DSH path and version, an unsupported version as an
   error, and a record/runtime version difference as a `--strict`-sensitive
   warning that recommends `eedsh sync`. It reads no `engines.dsh` and reports a
-  version-1 plan as unreadable.
+  version-1 plan as unreadable. Doctor never queries pnpm or npm and never writes
+  the installation anchor; it remains usable without DSH.
 - It verifies the generation record, the authoritative
   `plans/<generationId>.json`, the `.eedsh/plan.json` mirror, managed bundles and
   dependencies, dependency-section conflicts, profile scaffolding, the lockfile, and
@@ -281,3 +316,7 @@ activation).
 - Local `link:` dependencies are machine-specific.
 - Package and bundle-set changes that DSH classifies as restart-required are not
   hot-reloaded; see `@eedsh/runtime`.
+- The automatic bootstrap supports pnpm and npm only. It does not parse
+  `cmd-shim-target` or probe wrappers from Yarn, Bun, Volta, asdf, Nix, or
+  package-manager shims; use `--dsh`, `EEDSH_DSH_ANCHOR`, or a prior eedsh
+  profile boot for those.

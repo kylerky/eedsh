@@ -38,10 +38,16 @@ eedsh init
 
 `eedsh sync`, `eedsh run`, and `eedsh repl` discover exactly one installation
 per invocation: `--dsh <path>`, then `EEDSH_DSH_ANCHOR`, then a `dsh` launcher
-on `PATH`, then a project-local `@deepseek-ai/dsh`. The discovered version must
-satisfy eedsh's supported range, `^0.2.1-rc.2`; `eedsh init`, `eedsh check`, and
-`eedsh doctor --profile` work without any installation. The config project
-declares its own dependencies.
+on `PATH`, then the recorded installation anchor at
+`$DSH_HOME/.eedsh/installation.json`, then a project-local `@deepseek-ai/dsh`.
+When a `dsh` launcher is on `PATH` but its package cannot be located (for
+example a pnpm or npm shim), `eedsh sync` and the sync step of `eedsh run`
+bootstrap the installation through pnpm or npm global metadata on that first
+run and record the anchor, so later commands do not query a package manager.
+`eedsh init --dsh <path>` records an explicit anchor too. The discovered
+version must satisfy eedsh's supported range, `^0.2.1-rc.2`; `eedsh init`,
+`eedsh check`, and `eedsh doctor --profile` work without any installation. The
+config project declares its own dependencies.
 
 > **Breaking change since the bundled-DSH release:** the config no longer
 > declares a DSH version, the plan is version 2 with no `dsh` field, and
@@ -99,7 +105,7 @@ Working from a checkout? Build it first; see [Build from source](#build-from-sou
 ## CLI reference
 
 ```sh
-eedsh init   [--no-install]
+eedsh init   [--no-install] [--dsh <path>]
 eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
 eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
@@ -111,17 +117,24 @@ eedsh --help | --version
 - `init` creates the XDG config project, never overwrites an existing
   `config.ts`, `package.json`, or `tsconfig.json`, and creates no repository.
   It writes no DSH declaration and needs no DSH installation.
-  `--no-install` skips pnpm and prints the install command.
+  `--no-install` skips pnpm and prints the install command. `--dsh <path>`
+  validates an explicit installation and records the machine-local anchor;
+  without it, init reports an existing anchor and never queries pnpm or npm.
+  Without any installation or anchor, init still succeeds and names the
+  first-sync bootstrap.
 - `sync`, `run`, and `repl` require a discovered `@deepseek-ai/dsh`
   installation; discovery order is `--dsh <path>`, `EEDSH_DSH_ANCHOR`, a
-  `dsh` launcher on `PATH`, then a project-local `@deepseek-ai/dsh`. The path
-  may be the package directory or its `package.json`. One installation is
-  selected per invocation and reused by watch mode. An invalid explicit
-  selection fails instead of falling through. The discovered version must
+  `dsh` launcher on `PATH`, the recorded anchor, then a project-local
+  `@deepseek-ai/dsh`. The path may be the package directory or its
+  `package.json`. One installation is selected per invocation and reused by
+  watch mode. An invalid explicit selection fails instead of falling through.
+  Only `sync` and the sync step of `run` bootstrap an unresolved `PATH`
+  launcher, through pnpm or npm global metadata; `doctor`, `repl`, and
+  `run --no-sync` never query a package manager. The discovered version must
   satisfy `^0.2.1-rc.2`; discovery and the supported range are the only version
   inputs. `doctor` uses the same discovery when available but never requires it.
-- `--dsh` is accepted by `sync`, `run`, `repl`, and `doctor`; `init` and
-  `check` do not need or accept a DSH selection.
+- `--dsh` is accepted by `init`, `sync`, `run`, `repl`, and `doctor`;
+  `check` does not accept a DSH selection.
 - `--config` defaults to `$XDG_CONFIG_HOME/eedsh/config.ts`
   (`~/.config/eedsh/config.ts` when unset or relative). The path is absolute after
   resolution; the working directory is never searched. Only `.ts` is accepted, and
@@ -548,13 +561,65 @@ the config declares no DSH value, and published artifacts carry no DSH engine.
 4. Use `dshVersion()` only to branch or log. It returns the exact selected
    version and cannot narrow or pin the published artifact.
 5. Run `eedsh doctor` to confirm the discovered path and version, the supported
-   range, and no generation drift. After any DSH upgrade, run `eedsh sync` to
-   republish with the new version.
+   range, and no generation drift. After any DSH upgrade, `eedsh sync`
+   re-bootstraps when the recorded anchor is stale, or boot an eedsh-managed
+   profile so the runtime refreshes the anchor, then sync to republish with the
+   new version.
 
 **Rollback limits:** the previous eedsh reads version-1 plans, so it cannot read
 plans published by this release. Rolling back requires restoring the old config
 with `.dsh(...)` and re-syncing with the older release; there is no downgrade
 reader.
+
+The installation anchor is additive state: no config or plan migration is
+required, and the previous eedsh release ignores
+`$DSH_HOME/.eedsh/installation.json`. In this repository's OpenSpec workflow,
+archive `adopt-external-dsh` before `add-dsh-anchor-bootstrap` so the pending
+external-DSH discovery contract applies first.
+
+### DSH discovery and the installation anchor
+
+Discovery order is `--dsh`, `EEDSH_DSH_ANCHOR`, a direct `dsh` launcher on
+`PATH`, the recorded anchor, then a project-local package. Explicit selection
+wins over the anchor. Every candidate is validated on read: the package must be
+`@deepseek-ai/dsh`, satisfy `^0.2.1-rc.2`, and declare a resolvable launcher
+entry. A `PATH` launcher that neither direct resolution nor a valid anchor
+resolves fails with `dsh.launcher_unresolved` instead of silently falling
+through to a project-local copy.
+
+`eedsh sync` and the sync step of `eedsh run` bootstrap only when a `PATH`
+launcher exists but its package cannot be located. The bootstrap runs two
+fixed, read-only metadata commands, `pnpm list -g --depth=0 --json` and
+`npm root -g`, and requires exactly one validated candidate whose version
+equals `dsh --version`. When pnpm and npm both match, the launcher path breaks
+the tie. Anything else fails with `dsh.launcher_unresolved`, naming the
+launcher, the pnpm/npm-only boundary, `--dsh`, `EEDSH_DSH_ANCHOR`, and the
+boot-once recovery. The bootstrap never parses a shim (`cmd-shim-target`) and
+supports no other package manager.
+
+The anchor is machine-local state, written outside the config project:
+
+```json
+{
+  "format": 1,
+  "installAnchor": "/.../node_modules/@deepseek-ai/dsh/package.json",
+  "version": "0.2.1-rc.2",
+  "launcher": "/home/user/.local/share/pnpm/bin/dsh",
+  "manager": "pnpm",
+  "recordedBy": "sync",
+  "recordedAt": "2026-11-03T..."
+}
+```
+
+Writes are atomic and owner-only. The runtime rewrites the anchor from
+`profileContext.installAnchor` and `profileContext.home` on every eedsh profile
+boot, even when HMR is disabled, so an upgrade self-heals on the next boot. A
+missing, malformed, or version-mismatched record is ignored and the next sync
+bootstraps again. `doctor`, `repl`, and `run --no-sync` never query pnpm or npm
+and never write the anchor; they rely on explicit selection, direct `PATH`
+resolution, or the recorded anchor, and otherwise report the remedies. Other
+launchers (Yarn, Bun, Volta, asdf, Nix, custom wrappers) use `--dsh`,
+`EEDSH_DSH_ANCHOR`, or a prior eedsh profile boot.
 
 ## How it works
 
