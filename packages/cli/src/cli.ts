@@ -22,6 +22,7 @@ import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { runCheck } from './check'
+import { type CommandRunner, defaultCommandRunner, versionProbe } from './command-runner'
 import {
   ConfigError,
   type ConfigLoadFailure,
@@ -32,6 +33,11 @@ import {
 import { configDirectory, defaultConfigPath } from './config-path'
 import { doctor, doctorExitCode, formatDoctorReport } from './doctor'
 import { type DiscoveredDshInstallation, discoverDshInstallation, validateDshVersion } from './dsh'
+import {
+  type BootstrapInput,
+  type BootstrappedDsh,
+  bootstrapDshInstallation,
+} from './dsh-bootstrap'
 import { loadDshBridge } from './dsh-bridge'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exit'
 import {
@@ -42,6 +48,11 @@ import {
   resolveInitDependencySpecs,
   runInit,
 } from './init'
+import {
+  anchorForInstallation,
+  defaultInstallationAnchorStore,
+  type InstallationAnchorStore,
+} from './installation-anchor'
 import { presetDefinitionErrorLines } from './internal/authoring-error'
 import { resolveDshHome, resolveProfileDir } from './internal/dsh-home'
 import {
@@ -132,6 +143,12 @@ export interface CliRunOptions {
   signal?: AbortSignal
   /** Replace the narrow services `init` needs. */
   initServices?: () => Layer.Layer<InitService>
+  /** Replace the machine-local installation anchor store. */
+  installationAnchor?: InstallationAnchorStore
+  /** Replace the bounded command runner used by setup paths. */
+  commandRunner?: CommandRunner
+  /** Replace the pnpm/npm installation bootstrap. */
+  bootstrapDsh?: (input: BootstrapInput) => Result.Result<BootstrappedDsh, DshFailure>
 }
 
 interface ParsedArgv {
@@ -390,23 +407,72 @@ function serviceLayerFor(
 
 /**
  * Discover and validate one installation, then install its bridge. Runs before
- * any config import so a top-level query or dshVersion() resolves.
+ * any config import so a top-level query or dshVersion() resolves. Setup
+ * commands may bootstrap an unresolved PATH launcher through pnpm/npm and
+ * record the anchor; doctor, repl, and run --no-sync never do.
  */
 function requireDsh(
   runtime: CommandRuntime,
   explicit: Option.Option<string>,
+  options: { readonly bootstrap?: boolean } = {},
 ): Effect.Effect<DiscoveredDshInstallation, DshFailure> {
   return Effect.gen(function* () {
+    const store = runtime.options.installationAnchor ?? defaultInstallationAnchorStore
+    const runner = runtime.options.commandRunner ?? defaultCommandRunner
     const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
     const discovered = yield* Effect.sync(() =>
       discovery({
         ...(Option.isSome(explicit) ? { explicit: explicit.value } : {}),
         env: runtime.env,
         cwd: runtime.cwd,
+        readAnchor: () => store.read(runtime.env),
+        probeVersion: versionProbe(runner, runtime.env),
       }),
     )
-    if (Result.isFailure(discovered)) return yield* Effect.fail(discovered.failure)
-    const validated = validateDshVersion(discovered.success)
+
+    let selected: DiscoveredDshInstallation
+    if (Result.isSuccess(discovered)) {
+      selected = discovered.success
+    } else {
+      const envAnchor = runtime.env.EEDSH_DSH_ANCHOR
+      const explicitAnchor = envAnchor !== undefined && envAnchor.trim() !== ''
+      const launcher = discovered.failure.path
+      const canBootstrap =
+        options.bootstrap === true &&
+        !Option.isSome(explicit) &&
+        !explicitAnchor &&
+        discovered.failure.code === 'dsh.launcher_unresolved' &&
+        launcher !== undefined
+      if (!canBootstrap) return yield* Effect.fail(discovered.failure)
+      const bootstrap = runtime.options.bootstrapDsh ?? bootstrapDshInstallation
+      const bootstrapped = yield* Effect.sync(() =>
+        bootstrap({ env: runtime.env, cwd: runtime.cwd, launcher: launcher as string, runner }),
+      )
+      if (Result.isFailure(bootstrapped)) return yield* Effect.fail(bootstrapped.failure)
+      selected = {
+        ...bootstrapped.success.installation,
+        source: 'bootstrapped',
+        launcher: bootstrapped.success.launcher,
+      }
+      const written = yield* Effect.sync(() =>
+        store.write(
+          runtime.env,
+          anchorForInstallation(selected, {
+            recordedBy: 'sync',
+            launcher: bootstrapped.success.launcher,
+            manager: bootstrapped.success.manager,
+          }),
+        ),
+      )
+      if (!written.ok) {
+        runtime.stderr(
+          `eedsh: warning: cannot record the DSH installation anchor: ${written.error}; ` +
+            `continuing with ${selected.installAnchor}`,
+        )
+      }
+    }
+
+    const validated = validateDshVersion(selected)
     if (Result.isFailure(validated)) return yield* Effect.fail(validated.failure)
     const load = runtime.options.loadDshBridge ?? loadDshBridge
     const loaded = yield* Effect.promise(() => load(validated.success))
@@ -714,7 +780,7 @@ function runSyncCommand(
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
-    const installation = yield* requireDsh(runtime, input.dsh)
+    const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: true })
 
     if (input.watch) {
       const context: WatchContext = {
@@ -787,7 +853,7 @@ function runRunCommand(
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const installation = yield* requireDsh(runtime, input.dsh)
+    const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: !input.noSync })
     const loaded = yield* loadConfigValue(configPath.value, runtime)
     const selection = selectProfile(loaded.config, input.profile)
     if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
@@ -857,11 +923,15 @@ function runDoctorCommand(
       runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
+    const store = runtime.options.installationAnchor ?? defaultInstallationAnchorStore
+    const runner = runtime.options.commandRunner ?? defaultCommandRunner
     const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
     const discovered = discovery({
       ...(Option.isSome(input.dsh) ? { explicit: input.dsh.value } : {}),
       env: runtime.env,
       cwd: runtime.cwd,
+      readAnchor: () => store.read(runtime.env),
+      probeVersion: versionProbe(runner, runtime.env),
     })
     let doctorDsh: DiscoveredDshInstallation | undefined
     if (Result.isSuccess(discovered)) {

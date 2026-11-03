@@ -30,7 +30,7 @@ import {
 import type { DshFailure } from './internal/effect/errors'
 
 /** How the selected installation was discovered. */
-export type DshSource = 'explicit' | 'anchor' | 'path' | 'recorded' | 'project'
+export type DshSource = 'explicit' | 'anchor' | 'path' | 'recorded' | 'bootstrapped' | 'project'
 
 /** A selected DSH installation and where discovery found it. */
 export interface DiscoveredDshInstallation extends DshInstallationInfo {

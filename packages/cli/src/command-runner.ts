@@ -129,6 +129,9 @@ export function probeLauncherVersion(
  * @param runner - the command runner seam.
  * @returns a probe suitable for discovery.
  */
-export function versionProbe(runner: CommandRunner): (launcher: string) => string | undefined {
-  return (launcher) => probeLauncherVersion(runner, launcher)
+export function versionProbe(
+  runner: CommandRunner,
+  env?: Record<string, string | undefined>,
+): (launcher: string) => string | undefined {
+  return (launcher) => probeLauncherVersion(runner, launcher, undefined, env)
 }
