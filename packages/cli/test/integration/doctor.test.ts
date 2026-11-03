@@ -79,7 +79,7 @@ async function recordOf(profileDir: string): Promise<RecordShape> {
 
 async function diagnose(profileDir: string) {
   const result = await Effect.runPromise(
-    doctor({ profileDir }).pipe(Effect.provide(NodeServices.layer)),
+    doctor({ profileDir, dshHome: '/dsh-home' }).pipe(Effect.provide(NodeServices.layer)),
   )
   return {
     result,

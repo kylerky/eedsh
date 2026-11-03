@@ -1,4 +1,10 @@
-import { PLAN_FORMAT, PLAN_VERSION, type ProfilePlan, validatePlan } from '@eedsh/plan'
+import {
+  PLAN_FORMAT,
+  PLAN_VERSION,
+  type PlanSource,
+  type ProfilePlan,
+  validatePlan,
+} from '@eedsh/plan'
 import * as Result from 'effect/Result'
 
 /** A profile plan input for tests that need a plan value directly. */
@@ -7,6 +13,7 @@ export interface TestPlanInput {
   bundles?: readonly unknown[]
   layers?: readonly unknown[]
   packages?: Readonly<Record<string, string>>
+  sources?: Readonly<Record<string, PlanSource>>
 }
 
 /**
@@ -23,6 +30,7 @@ export function planOf(input: TestPlanInput): ProfilePlan {
     bundles: input.bundles ?? [],
     layers: input.layers ?? [],
     packages: input.packages ?? {},
+    ...(input.sources === undefined ? {} : { sources: input.sources }),
   })
   if (Result.isFailure(result)) throw new Error(result.failure.message)
   return result.success

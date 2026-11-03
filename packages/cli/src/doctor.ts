@@ -5,8 +5,8 @@
  * `eedsh sync --adopt-ownership`.
  * @module @eedsh/cli/doctor
  */
-import { join } from 'node:path'
-import { canonicalJson, type ProfilePlan, ProfilePlanSchema } from '@eedsh/plan'
+import { isAbsolute, join } from 'node:path'
+import { canonicalJson, type PlanSource, type ProfilePlan, ProfilePlanSchema } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
@@ -49,6 +49,16 @@ import {
   PROFILE_ROOT_FILENAME,
   PROFILE_WORKSPACE_FILENAME,
 } from './materialize/profile'
+import { readSourceRecord } from './provision/record'
+import {
+  resolveSourceLocation,
+  sourceAcquisitionKind,
+  sourceCheckoutDir,
+  sourceKey,
+  sourceLinkSpec,
+  sourceStatePath,
+} from './provision/source'
+import { verifyProvisionedPackage } from './provision/verify'
 
 /** The severity of one doctor finding. */
 export type DoctorSeverity = 'error' | 'warning'
@@ -84,6 +94,8 @@ export interface DoctorResult {
 export interface DoctorOptions {
   /** Absolute path of the published profile to inspect. */
   profileDir: string
+  /** Absolute DSH home; provisioned checkouts and records live below it. */
+  dshHome: string
   /** The discovered DSH installation, when discovery succeeded. */
   dsh?: DiscoveredDshInstallation
 }
@@ -332,6 +344,7 @@ function checkConsistency(
 
   const expectedNames = new Set([
     ...Object.keys(plan.packages),
+    ...Object.keys(plan.sources ?? {}),
     RUNTIME_PACKAGE_NAME,
     GENERATED_PACKAGE_NAME,
   ])
@@ -501,6 +514,148 @@ function checkManifest(
           ? `managed package ${conflict.name} is also declared in ${conflict.field}; run "eedsh sync" to remove it`
           : `managed package ${conflict.name} is also declared in ${conflict.field}; the resolved version may differ`
       findings.push(warningFinding('dependencies', message, Option.some(path)))
+    }
+  })
+}
+
+const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
+
+/** The commit a provisioned working tree is checked out at, from its refs. */
+function readCheckedOutCommit(
+  fs: FileSystem.FileSystem,
+  checkoutDir: string,
+): Effect.Effect<Option.Option<string>> {
+  return Effect.gen(function* () {
+    const head = yield* readOptional(fs, join(checkoutDir, '.git', 'HEAD')).pipe(Effect.result)
+    if (Result.isFailure(head) || Option.isNone(head.success)) return Option.none()
+    const value = head.success.value.trim()
+    if (value.startsWith('ref: ')) {
+      const ref = yield* readOptional(fs, join(checkoutDir, '.git', value.slice(5).trim())).pipe(
+        Effect.result,
+      )
+      if (Result.isFailure(ref) || Option.isNone(ref.success)) return Option.none()
+      const commit = ref.success.value.trim()
+      return COMMIT_SHA.test(commit) ? Option.some(commit) : Option.none()
+    }
+    return COMMIT_SHA.test(value) ? Option.some(value) : Option.none()
+  })
+}
+
+/**
+ * The derived manifest specification for a source, when the declaration alone
+ * determines it. A git source always does; a local checkout does only when its
+ * declared location is absolute or home-relative.
+ */
+function derivedSourceSpec(declaration: PlanSource, dshHome: string): string | undefined {
+  if (sourceAcquisitionKind(declaration.from) === 'git') {
+    return sourceLinkSpec(sourceCheckoutDir(dshHome, sourceKey(declaration)))
+  }
+  const from = declaration.from
+  const machineLocal =
+    isAbsolute(from) || from === '~' || from.startsWith('~/') || from.startsWith('~\\')
+  return machineLocal ? sourceLinkSpec(resolveSourceLocation(from, dshHome).location) : undefined
+}
+
+/**
+ * Verify provisioned sources without provisioning: read the published plan's
+ * source declarations, require the manifest to name each provisioned location,
+ * require the location and its entry points to exist, and warn when a working
+ * tree sits at a commit other than the recorded one.
+ */
+function checkSources(
+  fs: FileSystem.FileSystem,
+  profileDir: string,
+  plan: ProfilePlan,
+  dshHome: string,
+  findings: DoctorFinding[],
+): Effect.Effect<void, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const sources = plan.sources ?? {}
+    const names = Object.keys(sources).sort()
+    if (names.length === 0) return
+
+    const manifestPath = join(profileDir, 'package.json')
+    const read = yield* readOptional(fs, manifestPath).pipe(Effect.result)
+    let dependencies: Readonly<Record<string, string>> | undefined
+    if (Result.isSuccess(read) && Option.isSome(read.success)) {
+      const parsed = parseJson(read.success.value)
+      if (Result.isSuccess(parsed)) {
+        const decoded = Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
+        if (Option.isSome(decoded)) {
+          dependencies = readProfileDependencies(Option.some({ ...decoded.value })).dependencies
+        }
+      }
+    }
+
+    for (const name of names) {
+      const declaration = sources[name] as PlanSource
+      const expected = derivedSourceSpec(declaration, dshHome)
+      const declared = dependencies?.[name]
+      if (dependencies !== undefined && expected !== undefined && declared !== expected) {
+        findings.push(
+          errorFinding(
+            'sources',
+            `the profile manifest declares source ${name} as ${declared ?? 'nothing'}, but its provisioned location is ${expected}; run "eedsh sync"`,
+            Option.some(manifestPath),
+          ),
+        )
+      }
+
+      const spec = dependencies === undefined ? expected : (declared ?? expected)
+      if (spec === undefined || !spec.startsWith('link:')) {
+        findings.push(
+          errorFinding(
+            'sources',
+            `source ${name} has no link specification in the profile manifest; run "eedsh sync"`,
+            Option.some(manifestPath),
+          ),
+        )
+        continue
+      }
+      const location = spec.slice('link:'.length)
+      if (!(yield* existsOrFalse(fs, location))) {
+        findings.push(
+          errorFinding(
+            'sources',
+            `the provisioned source ${name} is missing at ${location}; run "eedsh sync"`,
+            Option.some(location),
+          ),
+        )
+        continue
+      }
+
+      const verified = yield* verifyProvisionedPackage({ name, packageDir: location }).pipe(
+        Effect.result,
+      )
+      if (Result.isFailure(verified)) {
+        const failure = verified.failure
+        const path = 'path' in failure && typeof failure.path === 'string' ? failure.path : location
+        findings.push(
+          errorFinding('sources', `${messageOf(failure)}; run "eedsh sync"`, Option.some(path)),
+        )
+      }
+
+      if (sourceAcquisitionKind(declaration.from) !== 'git') continue
+      const checkedOut = yield* readCheckedOutCommit(fs, location)
+      const recordRead = yield* readSourceRecord(
+        fs,
+        sourceStatePath(dshHome, sourceKey(declaration)),
+      ).pipe(Effect.result)
+      if (Result.isFailure(recordRead)) continue
+      const record = recordRead.success
+      if (
+        record?.commit !== undefined &&
+        Option.isSome(checkedOut) &&
+        checkedOut.value !== record.commit
+      ) {
+        findings.push(
+          warningFinding(
+            'sources',
+            `the provisioned checkout for ${name} is at ${checkedOut.value}, but the recorded commit is ${record.commit}; run "eedsh sync" to update it`,
+            Option.some(location),
+          ),
+        )
+      }
     }
   })
 }
@@ -841,6 +996,7 @@ export function doctor(
     if (Option.isSome(plan)) {
       checkConsistency(record.value, plan.value, recordPath, findings)
       yield* checkMirror(fs, options.profileDir, plan.value, findings)
+      yield* checkSources(fs, options.profileDir, plan.value, options.dshHome, findings)
     }
     yield* checkManifest(fs, options.profileDir, record.value, findings)
     yield* checkScaffolding(fs, options.profileDir, findings)

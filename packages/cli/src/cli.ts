@@ -1009,6 +1009,7 @@ function runDoctorCommand(
     }
     const result = yield* doctor({
       profileDir: profileDirForName(profileName, runtime.env),
+      dshHome: resolveDshHome(undefined, runtime.env),
       ...(doctorDsh === undefined ? {} : { dsh: doctorDsh }),
     })
     yield* Effect.sync(() => {

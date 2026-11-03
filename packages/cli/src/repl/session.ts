@@ -436,8 +436,15 @@ function profileDirectory(name: string, env: Record<string, string | undefined>)
   return resolveProfileDir(name, resolveDshHome(undefined, env))
 }
 
-async function defaultDoctor(profileDir: string): Promise<DoctorResult> {
-  return await Effect.runPromise(doctor({ profileDir }).pipe(Effect.provide(NodeServices.layer)))
+async function defaultDoctor(
+  profileDir: string,
+  env: Record<string, string | undefined>,
+): Promise<DoctorResult> {
+  return await Effect.runPromise(
+    doctor({ profileDir, dshHome: resolveDshHome(undefined, env) }).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
+  )
 }
 
 /** One generated preflight layer per plan group, with recorded provenance. */
@@ -571,7 +578,7 @@ export class ReplSession {
     this.env = options.env ?? process.env
     this.authoring = authoring
     this.loadConfig = options.loadConfig ?? defaultLoadConfig
-    this.runDoctor = options.doctor ?? defaultDoctor
+    this.runDoctor = options.doctor ?? ((profileDir) => defaultDoctor(profileDir, this.env))
     this.syncPlan = options.syncPlan
     this.installPreview = options.installPreview
     this.cacheRoot = options.cacheRoot ?? previewCacheRoot(this.env)

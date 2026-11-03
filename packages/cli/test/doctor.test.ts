@@ -11,6 +11,12 @@ import {
 import { SUPPORTED_DSH_RANGE } from '../src/dsh'
 import type { DiscoveredDshInstallation } from '../src/dsh-discovery'
 import { sha256 } from '../src/internal/sha256'
+import {
+  sourceCheckoutDir,
+  sourceKey,
+  sourceLinkSpec,
+  sourceStatePath,
+} from '../src/provision/source'
 import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
 import { planOf } from './support/plan'
 import { bundle, generated, insert, layer } from './support/plan-parts'
@@ -87,12 +93,14 @@ async function published(options: { range?: boolean } = {}) {
 
 function diagnose(
   fs: FileSystem.FileSystem,
-  options: { dsh?: DiscoveredDshInstallation } = {},
+  options: { dsh?: DiscoveredDshInstallation; dshHome?: string } = {},
 ): Promise<DoctorResult> {
   return Effect.runPromise(
-    doctor({ profileDir: PROFILE_DIR, ...options }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-    ),
+    doctor({
+      profileDir: PROFILE_DIR,
+      dshHome: options.dshHome ?? '/dsh-home',
+      ...(options.dsh === undefined ? {} : { dsh: options.dsh }),
+    }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
   )
 }
 
@@ -759,5 +767,169 @@ describe('doctor DSH provenance and drift', () => {
     const lines = formatDoctorReport(result)
     expect(lines[0]).toContain('0.2.1-rc.2')
     expect(lines[0]).toContain('/opt/dsh/package.json')
+  })
+})
+
+describe('doctor source checks', () => {
+  const DSH_HOME = '/dsh-home'
+  const SOURCE_NAME = '@scope/source-bundle'
+  const SOURCE_DECLARATION = {
+    from: 'https://example.test/acme/source-bundle.git',
+    ref: 'main',
+    prepare: [],
+  }
+  const SOURCE_KEY = sourceKey(SOURCE_DECLARATION)
+  const CHECKOUT_DIR = sourceCheckoutDir(DSH_HOME, SOURCE_KEY)
+  const SOURCE_STATE = sourceStatePath(DSH_HOME, SOURCE_KEY)
+  const LINK_SPEC = sourceLinkSpec(CHECKOUT_DIR)
+  const HEAD_COMMIT = 'a'.repeat(40)
+
+  function sourcePlan() {
+    return planOf({
+      name: 'work',
+      bundles: [bundle(BUNDLE), generated()],
+      layers: [layer('cli', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })])],
+      packages: { '@scope/plugin': '1.0.0' },
+      sources: { [SOURCE_NAME]: SOURCE_DECLARATION },
+    })
+  }
+
+  function sourceLockfile(spec: string): string {
+    return `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@scope/plugin':
+        specifier: 1.0.0
+        version: 1.0.0
+      '@scope/source-bundle':
+        specifier: ${spec}
+      '@eedsh/runtime':
+        specifier: link:/repo/packages/runtime
+      '@eedsh/generated':
+        specifier: link:./.eedsh/generated
+`
+  }
+
+  async function publishedSource(options: { headCommit?: string } = {}) {
+    const h = harness({
+      plan: sourcePlan(),
+      directories: [
+        CHECKOUT_DIR,
+        `${CHECKOUT_DIR}/lib`,
+        `${CHECKOUT_DIR}/.git`,
+        `${CHECKOUT_DIR}/.git/refs/heads`,
+      ],
+      files: {
+        [`${CHECKOUT_DIR}/package.json`]: `${JSON.stringify({ name: SOURCE_NAME, main: './lib/index.js' })}\n`,
+        [`${CHECKOUT_DIR}/lib/index.js`]: 'export {}\n',
+        [`${CHECKOUT_DIR}/.git/HEAD`]: 'ref: refs/heads/main\n',
+        [`${CHECKOUT_DIR}/.git/refs/heads/main`]: `${options.headCommit ?? HEAD_COMMIT}\n`,
+        [SOURCE_STATE]: `${JSON.stringify({
+          format: 1,
+          name: SOURCE_NAME,
+          from: SOURCE_DECLARATION.from,
+          ref: 'main',
+          commit: HEAD_COMMIT,
+          prepare: [],
+          preparedAt: '2026-11-03T08:00:00.000Z',
+        })}\n`,
+      },
+    })
+    await h.run({ sourceSpecs: { [SOURCE_NAME]: LINK_SPEC } })
+    addRuntimeState(h)
+    h.fs.files.set(LOCKFILE_PATH, sourceLockfile(LINK_SPEC))
+    h.fs.files.set(
+      `${PROFILE_DIR}/node_modules/${SOURCE_NAME}/package.json`,
+      `${JSON.stringify({ name: SOURCE_NAME, version: '1.0.0' })}\n`,
+    )
+    return h
+  }
+
+  function editManifestDependency(
+    h: Awaited<ReturnType<typeof publishedSource>>,
+    name: string,
+    spec: string | undefined,
+  ): void {
+    const manifest = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
+      dependencies: Record<string, string>
+    }
+    if (spec === undefined) delete manifest.dependencies[name]
+    else manifest.dependencies[name] = spec
+    h.fs.files.set(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`)
+  }
+
+  function sourcesFinding(result: DoctorResult): DoctorFinding | undefined {
+    return finding(result, 'sources')
+  }
+
+  it('reports no source finding for a healthy provisioned profile', async () => {
+    const h = await publishedSource()
+    const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    expect(sourcesFinding(result)).toBeUndefined()
+    expect(result.errors).toBe(0)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('errors when the provisioned location is missing', async () => {
+    const h = await publishedSource()
+    for (const path of [...h.fs.files.keys()]) {
+      if (path.startsWith(`${CHECKOUT_DIR}/`)) h.fs.files.delete(path)
+    }
+    h.fs.directories.delete(CHECKOUT_DIR)
+    const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    const item = sourcesFinding(result)
+    expect(item).toMatchObject({ severity: 'error', check: 'sources' })
+    expect(item?.message).toContain(SOURCE_NAME)
+    expect(item?.message).toContain(CHECKOUT_DIR)
+    expect(item?.message).toContain('eedsh sync')
+    expect(result.errors).toBeGreaterThan(0)
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('errors when the manifest declares another specification', async () => {
+    const h = await publishedSource()
+    const other = 'link:/elsewhere/source-bundle'
+    editManifestDependency(h, SOURCE_NAME, other)
+    const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    const item = sourcesFinding(result)
+    expect(item).toMatchObject({ severity: 'error', check: 'sources' })
+    expect(item?.message).toContain(SOURCE_NAME)
+    expect(item?.message).toContain(other)
+    expect(item?.message).toContain(LINK_SPEC)
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('errors when the provisioned package is not built', async () => {
+    const h = await publishedSource()
+    h.fs.files.delete(`${CHECKOUT_DIR}/lib/index.js`)
+    const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    const item = sourcesFinding(result)
+    expect(item).toMatchObject({ severity: 'error', check: 'sources' })
+    expect(item?.message).toContain(SOURCE_NAME)
+    expect(item?.message).toContain(`${CHECKOUT_DIR}/lib/index.js`)
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('warns when the working tree is at a different commit than the record', async () => {
+    const moved = 'b'.repeat(40)
+    const h = await publishedSource({ headCommit: moved })
+    const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    const item = sourcesFinding(result)
+    expect(item).toMatchObject({ severity: 'warning', check: 'sources' })
+    expect(item?.message).toContain(moved)
+    expect(item?.message).toContain(HEAD_COMMIT)
+    expect(result.errors).toBe(0)
+    expect(doctorExitCode(result, false)).toBe(0)
+    expect(doctorExitCode(result, true)).toBe(1)
+  })
+
+  it('never provisions or writes while inspecting a source', async () => {
+    const h = await publishedSource()
+    const writes = h.fs.writeCount()
+    const files = new Map(h.fs.files)
+    await diagnose(h.fs.fs, { dshHome: DSH_HOME })
+    expect(h.fs.writeCount()).toBe(writes)
+    expect(new Map(h.fs.files)).toEqual(files)
   })
 })
