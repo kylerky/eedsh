@@ -1293,6 +1293,20 @@ describe('tagged failures', () => {
   })
 })
 
+describe('sync provisioning flags', () => {
+  it('rejects --rebuild together with --no-build as a usage error', async () => {
+    const h = harness()
+    const code = await runEedsh(
+      ['sync', '--rebuild', '--no-build', '--config', fixture('basic')],
+      h.options,
+    )
+    expect(code).toBe(2)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('--rebuild')
+    expect(errors).toContain('--no-build')
+  })
+})
+
 describe('eedsh sync --watch', () => {
   it('reruns on change, retains the last generation on failure, and reuses services', async () => {
     const h = harness()

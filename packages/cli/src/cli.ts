@@ -388,6 +388,7 @@ function programFor(
   adoptOwnership: boolean,
   provenance: ConfigProvenance | undefined,
   configDir: string,
+  provisioning: ProvisioningMode,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
   return Effect.gen(function* () {
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
@@ -397,6 +398,8 @@ function programFor(
       home: resolveDshHome(undefined, env),
       configDir,
       plan,
+      ...(provisioning.rebuild ? { rebuild: true } : {}),
+      ...(provisioning.noBuild ? { noBuild: true } : {}),
     })
     const result = yield* materialize({
       plan,
@@ -510,8 +513,9 @@ function syncProgram(
   adoptOwnership: boolean,
   provenance: ConfigProvenance | undefined,
   configDir: string,
+  provisioning: ProvisioningMode,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
-  return programFor(env, plan, strict, explain, adoptOwnership, provenance, configDir)
+  return programFor(env, plan, strict, explain, adoptOwnership, provenance, configDir, provisioning)
 }
 
 /** Run one one-shot materialization with its own service layer. */
@@ -520,6 +524,7 @@ function syncOnce(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
+  provisioning: ProvisioningMode,
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshFailure> {
   return Effect.suspend(() =>
     syncProgram(
@@ -530,6 +535,7 @@ function syncOnce(
       adoptOwnership,
       context.provenance,
       context.configDir,
+      provisioning,
     ).pipe(Effect.provide(serviceLayerFor(context.options, context.installation))),
   )
 }
@@ -570,6 +576,7 @@ function runWatchSelection(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
+  provisioning: ProvisioningMode,
 ): Effect.Effect<void, never, CliService> {
   return Effect.gen(function* () {
     const loaded = yield* Effect.exit(loadConfigValue(context.configPath, context))
@@ -608,6 +615,7 @@ function runWatchSelection(
           adoptOwnership,
           loaded.value.provenance,
           loaded.value.configDir,
+          provisioning,
         ),
       )
       if (Exit.isFailure(runExit)) {
@@ -640,6 +648,7 @@ function syncWatch(
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
+  provisioning: ProvisioningMode,
 ): Effect.Effect<void, ConfigError | DshResolveFailure> {
   return Effect.gen(function* () {
     const dir = dirname(context.configPath)
@@ -680,12 +689,14 @@ function syncWatch(
       const loop = Effect.gen(function* () {
         while (true) {
           yield* Queue.take(changes)
-          yield* runWatchSelection(context, strict, explain, adoptOwnership)
+          yield* runWatchSelection(context, strict, explain, adoptOwnership, provisioning)
         }
       })
 
       yield* Effect.race(
-        runWatchSelection(context, strict, explain, adoptOwnership).pipe(Effect.andThen(loop)),
+        runWatchSelection(context, strict, explain, adoptOwnership, provisioning).pipe(
+          Effect.andThen(loop),
+        ),
         stopSignal(context.options.signal),
       )
     })
@@ -780,6 +791,15 @@ function reportProfileSyncFailure(
   if (!explain && rawPreflightWarnings(error).length > 0) stderr(EXPLAIN_HINT)
 }
 
+/** Whether provisioning forces preparation or refuses to prepare. */
+interface ProvisioningMode {
+  readonly rebuild: boolean
+  readonly noBuild: boolean
+}
+
+/** The mode for the sync step of a command that takes no provisioning flags. */
+const NO_PROVISIONING_MODE: ProvisioningMode = { rebuild: false, noBuild: false }
+
 interface SyncCommandInput {
   configPath: Option.Option<string>
   profile: Option.Option<string>
@@ -788,6 +808,8 @@ interface SyncCommandInput {
   watch: boolean
   explain: boolean
   adoptOwnership: boolean
+  rebuild: boolean
+  noBuild: boolean
 }
 
 function runSyncCommand(
@@ -796,6 +818,14 @@ function runSyncCommand(
 ): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext({ sync: true, explain: input.explain })
+    if (input.rebuild && input.noBuild) {
+      runtime.stderr('eedsh: --rebuild and --no-build are mutually exclusive')
+      return EXIT_USAGE
+    }
+    const provisioning: ProvisioningMode = {
+      rebuild: input.rebuild,
+      noBuild: input.noBuild,
+    }
     const configPath = resolveConfigPath(input.configPath, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
@@ -808,7 +838,7 @@ function runSyncCommand(
         profile: input.profile,
         installation,
       }
-      yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership)
+      yield* syncWatch(context, input.strict, input.explain, input.adoptOwnership, provisioning)
       return EXIT_OK
     }
 
@@ -837,7 +867,7 @@ function runSyncCommand(
         profile: input.profile,
       }
       const runExit = yield* Effect.exit(
-        syncOnce(context, input.strict, input.explain, input.adoptOwnership),
+        syncOnce(context, input.strict, input.explain, input.adoptOwnership, provisioning),
       )
       if (Exit.isFailure(runExit)) {
         if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
@@ -892,7 +922,7 @@ function runRunCommand(
       profile: input.profile,
     }
     if (!input.noSync) {
-      const result = yield* syncOnce(context, false, false, false)
+      const result = yield* syncOnce(context, false, false, false, NO_PROVISIONING_MODE)
       yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
     }
     return yield* runBoot(context, installation, input.dshArgs)
@@ -1011,9 +1041,16 @@ function runReplCommand(
     const syncPlan = async (plan: ProfilePlan, provenance: ConfigProvenance | undefined) => {
       const exit = await Effect.runPromiseExit(
         Effect.suspend(() =>
-          syncProgram(runtime.env, plan, false, false, false, provenance, configDir).pipe(
-            Effect.provide(serviceLayerFor(runtime.options, installation)),
-          ),
+          syncProgram(
+            runtime.env,
+            plan,
+            false,
+            false,
+            false,
+            provenance,
+            configDir,
+            NO_PROVISIONING_MODE,
+          ).pipe(Effect.provide(serviceLayerFor(runtime.options, installation))),
         ),
       )
       if (Exit.isFailure(exit)) {
@@ -1222,6 +1259,14 @@ export async function runEedsh(
     ),
     Flag.withDefault(false),
   )
+  const rebuildFlag = Flag.Boolean('rebuild').pipe(
+    Flag.withDescription('run every source preparation step even when the source is unchanged'),
+    Flag.withDefault(false),
+  )
+  const noBuildFlag = Flag.Boolean('no-build').pipe(
+    Flag.withDescription('fail instead of preparing when a declared source needs preparation'),
+    Flag.withDefault(false),
+  )
   const syncProfileFlag = Flag.String('profile').pipe(
     Flag.withDescription('profile to sync (default: every profile in the config)'),
     Flag.optional,
@@ -1272,6 +1317,8 @@ export async function runEedsh(
       watch: watchFlag,
       explain: explainFlag,
       adoptOwnership: adoptOwnershipFlag,
+      rebuild: rebuildFlag,
+      noBuild: noBuildFlag,
     },
     (parsed) =>
       Effect.gen(function* () {
@@ -1284,6 +1331,8 @@ export async function runEedsh(
             watch: parsed.watch,
             explain: parsed.explain,
             adoptOwnership: parsed.adoptOwnership,
+            rebuild: parsed.rebuild,
+            noBuild: parsed.noBuild,
           },
           runtime,
         )

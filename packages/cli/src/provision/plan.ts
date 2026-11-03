@@ -10,7 +10,8 @@ import { Effect } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import type { ChildProcessSpawner } from 'effect/process'
-import type { ProvisionFailure } from '../internal/effect/errors'
+import type { ProvisionFailure, SyncLocked } from '../internal/effect/errors'
+import type { SyncLockShape } from '../internal/effect/services'
 import type { ProvisionCommand } from './command'
 import { type ProvisionedSource, provisionSource } from './git'
 import { sourceLinkSpec } from './source'
@@ -25,6 +26,10 @@ export interface ProvisionPlanSourcesInput {
   readonly plan: ProfilePlan
   /** Override the command seam; defaults to the core child-process runner. */
   readonly command?: ProvisionCommand
+  /** Force preparation even when the recorded state is unchanged. */
+  readonly rebuild?: boolean
+  /** Fail instead of preparing when preparation would be needed. */
+  readonly noBuild?: boolean
   /** Receives non-fatal provisioning warnings. */
   readonly warn?: (message: string) => void
   /** Override the recorded preparation time, for tests. */
@@ -48,8 +53,8 @@ export function provisionPlanSources(
   input: ProvisionPlanSourcesInput,
 ): Effect.Effect<
   ProvisionedPlanSources,
-  ProvisionFailure | PlatformError.PlatformError,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  ProvisionFailure | PlatformError.PlatformError | SyncLocked,
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | SyncLockShape
 > {
   return Effect.gen(function* () {
     const sources: ProvisionedSource[] = []
@@ -61,6 +66,8 @@ export function provisionPlanSources(
         name,
         declaration,
         ...(input.command === undefined ? {} : { command: input.command }),
+        ...(input.rebuild === undefined ? {} : { rebuild: input.rebuild }),
+        ...(input.noBuild === undefined ? {} : { noBuild: input.noBuild }),
         ...(input.now === undefined ? {} : { now: input.now }),
         ...(input.warn === undefined ? {} : { warn: input.warn }),
       })

@@ -12,7 +12,10 @@ import { Effect } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import type { ChildProcessSpawner } from 'effect/process'
-import { ProvisionFailure } from '../internal/effect/errors'
+import * as Result from 'effect/Result'
+import { ProvisionFailure, type SyncLocked } from '../internal/effect/errors'
+import type { SyncLockShape } from '../internal/effect/services'
+import { withSyncLock } from '../internal/lock'
 import { type CommandResult, childProcessCommand, type ProvisionCommand } from './command'
 import {
   readSourceRecord,
@@ -26,6 +29,7 @@ import {
   type SourceAcquisitionKind,
   sourceCheckoutDir,
   sourceKey,
+  sourceLockPath,
   sourceStatePath,
 } from './source'
 import { verifyProvisionedPackage } from './verify'
@@ -43,7 +47,8 @@ function commandFailure(input: {
     code: input.code ?? 'provision.command_failed',
     packageName: input.name,
     message:
-      `${input.argv.join(' ')} exited with status ${input.result.status} in ${input.cwd}` +
+      `${input.argv.join(' ')} exited with status ${input.result.status} in ${input.cwd} ` +
+      `for source ${JSON.stringify(input.name)}` +
       (detail === '' ? '' : `: ${detail}`),
     command: [...input.argv],
     status: input.result.status,
@@ -189,6 +194,10 @@ export interface ProvisionSourceInput {
   readonly declaration: PlanSource
   /** Override the command seam; defaults to the core child-process runner. */
   readonly command?: ProvisionCommand
+  /** Force preparation even when the recorded state is unchanged. */
+  readonly rebuild?: boolean
+  /** Fail instead of preparing when preparation would be needed. */
+  readonly noBuild?: boolean
   /** Override the recorded preparation time, for tests. */
   readonly now?: () => Date
   /** Receives non-fatal provisioning warnings. */
@@ -216,6 +225,22 @@ export interface ProvisionedSource {
   readonly warnings: readonly string[]
 }
 
+/** The refusal for a source that needs preparation under `--no-build`. */
+function noBuildFailure(input: {
+  readonly name: string
+  readonly path: string
+  readonly steps: readonly (readonly string[])[]
+}): ProvisionFailure {
+  return new ProvisionFailure({
+    code: 'provision.no_build',
+    packageName: input.name,
+    path: input.path,
+    message:
+      `source ${JSON.stringify(input.name)} needs preparation, but --no-build refuses to run ` +
+      input.steps.map((step) => step.join(' ')).join(', '),
+  })
+}
+
 /** Provision one local checkout in place. */
 function provisionLocal(input: {
   readonly fs: FileSystem.FileSystem
@@ -227,6 +252,7 @@ function provisionLocal(input: {
   readonly statePath: string
   readonly now: () => Date
   readonly warnings: readonly string[]
+  readonly noBuild: boolean
 }): Effect.Effect<
   ProvisionedSource,
   ProvisionFailure | PlatformError.PlatformError,
@@ -244,6 +270,11 @@ function provisionLocal(input: {
       )
     }
     const prepared = input.prepare.length > 0
+    if (prepared && input.noBuild) {
+      return yield* Effect.fail(
+        noBuildFailure({ name: input.name, path: input.location, steps: input.prepare }),
+      )
+    }
     if (prepared) {
       yield* runPreparation({
         name: input.name,
@@ -284,6 +315,19 @@ export function provisionSource(
   input: ProvisionSourceInput,
 ): Effect.Effect<
   ProvisionedSource,
+  ProvisionFailure | PlatformError.PlatformError | SyncLocked,
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | SyncLockShape
+> {
+  const key = sourceKey(input.declaration)
+  return withSyncLock(sourceLockPath(input.home, key), provisionSourceUnlocked(input, key))
+}
+
+/** Provision one source; the caller holds the per-source lock. */
+function provisionSourceUnlocked(
+  input: ProvisionSourceInput,
+  key: string,
+): Effect.Effect<
+  ProvisionedSource,
   ProvisionFailure | PlatformError.PlatformError,
   FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
 > {
@@ -294,7 +338,6 @@ export function provisionSource(
       input.declaration.from,
       input.configDir,
     )
-    const key = sourceKey(input.declaration)
     const statePath = sourceStatePath(input.home, key)
     const prepare = input.declaration.prepare
     const warnings: string[] = []
@@ -315,6 +358,7 @@ export function provisionSource(
         statePath,
         now,
         warnings,
+        noBuild: input.noBuild === true,
       })
     }
 
@@ -322,18 +366,43 @@ export function provisionSource(
     if (record === undefined && (yield* fs.exists(statePath))) {
       warn(`the provisioning record ${statePath} is unreadable; provisioning the source again`)
     }
-    const commit = yield* resolveRemoteCommit({
-      command,
-      name: input.name,
-      remote: resolved.location,
-      ref: input.declaration.ref,
-      configDir: input.configDir,
-    })
     const checkoutDir = sourceCheckoutDir(input.home, key)
-    const fresh = !(yield* fs.exists(checkoutDir))
+    const checkoutExists = yield* fs.exists(checkoutDir)
+    const remoteCommit = yield* Effect.result(
+      resolveRemoteCommit({
+        command,
+        name: input.name,
+        remote: resolved.location,
+        ref: input.declaration.ref,
+        configDir: input.configDir,
+      }),
+    )
+    let commit: string
+    if (Result.isFailure(remoteCommit)) {
+      if (record?.commit !== undefined && checkoutExists) {
+        // Offline: the recorded commit is the last state that verifies.
+        commit = record.commit
+        warn(
+          `cannot reach the git source at ${resolved.location} for ${JSON.stringify(input.name)}; ` +
+            `keeping the recorded commit ${commit}: ${remoteCommit.failure.message}`,
+        )
+      } else {
+        return yield* Effect.fail(remoteCommit.failure)
+      }
+    } else {
+      commit = remoteCommit.success
+    }
+    const fresh = !checkoutExists
     const stepsChanged =
       record === undefined || canonicalJson(record.prepare) !== canonicalJson(prepare)
     const commitChanged = record?.commit !== commit
+    const prepareNeeded =
+      prepare.length > 0 && (input.rebuild === true || fresh || commitChanged || stepsChanged)
+    if (prepareNeeded && input.noBuild === true) {
+      return yield* Effect.fail(
+        noBuildFailure({ name: input.name, path: checkoutDir, steps: prepare }),
+      )
+    }
 
     if (fresh) {
       yield* fs.makeDirectory(input.home, { recursive: true })
@@ -365,7 +434,7 @@ export function provisionSource(
     }
 
     let prepared = false
-    if (fresh || commitChanged || stepsChanged) {
+    if (prepareNeeded) {
       yield* runPreparation({
         name: input.name,
         checkoutDir,

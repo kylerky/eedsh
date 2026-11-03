@@ -7,12 +7,18 @@ import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { ChildProcessSpawner } from 'effect/process'
 import { describe, expect, it } from 'vitest'
+import { SyncLock } from '../../src/internal/effect/services'
 import type { ProvisionCommand } from '../../src/provision/command'
 import { provisionSource } from '../../src/provision/git'
 import type { SourceRecord } from '../../src/provision/record'
-import { sourceCheckoutDir, sourceKey, sourceStatePath } from '../../src/provision/source'
+import {
+  sourceCheckoutDir,
+  sourceKey,
+  sourceLockPath,
+  sourceStatePath,
+} from '../../src/provision/source'
 import { failureOf } from '../support/effect'
-import { fakeChildProcessSpawner, memoryFileSystem } from '../support/fakes'
+import { fakeChildProcessSpawner, fakeSyncLock, memoryFileSystem } from '../support/fakes'
 
 const home = '/dsh-home'
 const configDir = '/work/profiles/work'
@@ -56,6 +62,23 @@ function fakeCommand(setup: { failStep?: number } = {}) {
   return { calls, command }
 }
 
+/** A command seam whose remote is unreachable. */
+function offlineCommand() {
+  const calls: Call[] = []
+  const command: ProvisionCommand = (executable, args, options) => {
+    calls.push({ command: executable, args: [...args], cwd: options.cwd })
+    if (executable === 'git' && args[0] === 'ls-remote') {
+      return Effect.succeed({
+        status: 128,
+        stdout: '',
+        stderr: 'Could not resolve host: example.test',
+      })
+    }
+    return Effect.succeed({ status: 0, stdout: '', stderr: '' })
+  }
+  return { calls, command }
+}
+
 const checkoutDir = sourceCheckoutDir(home, sourceKey(defaults))
 const statePath = sourceStatePath(home, sourceKey(defaults))
 
@@ -91,21 +114,37 @@ function seeded(overrides: Partial<SourceRecord> = {}) {
   )
 }
 
-function provide(fs: ReturnType<typeof memoryFileSystem>) {
+type Lock = ReturnType<typeof fakeSyncLock>
+
+function provide(fs: ReturnType<typeof memoryFileSystem>, lock: Lock = fakeSyncLock()) {
   return Layer.mergeAll(
     Layer.succeed(FileSystem.FileSystem, fs.fs),
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
+    Layer.succeed(SyncLock, lock.shape),
   )
+}
+
+interface RunOptions {
+  readonly lock?: Lock
+  readonly rebuild?: boolean
+  readonly noBuild?: boolean
 }
 
 function run(
   command: ProvisionCommand,
   fs = memoryFileSystem(gitFiles()),
   declaration: PlanSource = defaults,
+  options: RunOptions = {},
 ) {
-  return provisionSource({ home, configDir, name, declaration, command }).pipe(
-    Effect.provide(provide(fs)),
-  )
+  return provisionSource({
+    home,
+    configDir,
+    name,
+    declaration,
+    command,
+    ...(options.rebuild === undefined ? {} : { rebuild: options.rebuild }),
+    ...(options.noBuild === undefined ? {} : { noBuild: options.noBuild }),
+  }).pipe(Effect.provide(provide(fs, options.lock)))
 }
 
 describe('git source preparation', () => {
@@ -240,7 +279,11 @@ describe('local checkout provisioning', () => {
         name,
         declaration: { from: checkout, prepare: [] },
         command,
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, Layer.succeed(SyncLock, fakeSyncLock().shape)),
+        ),
+      ),
     )
 
     expect(result.kind).toBe('local')
@@ -251,5 +294,105 @@ describe('local checkout provisioning', () => {
     expect(after.mode).toBe(before.mode)
     expect(await readFile(join(checkout, 'package.json'), 'utf8')).toBe(manifest)
     expect(existsSync(join(root, 'home', '.local'))).toBe(false)
+  })
+})
+
+describe('provisioning controls', () => {
+  it('--rebuild forces preparation for an unchanged source', async () => {
+    const fs = seeded()
+    const fake = fakeCommand()
+    const result = await Effect.runPromise(run(fake.command, fs, defaults, { rebuild: true }))
+
+    expect(result.prepared).toBe(true)
+    expect(result.changed).toBe(true)
+    expect(fake.calls.filter((call) => call.args[0] === 'fetch')).toHaveLength(0)
+    expect(fake.calls.filter((call) => call.args[0] === 'reset')).toHaveLength(0)
+    expect(fake.calls.filter((call) => call.command !== 'git')).toHaveLength(2)
+  })
+
+  it('--no-build fails naming the source and the commands it would run', async () => {
+    const fs = seeded({ commit: 'b'.repeat(40) })
+    const fake = fakeCommand()
+    const failure = await failureOf(run(fake.command, fs, defaults, { noBuild: true }))
+
+    expect(failure._tag).toBe('ProvisionFailure')
+    expect(failure.code).toBe('provision.no_build')
+    expect(failure.packageName).toBe(name)
+    expect(failure.message).toContain(name)
+    expect(failure.message).toContain('pnpm install')
+    expect(failure.message).toContain('pnpm run build')
+    expect(fake.calls.filter((call) => call.command !== 'git')).toEqual([])
+    expect(fake.calls.filter((call) => call.args[0] === 'fetch')).toHaveLength(0)
+    expect(fake.calls.filter((call) => call.args[0] === 'reset')).toHaveLength(0)
+  })
+
+  it('--no-build succeeds when nothing needs preparation', async () => {
+    const fs = seeded()
+    const fake = fakeCommand()
+    const result = await Effect.runPromise(run(fake.command, fs, defaults, { noBuild: true }))
+
+    expect(result.prepared).toBe(false)
+    expect(fake.calls.filter((call) => call.command !== 'git')).toEqual([])
+  })
+})
+
+describe('per-source lock', () => {
+  it('serializes provisioning on the per-source lock', async () => {
+    const lock = fakeSyncLock()
+    const fs = seeded()
+    const key = sourceKey(defaults)
+    const path = sourceLockPath(home, key)
+    const held = await Effect.runPromise(lock.shape.acquire(path))
+
+    const blocked = fakeCommand()
+    const failure = await failureOf(run(blocked.command, fs, defaults, { lock }))
+    expect(failure._tag).toBe('SyncLocked')
+    expect(failure.lockPath).toBe(path)
+    expect(blocked.calls).toEqual([])
+    await Effect.runPromise(held.release)
+
+    const fake = fakeCommand()
+    const result = await Effect.runPromise(run(fake.command, fs, defaults, { lock }))
+    expect(result.prepared).toBe(false)
+    expect(lock.isHeld()).toBe(false)
+    expect(lock.acquires).toContain(path)
+  })
+
+  it('derives one lock path per source key', () => {
+    const other = { ...defaults, ref: 'next' }
+    expect(sourceLockPath(home, sourceKey(defaults))).not.toBe(
+      sourceLockPath(home, sourceKey(other)),
+    )
+    expect(sourceLockPath(home, sourceKey(defaults))).toBe(
+      `${home}/.local/locks/${sourceKey(defaults)}.lock`,
+    )
+  })
+})
+
+describe('offline acquisition', () => {
+  it('keeps the recorded commit and warns when the remote is unreachable', async () => {
+    const fs = seeded()
+    const offline = offlineCommand()
+    const result = await Effect.runPromise(run(offline.command, fs))
+
+    expect(result.commit).toBe(commit)
+    expect(result.prepared).toBe(false)
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]).toContain(remote)
+    expect(result.warnings[0]).toContain(commit)
+    expect(offline.calls).toEqual([
+      { command: 'git', args: ['ls-remote', remote, 'main'], cwd: configDir },
+    ])
+  })
+
+  it('fails naming the source when the remote is unreachable and nothing is provisioned', async () => {
+    const offline = offlineCommand()
+    const failure = await failureOf(run(offline.command, memoryFileSystem()))
+
+    expect(failure._tag).toBe('ProvisionFailure')
+    expect(failure.code).toBe('provision.fetch_failed')
+    expect(failure.packageName).toBe(name)
+    expect(failure.message).toContain(name)
+    expect(failure.message).toContain(remote)
   })
 })
