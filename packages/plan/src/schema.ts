@@ -205,6 +205,46 @@ function packageIssues(packages: Readonly<Record<string, string>>): Schema.Filte
 /** Profile-local packages with non-empty specs and no reserved names. */
 const PackagesSchema = refine(PackagesBaseSchema, packageIssues)
 
+/**
+ * One source declaration: the acquisition location as authored and the
+ * preparation steps resolved by the builder. No derived path or resolved
+ * commit belongs here, so the same config yields the same plan everywhere.
+ */
+export const PlanSourceSchema = plain(
+  Schema.Struct({
+    from: Schema.NonEmptyString,
+    ref: Schema.optional(Schema.NonEmptyString),
+    prepare: Schema.Array(Schema.Array(Schema.String)),
+  }),
+  'source must be a JSON object',
+)
+
+const SourcesBaseSchema = Schema.Record(Schema.String, PlanSourceSchema)
+
+function sourceIssues(sources: Readonly<Record<string, PlanSource>>): Schema.FilterIssue[] {
+  const issues: Schema.FilterIssue[] = []
+  for (const [name, source] of Object.entries(sources)) {
+    if (name.trim() === '') {
+      issues.push({ path: [name], issue: 'source package name must be non-empty' })
+    }
+    if (RESERVED.has(name)) {
+      issues.push({ path: [name], issue: `"${name}" is owned by the materializer` })
+    }
+    source.prepare.forEach((step, index) => {
+      if (step.length === 0) {
+        issues.push({
+          path: [name, 'prepare', index],
+          issue: 'preparation step must name an executable',
+        })
+      }
+    })
+  }
+  return issues
+}
+
+/** Optional source declarations keyed by package name. */
+const SourcesSchema = refine(SourcesBaseSchema, sourceIssues)
+
 const ProfilePlanBaseSchema = plain(
   Schema.Struct({
     format: Schema.Literal(PLAN_FORMAT),
@@ -216,6 +256,7 @@ const ProfilePlanBaseSchema = plain(
     bundles: PlanBundleListSchema,
     layers: PlanLayerListSchema,
     packages: PackagesSchema,
+    sources: Schema.optional(SourcesSchema),
   }),
   'plan must be a JSON object',
 )
@@ -248,6 +289,9 @@ export type PlanPatch = Schema.Schema.Type<typeof PlanPatchSchema>
 
 /** One ordered generated layer, derived from the schema. */
 export type PlanLayer = Schema.Schema.Type<typeof PlanLayerSchema>
+
+/** One source declaration, derived from the schema. */
+export type PlanSource = Schema.Schema.Type<typeof PlanSourceSchema>
 
 /** The validated profile plan, derived from the schema. */
 export type ProfilePlan = Schema.Schema.Type<typeof ProfilePlanSchema>

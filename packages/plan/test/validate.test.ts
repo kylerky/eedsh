@@ -117,6 +117,23 @@ describe('validatePlan', () => {
     expect(issues.map((issue) => issue.path)).toContainEqual(['layers', 0, 'id'])
   })
 
+  it('accepts a plan carrying sources and rejects an empty location', () => {
+    const carrying = plan({
+      sources: {
+        '@scope/plugin': { from: 'file:///home/me/src/acme-bundle', prepare: [] },
+      },
+    })
+    expect(Result.isSuccess(validatePlan(carrying))).toBe(true)
+    expect(Result.isSuccess(validatePlan(plan()))).toBe(true)
+    const issues = issuesOf(plan({ sources: { '@scope/plugin': { from: '', prepare: [] } } }))
+    expect(issues.map((issue) => issue.path)).toContainEqual(['sources', '@scope/plugin', 'from'])
+    const reserved = issuesOf(plan({ sources: { '@eedsh/generated': { from: 'x', prepare: [] } } }))
+    expect(reserved.map((issue) => issue.path)).toContainEqual(['sources', '@eedsh/generated'])
+    expect(reserved.some((issue) => /owned by the materializer/.test(issue.message ?? ''))).toBe(
+      true,
+    )
+  })
+
   it('uses an empty path array for a root failure', () => {
     const issues = issuesOf('not-a-plan')
     expect(issues.length).toBeGreaterThan(0)

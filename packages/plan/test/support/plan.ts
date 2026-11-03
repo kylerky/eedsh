@@ -6,6 +6,13 @@ export const bundle = (name: string) => ({ kind: 'bundle', name })
 /** A shape-level layer for schema tests. */
 export const layer = (id: string, patches: unknown[] = []) => ({ id, patches })
 
+/** A shape-level source declaration for schema tests. */
+export const source = (overrides: Record<string, unknown> = {}) => ({
+  from: 'https://example.test/acme/bundle.git',
+  prepare: [['pnpm', 'install']],
+  ...overrides,
+})
+
 /**
  * A minimally valid plan document with optional overrides.
  * @param overrides - fields to replace.

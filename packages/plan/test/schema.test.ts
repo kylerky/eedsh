@@ -9,7 +9,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
 import { describe, expect, it } from 'vitest'
-import { bundle, layer, plan } from './support/plan'
+import { bundle, layer, plan, source } from './support/plan'
 
 /** The strict plan entry point: every issue, excess properties rejected. */
 const decode = Schema.decodeUnknownResult(ProfilePlanSchema, {
@@ -161,6 +161,98 @@ function expectRejected(value: unknown, path: ReadonlyArray<PropertyKey>, messag
     expect(issues.some((issue) => message.test(issue.message))).toBe(true)
   }
 }
+
+describe('plan source declarations', () => {
+  it('decodes a plan carrying sources and records the authored intent', () => {
+    const result = decode(
+      plan({
+        sources: {
+          '@scope/plugin': {
+            from: 'https://example.test/acme/bundle.git',
+            ref: 'v1.2.3',
+            prepare: [
+              ['pnpm', 'install'],
+              ['pnpm', 'run', 'build'],
+            ],
+          },
+        },
+      }),
+    )
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.sources).toEqual({
+      '@scope/plugin': {
+        from: 'https://example.test/acme/bundle.git',
+        ref: 'v1.2.3',
+        prepare: [
+          ['pnpm', 'install'],
+          ['pnpm', 'run', 'build'],
+        ],
+      },
+    })
+  })
+
+  it('accepts a plan without sources', () => {
+    const result = decode(plan())
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect('sources' in result.success).toBe(false)
+  })
+
+  it('rejects a preparation step that is not an argv array and names the source', () => {
+    expectRejected(plan({ sources: { '@scope/plugin': source({ prepare: 'pnpm install' }) } }), [
+      'sources',
+      '@scope/plugin',
+      'prepare',
+    ])
+  })
+
+  it('rejects an argv element that is not a string and names the source', () => {
+    expectRejected(plan({ sources: { '@scope/plugin': source({ prepare: [['pnpm', 42]] }) } }), [
+      'sources',
+      '@scope/plugin',
+      'prepare',
+      0,
+      1,
+    ])
+  })
+
+  it('rejects an empty source location and names the source', () => {
+    expectRejected(plan({ sources: { '@scope/plugin': source({ from: '' }) } }), [
+      'sources',
+      '@scope/plugin',
+      'from',
+    ])
+  })
+
+  it('rejects an empty source name', () => {
+    expectRejected(plan({ sources: { '': source() } }), ['sources', ''], /non-empty/)
+  })
+
+  it('rejects a reserved source name', () => {
+    expectRejected(
+      plan({ sources: { '@eedsh/generated': source() } }),
+      ['sources', '@eedsh/generated'],
+      /owned by the materializer/,
+    )
+  })
+
+  it('rejects a preparation step with no executable and names the source', () => {
+    expectRejected(
+      plan({ sources: { '@scope/plugin': source({ prepare: [[]] }) } }),
+      ['sources', '@scope/plugin', 'prepare', 0],
+      /executable/,
+    )
+  })
+
+  it('rejects an unknown source field and names the source', () => {
+    expectRejected(
+      plan({ sources: { '@scope/plugin': source({ commit: 'abc123' }) } }),
+      ['sources', '@scope/plugin', 'commit'],
+      /excess property/i,
+    )
+  })
+})
 
 describe('plan policy', () => {
   it('accepts safe profile names and rejects unsafe ones', () => {
