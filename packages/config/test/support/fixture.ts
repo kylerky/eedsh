@@ -1,5 +1,8 @@
+import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { clearDshBridge, type DshBridge, installDshBridge } from '@eedsh/config'
 
 /** The process environment as it was before a test suite changed it. */
 export const originalEnv = { ...process.env }
@@ -148,4 +151,41 @@ export function useFixtureEnv(fixture: AuthoringFixture): void {
   process.env.EEDSH_DSH_ANCHOR = fixture.anchor
   process.env.DSH_HOME = fixture.home
   process.env.EEDSH_CONFIG_DIR = fixture.configDir
+}
+/**
+ * Install the capability bridge for a fixture installation, loading the
+ * composition functions from the workspace's dev-only app-boot copy.
+ * @param fixture - the created fixture.
+ * @param version - the selected installation version.
+ * @returns the installed bridge.
+ */
+export async function useFixtureBridge(
+  fixture: AuthoringFixture,
+  version = '0.2.1-rc.2',
+): Promise<DshBridge> {
+  const require = createRequire(import.meta.url)
+  const boot = (await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href)) as Record<
+    string,
+    (...args: never[]) => unknown
+  >
+  const bridge: DshBridge = {
+    version,
+    installation: {
+      installAnchor: fixture.anchor,
+      packageDir: fixture.dshDir,
+      binPath: join(fixture.dshDir, 'lib', 'bin.js'),
+    },
+    resolveProfileDir: boot.resolveProfileDir as DshBridge['resolveProfileDir'],
+    resolveBundleDir: boot.resolveBundleDir as DshBridge['resolveBundleDir'],
+    readProfileManifest: boot.readProfileManifest as DshBridge['readProfileManifest'],
+    bundlePatchFiles: boot.bundlePatchFiles as DshBridge['bundlePatchFiles'],
+    loadOverlayPatches: boot.loadOverlayPatches as DshBridge['loadOverlayPatches'],
+    composeEntries: boot.composeEntries as DshBridge['composeEntries'],
+  }
+  installDshBridge(bridge)
+  return bridge
+}
+/** Remove the fixture bridge after a test. */
+export function clearFixtureBridge(): void {
+  clearDshBridge()
 }

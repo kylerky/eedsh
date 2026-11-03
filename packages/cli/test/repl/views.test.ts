@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DoctorResult } from '../../src/doctor'
 import { touchedRowIds } from '../../src/preflight'
 import { ReplSession } from '../../src/repl/session'
+import { clearTestBridge, installTestBridge } from '../support/bridge'
 import {
   ConfigView,
   EntryView,
@@ -200,6 +201,7 @@ async function makeSession(
 }
 
 beforeEach(async () => {
+  await installTestBridge()
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'views-'))
   await mkdir(join(work, 'home', 'profiles', 'work'), { recursive: true })
@@ -210,6 +212,8 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  clearTestBridge()
+  clearTestBridge()
   await Promise.all(sessions.splice(0).map((session) => session.close()))
   await rm(work, { recursive: true, force: true })
 })

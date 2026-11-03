@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, afterAll, describe, expect, it } from 'vitest'
 import {
   ConfigError,
   loadConfig,
@@ -11,8 +11,17 @@ import {
   validateConfigPath,
 } from '../src/config'
 import { CONFIG_FILENAME, configHome, defaultConfigPath } from '../src/config-path'
+import { clearTestBridge, installTestBridge } from './support/bridge'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
+
+beforeAll(async () => {
+  await installTestBridge()
+})
+
+afterAll(() => {
+  clearTestBridge()
+})
 
 async function configDir(source: string): Promise<string> {
   await mkdir(tempRoot, { recursive: true })

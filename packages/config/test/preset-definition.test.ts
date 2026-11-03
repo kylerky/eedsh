@@ -18,6 +18,8 @@ import {
   type AuthoringFixture,
   createAuthoringFixture,
   originalEnv,
+  clearFixtureBridge,
+  useFixtureBridge,
   useFixtureEnv,
 } from './support/fixture'
 
@@ -28,10 +30,12 @@ beforeEach(async () => {
   fixture = await createAuthoringFixture(tempRoot)
   process.env = { ...originalEnv }
   useFixtureEnv(fixture)
+  await useFixtureBridge(fixture)
 })
 
 afterEach(() => {
   process.env = { ...originalEnv }
+  clearFixtureBridge()
 })
 
 function installedPreset() {

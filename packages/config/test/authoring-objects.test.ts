@@ -5,6 +5,7 @@ import {
   BundleQuery,
   bundle,
   defineConfig,
+  dshVersion,
   group,
   js,
   LayerBuilder,
@@ -20,6 +21,8 @@ import {
   type AuthoringFixture,
   createAuthoringFixture,
   originalEnv,
+  clearFixtureBridge,
+  useFixtureBridge,
   useFixtureEnv,
 } from './support/fixture'
 
@@ -30,10 +33,12 @@ beforeEach(async () => {
   fixture = await createAuthoringFixture(tempRoot)
   process.env = { ...originalEnv }
   useFixtureEnv(fixture)
+  await useFixtureBridge(fixture)
 })
 
 afterEach(() => {
   process.env = { ...originalEnv }
+  clearFixtureBridge()
 })
 
 function planValue(bundleValue: unknown): unknown {
@@ -46,6 +51,14 @@ function planValue(bundleValue: unknown): unknown {
     packages: {},
   }
 }
+
+describe('active DSH version', () => {
+  it('reports the fixture installation version synchronously', () => {
+    const value = dshVersion()
+    expect(value).toBe('0.2.1-rc.2')
+    expect(value).not.toBeInstanceOf(Promise)
+  })
+})
 
 describe('authoring brand', () => {
   it('exposes a bundle selection as plain plan JSON without a source', () => {
@@ -87,9 +100,9 @@ describe('authoring brand', () => {
 })
 
 describe('typed resolution data', () => {
-  it('resolves rows from the pinned installation by default', () => {
+  it('resolves rows from the active installation by default', () => {
     const handle = bundle('@fixture/base')
-    expect(handle.origin()).toBe('pinned')
+    expect(handle.origin()).toBe('active')
     expect(handle.version()).toBe('1.0.0')
     expect(handle.packageDir()).toBe(fixture.baseDir)
     expect(handle.rows().map((row) => row.id)).toEqual(['preset-standard', 'timer'])
@@ -222,14 +235,14 @@ describe('structured failures', () => {
     }
   })
 
-  it('reports a missing anchor instead of falling back', () => {
-    delete process.env.EEDSH_DSH_ANCHOR
+  it('reports a missing bridge instead of falling back', () => {
+    clearFixtureBridge()
     try {
       bundle('@fixture/base').rows()
     } catch (error) {
       expect(error).toBeInstanceOf(ResolutionError)
-      expect((error as ResolutionError).code).toBe('resolution.anchor_missing')
-      expect((error as ResolutionError).message).toContain('EEDSH_DSH_ANCHOR')
+      expect((error as ResolutionError).code).toBe('resolution.bridge_missing')
+      expect((error as ResolutionError).message).toContain('eedsh sync')
     }
   })
 

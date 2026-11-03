@@ -13,6 +13,7 @@ export type {
   ProfilePlan,
 } from '@eedsh/plan'
 export * from './authoring'
+export * from './bridge'
 export * from './builders'
 export * from './preset'
 export {

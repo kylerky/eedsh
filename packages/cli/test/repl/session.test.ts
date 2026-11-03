@@ -22,6 +22,7 @@ import {
   type SyncOutcome,
 } from '../../src/repl/session'
 import { waitFor } from '../support/async'
+import { clearTestBridge, installTestBridge } from '../support/bridge'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -152,6 +153,7 @@ async function session(
 }
 
 beforeEach(async () => {
+  await installTestBridge()
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'session-'))
   await mkdir(join(work, 'home', 'profiles', 'work'), { recursive: true })
@@ -162,6 +164,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  clearTestBridge()
   await Promise.all(sessions.splice(0).map((item) => item.close()))
   await rm(work, { recursive: true, force: true })
 })

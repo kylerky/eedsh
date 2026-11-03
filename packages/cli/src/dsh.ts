@@ -6,12 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import {
-  bundlePatchFiles,
-  loadOverlayPatches,
-  readProfileManifest,
-  resolveBundleDir,
-} from '@deepseek-ai/dsh-app-boot'
+import { activeDshBridge, bridgeCapability } from '@eedsh/config'
 import { Option } from 'effect'
 import * as Result from 'effect/Result'
 import { DshResolveFailure } from './internal/effect/errors'
@@ -71,29 +66,30 @@ export function resolveBundleLayers(
   profileDir: string,
   installAnchor: string,
 ): Result.Result<Record<string, unknown>[], DshResolveFailure> {
-  const resolved = Result.try({
-    try: () => {
-      const packageDir = resolveBundleDir('eedsh', packageName, installAnchor, profileDir)
-      const manifest = readProfileManifest('eedsh', packageDir)
-      return { packageDir, bundle: manifest.dsh?.bundle }
-    },
-    catch: (cause) => new DshResolveFailure({ packageName, cause }),
-  })
-  if (Result.isFailure(resolved)) return Result.fail(resolved.failure)
-  const { packageDir } = resolved.success
-  const bundle = Option.fromUndefinedOr(resolved.success.bundle)
-  if (Option.isNone(bundle)) {
+  const bridge = activeDshBridge()
+  if (bridge === undefined) {
     return Result.fail(
       new DshResolveFailure({
         packageName,
-        cause: new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`),
+        cause: new Error(
+          'bundle resolution needs the active DSH bridge; run "eedsh sync" or "eedsh run", or select one with --dsh',
+        ),
       }),
     )
   }
   return Result.try({
     try: () => {
-      const files = bundlePatchFiles(bundle.value as Parameters<typeof bundlePatchFiles>[0])
-      return files.flatMap((file) => loadOverlayPatches('eedsh', join(packageDir, file))) as Record<
+      const resolveBundleDir = bridgeCapability(bridge, 'resolveBundleDir', packageName)
+      const packageDir = resolveBundleDir('eedsh', packageName, installAnchor, profileDir)
+      const readManifest = bridgeCapability(bridge, 'readProfileManifest', packageName)
+      const manifest = readManifest('eedsh', packageDir)
+      const bundle = manifest.dsh?.bundle
+      if (bundle === undefined) {
+        throw new Error(`profile bundle ${JSON.stringify(packageName)} declares no dsh.bundle`)
+      }
+      const files = bridgeCapability(bridge, 'bundlePatchFiles', packageName)(bundle)
+      const loadPatches = bridgeCapability(bridge, 'loadOverlayPatches', packageName)
+      return files.flatMap((file) => loadPatches('eedsh', join(packageDir, file))) as Record<
         string,
         unknown
       >[]

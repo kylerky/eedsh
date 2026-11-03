@@ -64,13 +64,17 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * printable session state. The local DSH path boundary throws for a profile
  * name that cannot be a directory, before any filesystem work. Discovery probes
  * the filesystem through Node's synchronous, exception-shaped APIs and converts
- * every expected failure to a tagged DshFailure.
+ * every expected failure to a tagged DshFailure. Preflight composition is
+ * synchronous and throws a tagged PreflightFailure when no bridge is installed. The
+ * bridge loader and bundle resolver wrap Node's exception-shaped require/import
+ * and DSH calls in tagged failures.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
   'packages/config/src/preset.ts',
   'packages/config/src/query.ts',
   'packages/config/src/resolve.ts',
+  'packages/config/src/bridge.ts',
   'packages/cli/src/repl/completion.ts',
   'packages/cli/src/repl/preview.ts',
   'packages/cli/src/repl/prompt.ts',
@@ -78,6 +82,9 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/repl/views.ts',
   'packages/cli/src/internal/dsh-home.ts',
   'packages/cli/src/dsh-discovery.ts',
+  'packages/cli/src/preflight.ts',
+  'packages/cli/src/dsh-bridge.ts',
+  'packages/cli/src/dsh.ts',
 ])
 
 /** JavaScript exception control flow in one source text. */

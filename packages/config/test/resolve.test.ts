@@ -1,6 +1,14 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { BundleQuery, bundle, ResolutionError, takeResolutionTrace } from '@eedsh/config'
+import {
+  activeDshBridge,
+  BundleQuery,
+  bundle,
+  type DshBridge,
+  installDshBridge,
+  ResolutionError,
+  takeResolutionTrace,
+} from '@eedsh/config'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../cli/src/config'
@@ -8,6 +16,8 @@ import {
   type AuthoringFixture,
   createAuthoringFixture,
   originalEnv,
+  clearFixtureBridge,
+  useFixtureBridge,
   useFixtureEnv,
 } from './support/fixture'
 
@@ -19,11 +29,13 @@ beforeEach(async () => {
   fixture = await createAuthoringFixture(tempRoot)
   process.env = { ...originalEnv }
   useFixtureEnv(fixture)
+  await useFixtureBridge(fixture)
   takeResolutionTrace()
 })
 
 afterEach(() => {
   process.env = { ...originalEnv }
+  clearFixtureBridge()
 })
 
 async function writeJson(path: string, value: unknown): Promise<void> {
@@ -31,36 +43,38 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(value, null, 2))
 }
 
-describe('pinned authoring resolution', () => {
-  it('requires the anchor and names it', () => {
-    delete process.env.EEDSH_DSH_ANCHOR
+describe('active authoring resolution', () => {
+  it('requires the bridge and names the remedies', () => {
+    clearFixtureBridge()
     expect(() => bundle('@fixture/base').rows()).toThrowError(ResolutionError)
     try {
       bundle('@fixture/base').rows()
     } catch (error) {
       expect(error).toBeInstanceOf(ResolutionError)
       const resolution = error as ResolutionError
-      expect(resolution.code).toBe('resolution.anchor_missing')
+      expect(resolution.code).toBe('resolution.bridge_missing')
       expect(resolution.bundle).toBe('@fixture/base')
-      expect(resolution.message).toContain('EEDSH_DSH_ANCHOR')
+      expect(resolution.message).toContain('eedsh sync')
+      expect(resolution.message).toContain('--dsh')
     }
   })
 
-  it('fails structurally for an unreadable anchor and a non-DSH manifest', async () => {
-    process.env.EEDSH_DSH_ANCHOR = join(fixture.dshDir, 'missing.json')
-    expect(() => bundle('@fixture/base').rows()).toThrowError(/cannot read EEDSH_DSH_ANCHOR/)
-    const notDsh = join(fixture.root, 'other.json')
-    await writeJson(notDsh, { name: 'not-dsh', version: '1.0.0' })
-    process.env.EEDSH_DSH_ANCHOR = notDsh
+  it('fails structurally when the bridge lacks a required capability', () => {
+    const bridge = activeDshBridge()
+    if (bridge === undefined) throw new Error('expected the fixture bridge')
+    installDshBridge({
+      ...bridge,
+      composeEntries: undefined as unknown as DshBridge['composeEntries'],
+    })
     try {
       bundle('@fixture/base').rows()
     } catch (error) {
-      expect((error as ResolutionError).code).toBe('resolution.anchor_invalid')
-      expect((error as ResolutionError).message).toContain(notDsh)
+      expect((error as ResolutionError).code).toBe('resolution.bridge_capability_missing')
+      expect((error as ResolutionError).message).toContain('composeEntries')
     }
   })
 
-  it('resolves the pin and ignores a profile copy of the same bundle', () => {
+  it('resolves the active installation and ignores a profile copy of the same bundle', () => {
     const handle = bundle('@fixture/base')
     expect(handle.presets()).toEqual([
       expect.objectContaining({
@@ -76,12 +90,12 @@ describe('pinned authoring resolution', () => {
     expect(handle.packageDir()).toBe(fixture.baseDir)
     expect(takeResolutionTrace()[0]).toMatchObject({
       bundle: '@fixture/base',
-      origin: 'pinned',
+      origin: 'active',
       version: '1.0.0',
     })
   })
 
-  it('requires an explicit root for a bundle the pin does not ship', () => {
+  it('requires an explicit root for a bundle the active installation does not ship', () => {
     try {
       bundle('@fixture/custom').rows()
     } catch (error) {

@@ -5,8 +5,13 @@
  * @module @eedsh/cli/preflight
  */
 import { entryListSchema } from './materialize/yaml-schema'
-import { composeEntries } from '@deepseek-ai/dsh-app-boot'
-import type { AuthoringSite, PatchGroupProvenance } from '@eedsh/config'
+import {
+  activeDshBridge,
+  type AuthoringSite,
+  bridgeCapability,
+  type DshBridge,
+  type PatchGroupProvenance,
+} from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
@@ -21,8 +26,25 @@ import {
 import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
 
-/** One composition layer as the selected DSH's composer accepts it. */
-type ComposeLayer = Parameters<typeof composeEntries>[0][number]
+/** The selected DSH's entry composer. */
+type ComposeEntries = DshBridge['composeEntries']
+
+/**
+ * The active bridge's composer.
+ * @returns the entry composer.
+ * @throws {PreflightFailure} when no bridge is installed.
+ */
+function activeCompose(): ComposeEntries {
+  const bridge = activeDshBridge()
+  if (bridge === undefined) {
+    throw new PreflightFailure({
+      message:
+        'preflight needs the active DSH installation; run "eedsh sync" or "eedsh run", or select one with --dsh',
+      warnings: [],
+    })
+  }
+  return bridgeCapability(bridge, 'composeEntries', 'preflight')
+}
 
 /** The recorded identity of one generated patch group. */
 export interface GeneratedGroup {
@@ -135,11 +157,14 @@ function insertedIds(patches: readonly Record<string, unknown>[]): string[] {
   return ids
 }
 
-/** Compose one flat patch list and return its raw warnings. */
-function composeWarnings(patches: readonly Record<string, unknown>[]): string[] {
+/** Compose one flat patch list through the selected installation. */
+function composeWarnings(
+  patches: readonly Record<string, unknown>[],
+  compose: ComposeEntries,
+): string[] {
   if (patches.length === 0) return []
   const warnings: string[] = []
-  composeEntries([patches as unknown as ComposeLayer], (message) => warnings.push(message))
+  compose([patches], (message) => warnings.push(message))
   return warnings
 }
 
@@ -150,12 +175,15 @@ function composeWarnings(patches: readonly Record<string, unknown>[]): string[] 
  * @param layers - layers in application order.
  * @returns the composed entries, raw warnings, and duplicate ids.
  */
-export function composePreflightLayers(layers: readonly PreflightLayer[]): PreflightComposition {
+export function composePreflightLayers(
+  layers: readonly PreflightLayer[],
+  compose: ComposeEntries = activeCompose(),
+): PreflightComposition {
   const warnings: string[] = []
-  const entries = composeEntries(
-    layers.map((layer) => layer.patches as unknown as ComposeLayer),
+  const entries = compose(
+    layers.map((layer) => layer.patches),
     (message) => warnings.push(message),
-  ) as unknown as Record<string, unknown>[]
+  ) as Record<string, unknown>[]
 
   const emptyLayerLabels: string[] = []
   for (const layer of layers) {
@@ -213,7 +241,7 @@ function flattenPatches(layers: readonly PreflightLayer[]): FlatPatch[] {
 export function attributePreflightWarnings(
   layers: readonly PreflightLayer[],
   warnings: readonly string[],
-  options: { readonly configDir?: string } = {},
+  options: { readonly configDir?: string; readonly compose?: ComposeEntries } = {},
 ): PreflightWarning[] {
   if (warnings.length === 0) return []
   const emptyLayers = layers.filter(
@@ -224,11 +252,15 @@ export function attributePreflightWarnings(
     syntheticCount === 0 ? warnings : warnings.slice(0, warnings.length - syntheticCount)
   const synthetic = syntheticCount === 0 ? [] : warnings.slice(warnings.length - syntheticCount)
 
+  const compose = options.compose ?? activeCompose()
   const attributed: PreflightWarning[] = []
   const flat = flattenPatches(layers)
   let placed = 0
   for (let index = 0; index < flat.length && placed < composeWarningsRaw.length; index += 1) {
-    const prefix = composeWarnings(flat.slice(0, index + 1).map((item) => item.patch))
+    const prefix = composeWarnings(
+      flat.slice(0, index + 1).map((item) => item.patch),
+      compose,
+    )
     const added = Math.min(prefix.length - placed, composeWarningsRaw.length - placed)
     if (added <= 0) continue
     const item = flat[index]!

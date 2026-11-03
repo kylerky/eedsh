@@ -1,24 +1,27 @@
 /**
  * Synchronous author-time bundle resolution. A query reads the rows a bundle
- * contributes from one explicit root: the pinned DSH installation named by
- * `EEDSH_DSH_ANCHOR`, a profile's installed copy, or a package directory.
- * Results are detached JSON data; every failure is a tagged
- * {@link ResolutionError} with a stable code.
+ * contributes through the capability bridge for the active DSH installation,
+ * from a profile's installed copy, or from a package directory. Results are
+ * detached JSON data; every failure is a tagged {@link ResolutionError} with a
+ * stable code.
  * @module @eedsh/config/resolve
  */
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  bundlePatchFiles,
-  composeEntries,
-  loadOverlayPatches,
-  resolveProfileDir,
-} from '@deepseek-ai/dsh-app-boot'
+  activeDshBridge,
+  bridgeCapability,
+  type DshBridge,
+  REQUIRED_DSH_CAPABILITIES,
+} from './bridge'
 import type { PlanEntry } from './builders'
+import { ResolutionError } from './errors'
 
-/** The environment variable naming the pinned DSH installation's manifest. */
+export { ResolutionError, type ResolutionErrorCode } from './errors'
+
+/** The environment variable that selects a DSH installation explicitly. */
 export const DSH_ANCHOR_ENV = 'EEDSH_DSH_ANCHOR'
 
 /** The environment variable naming the config project's directory. */
@@ -36,7 +39,7 @@ export interface QueryRoot {
 }
 
 /** Where a resolved bundle came from. */
-export type ResolutionOrigin = 'pinned' | 'profile' | 'packageDir' | 'preview'
+export type ResolutionOrigin = 'active' | 'profile' | 'packageDir' | 'preview'
 
 /** The facts behind one successful bundle resolution. */
 export interface ResolvedBundle {
@@ -64,56 +67,6 @@ export interface ResolutionTrace {
   readonly version: string
   readonly origin: ResolutionOrigin
   readonly profile?: string
-}
-
-/** Stable failure codes for author-time resolution. */
-export type ResolutionErrorCode =
-  | 'resolution.anchor_missing'
-  | 'resolution.anchor_unreadable'
-  | 'resolution.anchor_invalid'
-  | 'resolution.root_conflict'
-  | 'resolution.profile_invalid'
-  | 'resolution.profile_missing'
-  | 'resolution.bundle_not_installed'
-  | 'resolution.bundle_not_found'
-  | 'resolution.package_dir_missing'
-  | 'resolution.package_dir_invalid'
-  | 'resolution.not_a_bundle'
-  | 'resolution.patch_invalid'
-  | 'resolution.row_not_found'
-  | 'resolution.preset_not_found'
-  | 'resolution.rooted_query'
-  | 'resolution.invalid_target'
-  | 'resolution.profile_override_invalid'
-
-/** A structured author-time resolution failure. */
-export class ResolutionError extends Error {
-  readonly _tag = 'ResolutionError'
-  readonly code: ResolutionErrorCode
-  readonly bundle: string
-  readonly path?: string
-  readonly profile?: string
-
-  constructor(input: {
-    readonly code: ResolutionErrorCode
-    readonly bundle: string
-    readonly message: string
-    readonly path?: string
-    readonly profile?: string
-  }) {
-    super(input.message)
-    this.name = 'ResolutionError'
-    this.code = input.code
-    this.bundle = input.bundle
-    if (input.path !== undefined) this.path = input.path
-    if (input.profile !== undefined) this.profile = input.profile
-  }
-}
-
-interface DshManifest {
-  readonly name: string
-  readonly version?: string
-  readonly [key: string]: unknown
 }
 
 interface BundleManifest {
@@ -194,62 +147,19 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-function readJsonObject(path: string): Record<string, unknown> {
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
-  if (!isRecord(parsed)) throw new Error('manifest must hold a JSON object')
-  return parsed
-}
-
-function manifestPathAt(input: string): string {
-  const absolute = isAbsolute(input) ? input : resolvePath(input)
-  try {
-    return statSync(absolute).isDirectory() ? join(absolute, 'package.json') : absolute
-  } catch (cause) {
-    throw new Error(`cannot read ${absolute}: ${messageOf(cause)}`)
-  }
-}
-
-function anchorManifest(bundle: string): { path: string; manifest: DshManifest } {
-  const configured = process.env[DSH_ANCHOR_ENV]
-  if (configured === undefined || configured.trim() === '') {
+function requireBridge(bundle: string): DshBridge {
+  const bridge = activeDshBridge()
+  if (bridge === undefined) {
     throw new ResolutionError({
-      code: 'resolution.anchor_missing',
+      code: 'resolution.bridge_missing',
       bundle,
-      message: `${DSH_ANCHOR_ENV} is not set; bundle queries need the pinned DSH installation (set ${DSH_ANCHOR_ENV} to its package.json)`,
+      message: `bundle queries need the active DSH installation; run "eedsh sync" or "eedsh run", or select one with --dsh <path>`,
     })
   }
-  let path: string
-  try {
-    path = manifestPathAt(configured)
-  } catch (cause) {
-    throw new ResolutionError({
-      code: 'resolution.anchor_unreadable',
-      bundle,
-      path: configured,
-      message: `cannot read ${DSH_ANCHOR_ENV} at ${configured}: ${messageOf(cause)}`,
-    })
+  for (const capability of REQUIRED_DSH_CAPABILITIES) {
+    bridgeCapability(bridge, capability, bundle)
   }
-  let manifest: Record<string, unknown>
-  try {
-    manifest = readJsonObject(path)
-  } catch (cause) {
-    throw new ResolutionError({
-      code: 'resolution.anchor_unreadable',
-      bundle,
-      path,
-      message: `cannot read ${DSH_ANCHOR_ENV} at ${path}: ${messageOf(cause)}`,
-    })
-  }
-  const name = manifest.name
-  if (name !== '@deepseek-ai/dsh' && name !== 'dsh') {
-    throw new ResolutionError({
-      code: 'resolution.anchor_invalid',
-      bundle,
-      path,
-      message: `${DSH_ANCHOR_ENV} points at ${path}, which is not a DSH package manifest (name ${JSON.stringify(name)})`,
-    })
-  }
-  return { path, manifest: manifest as DshManifest }
+  return bridge
 }
 
 /** The config file's directory for a relative package root. */
@@ -294,14 +204,12 @@ function rootOverride(): Record<string, string> {
   }
 }
 
-function profileDirectory(profile: string, bundle: string): string {
+function profileDirectory(profile: string, bundle: string, bridge: DshBridge): string {
   const override = rootOverride()[profile]
   if (override !== undefined) return override
   try {
-    const home = process.env.DSH_HOME
-    return home === undefined || home.trim() === ''
-      ? resolveProfileDir(profile)
-      : resolveProfileDir(profile, home)
+    const resolveProfileDir = bridgeCapability(bridge, 'resolveProfileDir', bundle)
+    return resolveProfileDir(profile)
   } catch (cause) {
     throw new ResolutionError({
       code: 'resolution.profile_invalid',
@@ -315,6 +223,7 @@ function profileDirectory(profile: string, bundle: string): string {
 function explicitRoot(
   bundle: string,
   root: QueryRoot,
+  bridge: DshBridge,
 ): { packageDir: string; origin: ResolutionOrigin; profile?: string } {
   if (root.profile !== undefined && root.packageDir !== undefined) {
     throw new ResolutionError({
@@ -326,7 +235,7 @@ function explicitRoot(
   if (root.profile !== undefined) {
     const profile = root.profile
     const override = rootOverride()[profile]
-    const dir = profileDirectory(profile, bundle)
+    const dir = profileDirectory(profile, bundle, bridge)
     const profileManifest = join(dir, 'package.json')
     if (!existsSync(profileManifest)) {
       throw new ResolutionError({
@@ -365,7 +274,7 @@ function explicitRoot(
       : resolvePath(configDirectory(), root.packageDir)
     return { packageDir: absolute, origin: 'packageDir' }
   }
-  return { packageDir: '', origin: 'pinned' }
+  return { packageDir: '', origin: 'active' }
 }
 
 function assertPackageDir(
@@ -395,6 +304,7 @@ function loadRows(
   bundle: string,
   manifest: BundleManifest,
   packageDir: string,
+  bridge: DshBridge,
 ): readonly PlanEntry[] {
   const declaration = manifest.dsh?.bundle
   if (declaration === undefined) {
@@ -407,7 +317,8 @@ function loadRows(
   }
   let files: string[]
   try {
-    files = bundlePatchFiles(declaration as Parameters<typeof bundlePatchFiles>[0])
+    const readPatchFiles = bridgeCapability(bridge, 'bundlePatchFiles', bundle)
+    files = readPatchFiles(declaration)
   } catch (cause) {
     throw new ResolutionError({
       code: 'resolution.patch_invalid',
@@ -420,7 +331,8 @@ function loadRows(
   for (const file of files) {
     const path = join(packageDir, file)
     try {
-      layers.push(loadOverlayPatches('eedsh', path) as unknown as Record<string, unknown>[])
+      const readPatches = bridgeCapability(bridge, 'loadOverlayPatches', bundle)
+      layers.push(readPatches('eedsh', path) as Record<string, unknown>[])
     } catch (cause) {
       throw new ResolutionError({
         code: 'resolution.patch_invalid',
@@ -431,7 +343,8 @@ function loadRows(
     }
   }
   try {
-    const entries = composeEntries(layers as unknown as Parameters<typeof composeEntries>[0])
+    const compose = bridgeCapability(bridge, 'composeEntries', bundle)
+    const entries = compose(layers)
     const detached = planExpressionNodes(jsonClone(entries))
     return deepFreeze(detached) as unknown as PlanEntry[]
   } catch (cause) {
@@ -452,18 +365,19 @@ function loadRows(
  * @returns the package provenance and frozen rows.
  */
 export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBundle {
-  const selected = explicitRoot(bundle, root)
+  const bridge = requireBridge(bundle)
+  const selected = explicitRoot(bundle, root, bridge)
   let packageDir = selected.packageDir
   const origin = selected.origin
-  if (origin === 'pinned') {
-    const anchor = anchorManifest(bundle)
-    const installed = packageDirFromAnchor(anchor.path, bundle)
+  if (origin === 'active') {
+    const anchor = bridge.installation.installAnchor
+    const installed = packageDirFromAnchor(anchor, bundle)
     if (installed === undefined) {
       throw new ResolutionError({
         code: 'resolution.bundle_not_found',
         bundle,
-        path: anchor.path,
-        message: `bundle ${JSON.stringify(bundle)} is not shipped by the pinned DSH installation at ${anchor.path}; pass { profile } or { packageDir } as an explicit root`,
+        path: anchor,
+        message: `bundle ${JSON.stringify(bundle)} is not shipped by the active DSH installation at ${anchor}; pass { profile } or { packageDir } as an explicit root`,
       })
     }
     packageDir = installed
@@ -471,7 +385,8 @@ export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBun
   const manifestPath = assertPackageDir(bundle, packageDir, origin, selected.profile)
   let manifest: BundleManifest
   try {
-    manifest = readJsonObject(manifestPath) as BundleManifest
+    const readManifest = bridgeCapability(bridge, 'readProfileManifest', bundle)
+    manifest = readManifest('eedsh', packageDir) as BundleManifest
   } catch (cause) {
     throw new ResolutionError({
       code:
@@ -482,7 +397,7 @@ export function resolveBundle(bundle: string, root: QueryRoot = {}): ResolvedBun
       message: `cannot read the manifest of bundle ${JSON.stringify(bundle)} at ${manifestPath}: ${messageOf(cause)}`,
     })
   }
-  const rows = loadRows(bundle, manifest, packageDir)
+  const rows = loadRows(bundle, manifest, packageDir, bridge)
   const version = typeof manifest.version === 'string' ? manifest.version : 'unknown'
   const trace: ResolutionTrace = {
     bundle,

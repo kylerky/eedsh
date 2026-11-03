@@ -2,7 +2,7 @@ import { type AuthoringSite, definePreset, LayerBuilder } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer } from 'effect'
 import * as Result from 'effect/Result'
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DshResolveFailure } from '../../src/internal/effect/errors'
 import {
   DshInstallation,
@@ -18,6 +18,7 @@ import {
   parseGeneratedLayers,
   preflightLayer,
 } from '../../src/preflight'
+import { clearTestBridge, installTestBridge } from '../support/bridge'
 import { planOf } from '../support/plan'
 import {
   bundle,
@@ -26,6 +27,14 @@ import {
   override,
   layer as planLayer,
 } from '../support/plan-parts'
+
+beforeAll(async () => {
+  await installTestBridge()
+})
+
+afterAll(() => {
+  clearTestBridge()
+})
 
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 

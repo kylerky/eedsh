@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../src/config'
 import { buildGeneratedBundle } from '../../src/materialize/generated-bundle'
 import { composePreflightLayers, parseGeneratedLayers } from '../../src/preflight'
+import { clearTestBridge, installTestBridge } from '../support/bridge'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -30,12 +31,14 @@ async function writeBundle(base: string, name: string, patch: string): Promise<s
 let workdir = ''
 
 beforeEach(async () => {
+  await installTestBridge()
   process.env = { ...originalEnv }
   await mkdir(tempRoot, { recursive: true })
   workdir = await mkdtemp(join(tempRoot, 'authoring-resolution-'))
 })
 
 afterEach(() => {
+  clearTestBridge()
   process.env = { ...originalEnv }
 })
 

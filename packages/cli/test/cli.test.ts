@@ -23,6 +23,7 @@ import {
 } from '../src/internal/effect/services'
 import { preflightLayer } from '../src/preflight'
 import { delay, waitFor } from './support/async'
+import { installTestBridge } from './support/bridge'
 import {
   fakeDsh,
   fakePackageManager,
@@ -168,6 +169,7 @@ beforeAll(async () => {
   if (!existsSync(join(root, 'packages/config/lib/index.js'))) {
     await execFileAsync('pnpm', ['--filter', '@eedsh/config', 'build'], { cwd: root })
   }
+  await installTestBridge()
 }, 120_000)
 
 describe('eedsh sync', () => {
