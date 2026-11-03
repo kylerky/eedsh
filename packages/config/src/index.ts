@@ -10,6 +10,7 @@ export type {
   PlanBundle,
   PlanLayer,
   PlanPatch,
+  PlanSource,
   ProfilePlan,
 } from '@eedsh/plan'
 export * from './authoring'
@@ -38,3 +39,4 @@ export {
   resolutionTrace,
   takeResolutionTrace,
 } from './resolve'
+export * from './source'

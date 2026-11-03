@@ -121,6 +121,7 @@ const ProfileDefinitionSchema = Schema.Struct({
   bundles: Schema.optional(Schema.Array(Schema.Unknown)),
   layers: Schema.optional(Schema.Array(Schema.Unknown)),
   packages: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  sources: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 })
 
 const decodeProfileDefinition = Schema.decodeUnknownResult(ProfileDefinitionSchema, {
@@ -147,6 +148,7 @@ export function validateProfileDefinition(
     bundles: decoded.success.bundles ?? [],
     layers: decoded.success.layers ?? [],
     packages: decoded.success.packages ?? {},
+    ...(decoded.success.sources === undefined ? {} : { sources: decoded.success.sources }),
   })
 }
 

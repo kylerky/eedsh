@@ -102,6 +102,31 @@ export default {
 }
 `
 
+const sourceConflictSource = `
+import { defineConfig } from '@eedsh/config'
+
+export default defineConfig()
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .source('@scope/plugin', { from: 'https://example.test/acme/bundle.git' })
+      .package('@scope/plugin', '1.0.0')
+  })
+  .build()
+`
+
+const localRefSource = `
+import { defineConfig } from '@eedsh/config'
+
+export default defineConfig()
+  .profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .source('@scope/plugin', { from: './vendor/acme-bundle', ref: 'main' })
+  })
+  .build()
+`
+
 const untaggedThrowSource = `
 throw new Error('untagged import boom')
 
@@ -235,6 +260,22 @@ describe('authoring failures during import', () => {
     expect(String(error.message)).toContain('"ptc-fresh"')
     expect(String(error.message)).toContain('"preset-ptc-fresh"')
     expect(String(error.message)).toContain('"missing"')
+  })
+
+  it('preserves a package and source conflict as a source-declaration failure', async () => {
+    const error = (await failureOf(sourceConflictSource)) as Record<string, unknown>
+    expect(error._tag).toBe('SourceDeclarationError')
+    expect(error.code).toBe('source.duplicate_package')
+    expect(String(error.message)).toContain('@scope/plugin')
+    expect(String(error.message)).not.toContain('cannot import')
+  })
+
+  it('preserves a ref on a local checkout as a source-declaration failure', async () => {
+    const error = (await failureOf(localRefSource)) as Record<string, unknown>
+    expect(error._tag).toBe('SourceDeclarationError')
+    expect(error.code).toBe('source.ref_on_local_checkout')
+    expect(String(error.message)).toContain('ref')
+    expect(String(error.message)).not.toContain('cannot import')
   })
 
   it('keeps an untagged import failure a config import failure', async () => {

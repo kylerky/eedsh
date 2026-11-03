@@ -5,14 +5,15 @@
  * message are the contract that survives module duplication.
  * @module @eedsh/cli/internal/authoring-error
  */
-import type { PresetDefinitionError, ResolutionError } from '@eedsh/config'
+import type { PresetDefinitionError, ResolutionError, SourceDeclarationError } from '@eedsh/config'
 
 /** A tagged authoring failure thrown during config evaluation. */
-export type AuthoringError = ResolutionError | PresetDefinitionError
+export type AuthoringError = ResolutionError | PresetDefinitionError | SourceDeclarationError
 
 const AUTHORING_ERROR_TAGS: ReadonlySet<string> = new Set([
   'ResolutionError',
   'PresetDefinitionError',
+  'SourceDeclarationError',
 ])
 
 /**

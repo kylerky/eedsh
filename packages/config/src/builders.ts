@@ -14,6 +14,7 @@ import {
   type JsonValue,
   type PlanLayer,
   type PlanPatch,
+  type PlanSource,
   type ProfilePlan,
   validateProfileDefinition,
 } from '@eedsh/plan'
@@ -35,6 +36,11 @@ import {
   patchTargetId,
   type Row,
 } from './query'
+import {
+  duplicatePackageDeclaration,
+  normalizeSourceDeclaration,
+  type SourceDeclaration,
+} from './source'
 
 /** One inserted Loader entry. */
 export type PlanEntry = JsonObject
@@ -181,6 +187,7 @@ export class ProfileBuilder {
   private readonly bundles: unknown[] = []
   private readonly layers: LayerBuilder[] = []
   private readonly packageSpecs: Record<string, string> = {}
+  private readonly sourceSpecs: Record<string, PlanSource> = {}
 
   constructor(name: string) {
     this.name = name
@@ -242,7 +249,22 @@ export class ProfileBuilder {
    * @returns this profile.
    */
   package(name: string, spec: string): this {
+    if (Object.hasOwn(this.sourceSpecs, name)) throw duplicatePackageDeclaration(name)
     this.packageSpecs[name] = spec
+    return this
+  }
+
+  /**
+   * Declare a profile package dependency whose contents eedsh provisions from
+   * a git repository or a local checkout. The defaults for `prepare` are
+   * resolved here so the plan records exactly what will run.
+   * @param name - the package name.
+   * @param declaration - the acquisition location, optional ref, and steps.
+   * @returns this profile.
+   */
+  source(name: string, declaration: SourceDeclaration): this {
+    if (Object.hasOwn(this.packageSpecs, name)) throw duplicatePackageDeclaration(name)
+    this.sourceSpecs[name] = normalizeSourceDeclaration(name, declaration)
     return this
   }
 
@@ -256,11 +278,14 @@ export class ProfileBuilder {
     readonly bundles: readonly unknown[]
     readonly layers: PlanLayer[]
     readonly packages: Record<string, string>
+    readonly sources?: Record<string, PlanSource>
   } {
+    const sources = { ...this.sourceSpecs }
     return {
       bundles: [...this.bundles],
       layers: this.layers.map((layer) => layer.toJSON()),
       packages: { ...this.packageSpecs },
+      ...(Object.keys(sources).length === 0 ? {} : { sources }),
     }
   }
 }

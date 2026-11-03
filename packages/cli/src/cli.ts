@@ -289,6 +289,8 @@ function describeError(error: unknown): string[] {
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'PresetDefinitionError':
         return presetDefinitionErrorLines(tagged)
+      case 'SourceDeclarationError':
+        return [`${String(tagged.code)}: ${String(tagged.message)}`]
       case 'PreviewError':
         return [`${String(tagged.code)}: ${String(tagged.message)}`]
       default:
