@@ -44,6 +44,7 @@ export class DshFailure extends Data.TaggedError('DshFailure')<{
   readonly code:
     | 'dsh.not_found'
     | 'dsh.anchor_invalid'
+    | 'dsh.launcher_unresolved'
     | 'dsh.unsupported_version'
     | 'dsh.bridge_unavailable'
     | 'dsh.bridge_load_failed'

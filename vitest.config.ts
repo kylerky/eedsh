@@ -5,11 +5,26 @@ const root = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   resolve: {
-    alias: {
-      '@eedsh/config': fileURLToPath(new URL('packages/config/src/index.ts', import.meta.url)),
-      '@eedsh/plan': fileURLToPath(new URL('packages/plan/src/index.ts', import.meta.url)),
-      '@eedsh/runtime': fileURLToPath(new URL('packages/runtime/src/index.ts', import.meta.url)),
-    },
+    alias: [
+      {
+        find: '@eedsh/runtime/installation-anchor',
+        replacement: fileURLToPath(
+          new URL('packages/runtime/src/installation-anchor.ts', import.meta.url),
+        ),
+      },
+      {
+        find: '@eedsh/config',
+        replacement: fileURLToPath(new URL('packages/config/src/index.ts', import.meta.url)),
+      },
+      {
+        find: '@eedsh/plan',
+        replacement: fileURLToPath(new URL('packages/plan/src/index.ts', import.meta.url)),
+      },
+      {
+        find: '@eedsh/runtime',
+        replacement: fileURLToPath(new URL('packages/runtime/src/index.ts', import.meta.url)),
+      },
+    ],
   },
   test: {
     root,

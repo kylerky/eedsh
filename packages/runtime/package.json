@@ -9,6 +9,10 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./installation-anchor": {
+      "types": "./lib/installation-anchor.d.ts",
+      "default": "./lib/installation-anchor.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },

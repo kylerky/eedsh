@@ -5,7 +5,8 @@
     "paths": {
       "@eedsh/config": ["./packages/config/src/index.ts"],
       "@eedsh/plan": ["./packages/plan/src/index.ts"],
-      "@eedsh/runtime": ["./packages/runtime/src/index.ts"]
+      "@eedsh/runtime": ["./packages/runtime/src/index.ts"],
+      "@eedsh/runtime/installation-anchor": ["./packages/runtime/src/installation-anchor.ts"]
     }
   },
   "include": [
