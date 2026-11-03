@@ -8,6 +8,8 @@ import {
   doctorExitCode,
   formatDoctorReport,
 } from '../src/doctor'
+import { SUPPORTED_DSH_RANGE } from '../src/dsh'
+import type { DiscoveredDshInstallation } from '../src/dsh-discovery'
 import { sha256 } from '../src/internal/sha256'
 import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
 import { planOf } from './support/plan'
@@ -83,10 +85,26 @@ async function published(options: { range?: boolean } = {}) {
   return h
 }
 
-function diagnose(fs: FileSystem.FileSystem): Promise<DoctorResult> {
+function diagnose(
+  fs: FileSystem.FileSystem,
+  options: { dsh?: DiscoveredDshInstallation } = {},
+): Promise<DoctorResult> {
   return Effect.runPromise(
-    doctor({ profileDir: PROFILE_DIR }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
+    doctor({ profileDir: PROFILE_DIR, ...options }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+    ),
   )
+}
+
+function installation(version: string): DiscoveredDshInstallation {
+  return {
+    version,
+    installAnchor: '/opt/dsh/package.json',
+    packageDir: '/opt/dsh',
+    binPath: '/opt/dsh/lib/bin.js',
+    launcher: '/opt/dsh/lib/bin.js',
+    source: 'explicit',
+  }
 }
 
 function finding(result: DoctorResult, check: string): DoctorFinding | undefined {
@@ -676,5 +694,70 @@ describe('doctor snapshot checks', () => {
     }
     const result = await diagnose(flaky)
     expect(finding(result, 'snapshot')).toMatchObject({ severity: 'error', check: 'snapshot' })
+  })
+})
+describe('doctor DSH provenance and drift', () => {
+  it('reports the discovered path and version without a finding when clean', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs, { dsh: installation('0.2.1-rc.2') })
+    expect(result.dsh).toEqual({
+      version: '0.2.1-rc.2',
+      installAnchor: '/opt/dsh/package.json',
+      supported: true,
+    })
+    expect(result.findings.some((item) => item.check === 'dsh')).toBe(false)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('reports an unsupported discovered version as an error naming the range', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs, { dsh: installation('0.3.0') })
+    const finding = result.findings.find((item) => item.check === 'dsh')
+    expect(finding?.severity).toBe('error')
+    expect(finding?.message).toContain('0.3.0')
+    expect(finding?.message).toContain(SUPPORTED_DSH_RANGE)
+    expect(doctorExitCode(result, false)).toBe(1)
+  })
+
+  it('warns about record drift and recommends eedsh sync', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs, { dsh: installation('0.2.1-rc.5') })
+    const finding = result.findings.find((item) => item.check === 'dsh')
+    expect(finding?.severity).toBe('warning')
+    expect(finding?.message).toContain('0.2.1-rc.2')
+    expect(finding?.message).toContain('0.2.1-rc.5')
+    expect(finding?.message).toContain('eedsh sync')
+    expect(doctorExitCode(result, false)).toBe(0)
+    expect(doctorExitCode(result, true)).toBe(1)
+  })
+
+  it('reports no DSH finding when no installation is supplied', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs)
+    expect(result.dsh).toBeUndefined()
+    expect(result.findings.some((item) => item.check === 'dsh')).toBe(false)
+    expect(doctorExitCode(result, true)).toBe(0)
+  })
+
+  it('reports a version-1 authoritative plan instead of reading it', async () => {
+    const h = await published()
+    const content = JSON.stringify({ format: 'eedsh/profile-plan', version: 1, dsh: '0.2.1-rc.2' })
+    h.fs.files.set(planPath(h), content)
+    editRecord(h, (record) => {
+      record.eedsh.planHash = sha256(content)
+    })
+    const result = await diagnose(h.fs.fs)
+    const finding = result.findings.find((item) => item.check === 'plan')
+    expect(finding?.severity).toBe('error')
+    expect(finding?.message).toContain('version 2')
+    expect(finding?.message).toContain('eedsh sync')
+  })
+
+  it('prints provenance before the findings in the report', async () => {
+    const h = await published()
+    const result = await diagnose(h.fs.fs, { dsh: installation('0.2.1-rc.2') })
+    const lines = formatDoctorReport(result)
+    expect(lines[0]).toContain('0.2.1-rc.2')
+    expect(lines[0]).toContain('/opt/dsh/package.json')
   })
 })

@@ -12,6 +12,8 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as yaml from 'js-yaml'
+import type { DiscoveredDshInstallation } from './dsh-discovery'
+import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
 import { EXIT_FAILURE, EXIT_OK } from './exit'
 import { messageOf } from './internal/error-message'
 import { readOptional } from './internal/read-optional'
@@ -61,18 +63,29 @@ export interface DoctorFinding {
   readonly path: Option.Option<string>
 }
 
+/** Provenance of the DSH installation doctor inspected. */
+export interface DoctorDsh {
+  readonly version: string
+  readonly installAnchor: string
+  readonly supported: boolean
+}
+
 /** The complete result of one doctor run. */
 export interface DoctorResult {
   /** Errors first, then warnings, each sorted by check and message. */
   readonly findings: DoctorFinding[]
   readonly errors: number
   readonly warnings: number
+  /** The discovered installation, when one was supplied. */
+  readonly dsh?: DoctorDsh
 }
 
 /** Inputs for {@link doctor}. */
 export interface DoctorOptions {
   /** Absolute path of the published profile to inspect. */
   profileDir: string
+  /** The discovered DSH installation, when discovery succeeded. */
+  dsh?: DiscoveredDshInstallation
 }
 
 /** The scaffolding files a published profile should carry. */
@@ -107,10 +120,15 @@ function warningFinding(
   return { severity: 'warning', check, message, path }
 }
 
-function summarize(findings: DoctorFinding[]): DoctorResult {
+function summarize(findings: DoctorFinding[], dsh?: DoctorDsh): DoctorResult {
   const sorted = [...findings].sort(compareFindings)
   const errors = sorted.filter((item) => item.severity === 'error').length
-  return { findings: sorted, errors, warnings: sorted.length - errors }
+  return {
+    findings: sorted,
+    errors,
+    warnings: sorted.length - errors,
+    ...(dsh === undefined ? {} : { dsh }),
+  }
 }
 
 function plural(value: number, noun: string): string {
@@ -124,11 +142,19 @@ function plural(value: number, noun: string): string {
  */
 export function formatDoctorReport(result: DoctorResult): string[] {
   const summary = `${plural(result.errors, 'error')}, ${plural(result.warnings, 'warning')}`
-  if (result.findings.length === 0) return [`clean: ${summary}`]
-  const lines = result.findings.map((finding) => {
-    const location = Option.isNone(finding.path) ? '' : ` [${finding.path.value}]`
-    return `${finding.severity}: ${finding.check}: ${finding.message}${location}`
-  })
+  const lines: string[] = []
+  if (result.dsh !== undefined) {
+    lines.push(
+      `dsh: ${result.dsh.version} (${result.dsh.installAnchor})${result.dsh.supported ? '' : ' [unsupported]'}`,
+    )
+  }
+  if (result.findings.length === 0) return [...lines, `clean: ${summary}`]
+  lines.push(
+    ...result.findings.map((finding) => {
+      const location = Option.isNone(finding.path) ? '' : ` [${finding.path.value}]`
+      return `${finding.severity}: ${finding.check}: ${finding.message}${location}`
+    }),
+  )
   return [...lines, summary]
 }
 
@@ -236,6 +262,17 @@ function readPlan(
         errorFinding(
           'plan',
           `the authoritative plan is not valid JSON: ${parsed.failure}`,
+          Option.some(path),
+        ),
+      )
+      return Option.none()
+    }
+    const planVersion = (parsed.success as { version?: unknown }).version
+    if (typeof planVersion === 'number' && planVersion !== 2) {
+      findings.push(
+        errorFinding(
+          'plan',
+          `the authoritative plan declares unsupported version ${String(planVersion)}; run "eedsh sync" to publish a version 2 plan`,
           Option.some(path),
         ),
       )
@@ -758,6 +795,23 @@ export function doctor(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const findings: DoctorFinding[] = []
+    const dsh: DoctorDsh | undefined =
+      options.dsh === undefined
+        ? undefined
+        : {
+            version: options.dsh.version,
+            installAnchor: options.dsh.installAnchor,
+            supported: supportsDshVersion(options.dsh.version),
+          }
+    if (dsh !== undefined && !dsh.supported) {
+      findings.push(
+        errorFinding(
+          'dsh',
+          `the discovered DSH ${dsh.version} is outside the supported range ${SUPPORTED_DSH_RANGE}; install a supported dsh or select one with --dsh`,
+          Option.some(dsh.installAnchor),
+        ),
+      )
+    }
 
     if (!(yield* existsOrFalse(fs, options.profileDir))) {
       findings.push(
@@ -767,12 +821,21 @@ export function doctor(
           Option.some(options.profileDir),
         ),
       )
-      return summarize(findings)
+      return summarize(findings, dsh)
     }
 
     const recordPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
     const record = yield* readRecord(fs, recordPath, findings)
-    if (Option.isNone(record)) return summarize(findings)
+    if (Option.isNone(record)) return summarize(findings, dsh)
+    if (dsh !== undefined && record.value.dshVersion !== dsh.version) {
+      findings.push(
+        warningFinding(
+          'dsh',
+          `the generation record was published with DSH ${record.value.dshVersion} but the discovered installation is ${dsh.version}; run "eedsh sync" to republish with this installation`,
+          Option.some(dsh.installAnchor),
+        ),
+      )
+    }
 
     const plan = yield* readPlan(fs, options.profileDir, record.value, findings)
     if (Option.isSome(plan)) {
@@ -784,6 +847,6 @@ export function doctor(
     const lockfile = yield* checkLockfile(fs, options.profileDir, record.value, findings)
     yield* checkInstalled(fs, options.profileDir, record.value, lockfile, findings)
     yield* checkSnapshot(fs, recordPath, record.value, findings)
-    return summarize(findings)
+    return summarize(findings, dsh)
   })
 }

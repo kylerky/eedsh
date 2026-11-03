@@ -865,13 +865,12 @@ function runDoctorCommand(
       env: runtime.env,
       cwd: runtime.cwd,
     })
+    let doctorDsh: DiscoveredDshInstallation | undefined
     if (Result.isSuccess(discovered)) {
-      const validated = validateDshVersion(discovered.success)
-      if (Result.isSuccess(validated)) {
-        const load = runtime.options.loadDshBridge ?? loadDshBridge
-        const loaded = yield* Effect.promise(() => load(validated.success))
-        if (Result.isSuccess(loaded)) runtime.installation = validated.success
-      }
+      doctorDsh = discovered.success
+      const load = runtime.options.loadDshBridge ?? loadDshBridge
+      const loaded = yield* Effect.promise(() => load(discovered.success))
+      if (Result.isSuccess(loaded)) runtime.installation = discovered.success
     }
 
     let profileName: string
@@ -891,7 +890,10 @@ function runDoctorCommand(
       if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
       profileName = selection.success.name
     }
-    const result = yield* doctor({ profileDir: profileDirForName(profileName, runtime.env) })
+    const result = yield* doctor({
+      profileDir: profileDirForName(profileName, runtime.env),
+      ...(doctorDsh === undefined ? {} : { dsh: doctorDsh }),
+    })
     yield* Effect.sync(() => {
       for (const line of formatDoctorReport(result)) runtime.stdout(line)
     })
