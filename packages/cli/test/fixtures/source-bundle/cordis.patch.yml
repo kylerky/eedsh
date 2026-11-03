@@ -1,0 +1,3 @@
+- insert:
+    - id: source-bundle-panel
+      name: '@fixture/source-bundle-plugin'
