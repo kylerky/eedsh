@@ -16,11 +16,19 @@ export interface CommandResult {
   readonly stderr: string
 }
 
+/** Options for one fixed-argument command. */
+export interface CommandOptions {
+  /** Bound in milliseconds. */
+  readonly timeoutMs?: number | undefined
+  /** Environment to run under; defaults to the process environment. */
+  readonly env?: Record<string, string | undefined> | undefined
+}
+
 /** Runs one command with fixed arguments and no interactive input. */
 export type CommandRunner = (
   command: string,
   args: readonly string[],
-  options?: { readonly timeoutMs?: number },
+  options?: CommandOptions,
 ) => CommandResult
 
 /** The default bound for setup commands. */
@@ -75,6 +83,7 @@ export const defaultCommandRunner: CommandRunner = (command, args, options) => {
     timeout: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
     windowsHide: true,
     shell: false,
+    ...(options?.env === undefined ? {} : { env: options.env }),
   })
   return {
     status: result.status,
@@ -105,8 +114,12 @@ export function probeLauncherVersion(
   runner: CommandRunner,
   launcher: string,
   timeoutMs: number = DEFAULT_VERSION_PROBE_TIMEOUT_MS,
+  env?: Record<string, string | undefined>,
 ): string | undefined {
-  const result = runner(launcher, ['--version'], { timeoutMs })
+  const result = runner(launcher, ['--version'], {
+    timeoutMs,
+    ...(env === undefined ? {} : { env }),
+  })
   if (result.status !== 0) return undefined
   return parseVersionOutput(result.stdout)
 }
