@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -333,5 +333,96 @@ describe('package boundaries', () => {
       expect(importsToolchain(name), `@eedsh/${name} must not import tsx or typescript`).toBe(false)
     }
     expect(manifest('cli').dependencies?.tsx, '@eedsh/cli must declare tsx').toBeDefined()
+  })
+})
+/** Production files that must locate DSH without asking a package manager. */
+const QUERY_FREE_FILES = [
+  'packages/cli/src/dsh-discovery.ts',
+  'packages/cli/src/doctor.ts',
+  'packages/cli/src/repl/session.ts',
+  'packages/cli/src/repl/prompt.ts',
+  'packages/cli/src/repl/views.ts',
+  'packages/cli/src/repl/preview.ts',
+  'packages/cli/src/repl/completion.ts',
+  'packages/cli/src/repl/diff.ts',
+]
+
+const PACKAGE_MANAGER_QUERY = /pnpm\s+list|npm\s+root|cmd-shim-target/
+const PROCESS_LAUNCH = /child_process|spawnSync|execFileSync/
+
+const PNPM_QUERY = /['"]pnpm['"]\s*,\s*\[\s*['"]list['"]/
+const NPM_QUERY = /['"]npm['"]\s*,\s*\[\s*['"]root['"]/
+
+describe('installation anchor boundaries', () => {
+  it('keeps package-manager queries out of discovery, doctor, and repl', () => {
+    for (const file of QUERY_FREE_FILES) {
+      const text = readFileSync(join(root, file), 'utf8')
+      expect(text, `${file} must not query a package manager or parse a shim`).not.toMatch(
+        PACKAGE_MANAGER_QUERY,
+      )
+    }
+    for (const file of ['packages/cli/src/dsh-discovery.ts', 'packages/cli/src/doctor.ts']) {
+      expect(
+        readFileSync(join(root, file), 'utf8'),
+        `${file} must not launch external commands`,
+      ).not.toMatch(PROCESS_LAUNCH)
+    }
+  })
+
+  it('imports the bootstrap only from the setup command path', () => {
+    const importers = sourceImports('cli')
+      .filter(({ specifier }) => specifier === './dsh-bootstrap')
+      .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
+    expect(importers, 'only the sync/run setup path may import the bootstrap').toEqual([
+      'packages/cli/src/cli.ts',
+    ])
+  })
+
+  it('imports the command runner only from discovery and the setup paths', () => {
+    const importers = sourceImports('cli')
+      .filter(({ specifier }) => specifier === './command-runner')
+      .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
+      .sort()
+    expect(importers).toEqual([
+      'packages/cli/src/cli.ts',
+      'packages/cli/src/dsh-bootstrap.ts',
+      'packages/cli/src/dsh-discovery.ts',
+    ])
+  })
+
+  it('keeps the pnpm and npm metadata commands in the bootstrap module', () => {
+    const querySources = sourceFiles(join(root, 'packages/cli/src')).filter((file) => {
+      const text = readFileSync(file, 'utf8')
+      return PNPM_QUERY.test(text) || NPM_QUERY.test(text)
+    })
+    expect(
+      querySources.map((file) => relative(root, file).replaceAll('\\', '/')),
+      'only the bootstrap may ask pnpm or npm for metadata',
+    ).toEqual(['packages/cli/src/dsh-bootstrap.ts'])
+  })
+
+  it('has no cmd-shim-target parser in production sources', () => {
+    for (const name of packages) {
+      for (const file of sourceFiles(join(root, 'packages', name, 'src'))) {
+        expect(readFileSync(file, 'utf8'), `${file} must not parse a shim`).not.toMatch(
+          /cmd-shim-target/,
+        )
+      }
+    }
+  })
+
+  it('keeps the installation anchor outside the config project', async () => {
+    const { installationAnchorPathForEnv } = await import('../packages/cli/src/installation-anchor')
+    const path = installationAnchorPathForEnv({
+      DSH_HOME: '/dsh-home',
+      XDG_CONFIG_HOME: '/xdg-config',
+    })
+    expect(path).toBe(join(resolve('/dsh-home'), '.eedsh', 'installation.json'))
+    expect(path.startsWith(resolve('/xdg-config'))).toBe(false)
+
+    const source = readFileSync(join(root, 'packages/cli/src/installation-anchor.ts'), 'utf8')
+    expect(source, 'the anchor helper must not read the config project location').not.toMatch(
+      /config-path|XDG_CONFIG_HOME|configDirectory/,
+    )
   })
 })

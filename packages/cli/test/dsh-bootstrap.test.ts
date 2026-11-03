@@ -292,3 +292,44 @@ describe('bootstrap boundaries', () => {
     }
   })
 })
+describe('windows launchers', () => {
+  it('bootstraps a .cmd launcher below a path with spaces', async () => {
+    const home = await tempDir('bootstrap-win-')
+    const installation = await writeInstallation(home, 'dsh with space', '0.2.1-rc.2')
+    const launcherDir = join(home, 'Program Files', 'pnpm')
+    await mkdir(launcherDir, { recursive: true })
+    const launcher = join(launcherDir, 'dsh.CMD')
+    await writeFile(launcher, '@echo off\r\n')
+    const { runner, calls } = fakeRunner({
+      pnpm: () => ({ status: 0, stdout: pnpmJson(installation.dir, '0.2.1-rc.2') }),
+      version: () => ({ status: 0, stdout: '0.2.1-rc.2\r\n' }),
+    })
+    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+    expect(result.success.launcher).toBe(launcher)
+    expect(calls.find((call) => call.args[0] === '--version')?.command).toBe(launcher)
+  })
+
+  it('reads an npm global root with spaces and selects its package', async () => {
+    const home = await tempDir('bootstrap-win-npm-')
+    const globalRoot = join(home, 'npm global')
+    const installation = await writeInstallation(
+      join(globalRoot, '@deepseek-ai'),
+      'dsh',
+      '0.2.1-rc.5',
+    )
+    const launcherDir = join(home, 'Program Files', 'npm')
+    await mkdir(launcherDir, { recursive: true })
+    const launcher = join(launcherDir, 'dsh.CMD')
+    await writeFile(launcher, '@echo off\r\n')
+    const { runner } = fakeRunner({
+      npmRoot: () => ({ status: 0, stdout: `${globalRoot}\r\n` }),
+      version: () => ({ status: 0, stdout: '0.2.1-rc.5\r\n' }),
+    })
+    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.manager).toBe('npm')
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+  })
+})
