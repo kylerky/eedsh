@@ -23,18 +23,37 @@ eedsh init
 `eedsh init` writes `config.ts`, `package.json`, and `tsconfig.json` under
 `$XDG_CONFIG_HOME/eedsh` (falling back to `~/.config/eedsh` when
 `XDG_CONFIG_HOME` is unset or not absolute) and installs the typed authoring API,
-its `effect` peer, and TypeScript with pnpm. Add `--no-install` to write the
-files and run `pnpm install` yourself.
+its `effect` peer, and TypeScript with pnpm. The generated config declares
+profiles only; it has no DSH declaration and needs no DSH installation to be
+written. Add `--no-install` to write the files and run `pnpm install` yourself.
 
-You do not need a separate DSH install or a per-project `@eedsh/config`
-dependency: `@eedsh/cli` pins `@deepseek-ai/dsh@0.2.1-rc.2` and runs that
-launcher, and the config project declares its own dependencies.
+eedsh requires a separate DSH installation; it does not bundle one. Install
+`dsh` next to the CLI, then create the config project:
 
+```sh
+npm install -g @deepseek-ai/dsh
+npm install -g @eedsh/cli
+eedsh init
+```
+
+`eedsh sync`, `eedsh run`, and `eedsh repl` discover exactly one installation
+per invocation: `--dsh <path>`, then `EEDSH_DSH_ANCHOR`, then a `dsh` launcher
+on `PATH`, then a project-local `@deepseek-ai/dsh`. The discovered version must
+satisfy eedsh's supported range, `^0.2.1-rc.2`; `eedsh init`, `eedsh check`, and
+`eedsh doctor --profile` work without any installation. The config project
+declares its own dependencies.
+
+> **Breaking change since the bundled-DSH release:** the config no longer
+> declares a DSH version, the plan is version 2 with no `dsh` field, and
+> generated and runtime bundles no longer declare `engines.dsh`. Delete
+> `.dsh(...)` (and any plain-config `dsh` field), then run `eedsh sync` to
+> publish version-2 plans. Version-1 plans are rejected; see
+> [Upgrading from a bundled DSH](#upgrading-from-a-bundled-dsh).
+>
 > **Breaking change:** eedsh no longer reads `eedsh.config.ts`,
 > `eedsh.config.mts`, JavaScript configs, or a single-plan default export from the
-> working directory. Run `eedsh init`, move the profile into
-> `defineConfig().dsh(pin).profile(name, (profile) => ...).build()`, and remove
-> the old file. There is no automatic migration; see
+> working directory. Run `eedsh init`, and remove the old file. There is no
+> automatic migration; see
 > [Migrating from the free-function API](#migrating-from-the-free-function-api).
 
 ## Quick start
@@ -81,17 +100,28 @@ Working from a checkout? Build it first; see [Build from source](#build-from-sou
 
 ```sh
 eedsh init   [--no-install]
-eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
-eedsh doctor [--profile <name> | --config <path>] [--strict]
+eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
-eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
-eedsh repl   [--profile <name>] [--config <path>] [--sync] [--eval <expression>]
+eedsh run    [--profile <name>] [--config <path>] [--dsh <path>] [--no-sync] [-- <dsh args>]
+eedsh repl   [--profile <name>] [--config <path>] [--dsh <path>] [--sync] [--eval <expression>]
 eedsh --help | --version
 ```
 
 - `init` creates the XDG config project, never overwrites an existing
   `config.ts`, `package.json`, or `tsconfig.json`, and creates no repository.
+  It writes no DSH declaration and needs no DSH installation.
   `--no-install` skips pnpm and prints the install command.
+- `sync`, `run`, and `repl` require a discovered `@deepseek-ai/dsh`
+  installation; discovery order is `--dsh <path>`, `EEDSH_DSH_ANCHOR`, a
+  `dsh` launcher on `PATH`, then a project-local `@deepseek-ai/dsh`. The path
+  may be the package directory or its `package.json`. One installation is
+  selected per invocation and reused by watch mode. An invalid explicit
+  selection fails instead of falling through. The discovered version must
+  satisfy `^0.2.1-rc.2`; discovery and the supported range are the only version
+  inputs. `doctor` uses the same discovery when available but never requires it.
+- `--dsh` is accepted by `sync`, `run`, `repl`, and `doctor`; `init` and
+  `check` do not need or accept a DSH selection.
 - `--config` defaults to `$XDG_CONFIG_HOME/eedsh/config.ts`
   (`~/.config/eedsh/config.ts` when unset or relative). The path is absolute after
   resolution; the working directory is never searched. Only `.ts` is accepted, and
@@ -117,14 +147,17 @@ eedsh --help | --version
   generation record cannot be read. Without it, sync fails closed on an eedsh-managed
   profile instead of silently treating managed entries as user-owned. It is not for
   re-adopting a removal you already published.
-- `doctor` inspects a published profile without changing it. It verifies the
+- `doctor` inspects a published profile without changing it. When a DSH is
+  discoverable it prints its path and version, errors when the version is
+  outside the supported range, and warns when the generation record names a
+  different version and recommends `eedsh sync`. It reads no `engines.dsh` and
+  reports a version-1 plan as unreadable instead of reading it. It verifies the
   generation record, the authoritative `plans/<generationId>.json`, the
   `.eedsh/plan.json` mirror, managed bundles and dependencies, dependency-section
   conflicts, scaffolding, the lockfile, and installed package resolution. The
   advisory `.eedsh/provenance.json` sidecar is outside every check: it may be
   absent, malformed, or from another generation without affecting findings or
-  exit status. It takes no
-  lock and never repairs; findings point at `eedsh sync` or
+  exit status. It takes no lock and never repairs; findings point at `eedsh sync` or
   `eedsh sync --adopt-ownership`. `--profile` selects a profile under `DSH_HOME`
   without evaluating a config; without it, doctor evaluates the config only to take
   the default profile (or the sole profile) and inspects that published profile.
@@ -139,17 +172,22 @@ eedsh --help | --version
   or publishes a profile, and exits with the compiler's exit code. Arguments after
   `--` are forwarded to tsc, for example `eedsh check -- --pretty false`.
 - `run` selects `--profile`, then `defaultProfile`, then the sole profile, syncs
-  that profile first (unless `--no-sync`), and then spawns the pinned DSH launcher
-  with `--profile <name>` and your arguments. An ambiguous selection is a usage
+  that profile first (unless `--no-sync`), and then spawns the discovered DSH
+  launcher with `--profile <name>` and your arguments. The same installation is
+  used for preflight, the generation record, and the spawned process; `--no-sync`
+  skips publication but still requires and boots the discovered installation. An
+  ambiguous selection is a usage
   error listing the profile names. `run` does not import the launcher, so argv,
   signals, and shutdown stay exactly DSH's.
 - `repl` evaluates TypeScript expressions against the loaded config, watches the
   config directory, and prints the diff and composition summary after each save.
-  Bindings persist between entries: `config` is the config view (`dsh`,
-  `defaultProfile`, `profiles()`), `selectedProfile` is the selected profile view
+  Bindings persist between entries: `config` is the config view
+  (`defaultProfile`, `profiles()`), `dshVersion()` returns the exact selected
+  installation version, `selectedProfile` is the selected profile view
   (`name`, `plan()`, `bundles()`, `layers()`, `packages()`, `entries()`,
   `published()`), and `plan` is `selectedProfile.plan()`. The curated authoring
-  factories `bundle`, `defineConfig`, `definePreset`, `group`, and `js` are bound; the legacy
+  factories `bundle`, `defineConfig`, `definePreset`, `dshVersion`, `group`, and
+  `js` are bound; the legacy
   `profile` string and raw `profiles` map are not. Tab completes commands, chain
   methods, and profile, bundle, row, preset, and package names; a second Tab lists
   ambiguous matches. Dot commands are
@@ -214,7 +252,8 @@ row; methods never reach the persisted plan.
 
 | API | Purpose |
 |---|---|
-| `defineConfig()` | Start the synchronous config builder. `.dsh(pin)`, `.defaultProfile(name)`, and `.profile(name, build)` chain; `.build()` validates. |
+| `defineConfig()` | Start the synchronous config builder. `.defaultProfile(name)` and `.profile(name, build)` chain; `.build()` validates. There is no DSH declaration. |
+| `dshVersion()` | Return the exact version of the selected DSH installation; throws a tagged `resolution.bridge_missing` outside eedsh. |
 | `ConfigBuilder.build()` | Normalize typed objects, validate the envelope and every profile, and return `Result<EedshConfig, Schema.SchemaError>`. |
 | `ProfileBuilder.bundle(name \| Bundle)` | Add an ordered bundle selection. A rooted query is rejected. Bundle selection never declares a dependency; a local bundle that is both calls `.bundle(name)` and `.package(name, spec)`. |
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
@@ -242,8 +281,8 @@ import { bundle, defineConfig } from '@eedsh/config'
 const web = bundle('@deepseek-ai/dsh-web-app')
 const standard = web.presets()[0]
 
-// No root: the pinned DSH installation named by EEDSH_DSH_ANCHOR.
-const pinned = bundle('@deepseek-ai/dsh-base').row('timer')
+// No root: the active DSH installation the CLI selected for this run.
+const active = bundle('@deepseek-ai/dsh-base').row('timer')
 
 // One explicit root: an installed profile copy, or a package directory.
 const installed = bundle('@acme/plugin-bundle').fromProfile('work').rows()
@@ -252,7 +291,6 @@ const vendored = bundle('@acme/plugin-bundle')
   .row('acme-row')
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -263,15 +301,17 @@ export default defineConfig()
         layer.disable(standard ?? 'preset-minimal')
       })
       .layer((layer) => {
-        layer.insert([...installed, vendored, pinned])
+        layer.insert([...installed, vendored, active])
       })
   })
   .build()
 ```
 
 `bundle(name)` returns a `Bundle` that is both a plan selection and a query
-handle. With no root it resolves the pinned installation and never a profile
-copy; a custom bundle needs an explicit root. `ProfileBuilder.bundle()` accepts
+handle. With no root it resolves the active installation the CLI selected and
+never a profile copy; a custom bundle needs an explicit root. Queries run only
+while the config is evaluated by `eedsh sync`, `eedsh run`, or `eedsh repl`,
+which install the capability bridge for that installation before the import. `ProfileBuilder.bundle()` accepts
 a bundle name or an unrooted `Bundle`; a rooted `BundleQuery` is query-only and
 is rejected as a plan selection.
 
@@ -319,7 +359,6 @@ const adapted = definePreset('ptc-fresh') // Loader row id: preset-ptc-fresh
   })
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-web-app')
@@ -433,17 +472,17 @@ loading: type correctness is established by your editor, by the config project's
 such as `@eedsh/config`, and the config project's own `paths` mappings work. The
 caller's working-directory tsconfig is never used.
 
-`defineConfig()` starts a synchronous builder. `.dsh(pin)` sets one exact DSH
-version, `.defaultProfile(name)` may name a default, and
-`.profile(name, build)` declares each profile; the callback receives a
+`defineConfig()` starts a synchronous builder. `.defaultProfile(name)` may name a
+default, and `.profile(name, build)` declares each profile; the callback receives a
 `ProfileBuilder` scoped to that profile. Profiles may be added dynamically
 (loops, computed keys, environment values) by calling `.profile()` repeatedly.
 `.build()` normalizes typed objects, validates the envelope with the strict
 config contract, then validates each profile plan independently. It returns
 `Result<EedshConfig, Schema.SchemaError>` and never throws; a config module
-default-exports it. Config-level defects — a malformed pin, an empty profile
-record, an unsafe key, or an unknown default — fail the whole config with
-Effect's native formatted schema error. Each profile is validated independently:
+default-exports it. Config-level defects — a legacy `dsh` field, an empty
+profile record, an unsafe key, or an unknown default — fail the whole config
+with Effect's native formatted schema error. A profile record built from spreads,
+computed keys, loops, or environment values is accepted. Each profile is validated independently:
 an invalid profile keeps its own native failure and does not block a valid
 sibling from being selected, published, or run.
 
@@ -452,6 +491,13 @@ Bare `sync` selects every profile; `--profile` selects exactly the named profile
 profile. Unknown or ambiguous one-profile selections are usage errors (exit 2)
 listing the available names. `check` takes no profile. Removing a profile from
 `config.ts` stops syncing it but does not delete its published DSH profile.
+
+A config no longer declares a DSH version, so plan validation accepts only
+version 2 and rejects a `dsh` field. `dshVersion()` is available inside the config
+for branching and logging, but the selected version is not written into the plan
+or the generated manifest. Published versions are recovered by re-syncing; see
+[Upgrading from a bundled DSH](#upgrading-from-a-bundled-dsh) for the migration
+and rollback limits.
 
 Invalid configs and profiles print Effect's native multi-line schema message with
 location annotations, for example `profile key "a/b" is not usable as a profile
@@ -464,12 +510,12 @@ For project typechecking with the config project's own compiler, see [`eedsh che
 
 ## Migrating from the free-function API
 
-This release replaces the free-function authoring surface with typed objects. The
-persisted plan format is unchanged, so published profiles are not stranded.
+This earlier release replaced the free-function authoring surface with typed
+objects. That migration did not change the persisted plan format.
 
 | Before | After |
 |---|---|
-| `defineConfig({ dsh, profiles: { work: defineProfile({...}) } })` | `defineConfig().dsh(pin).defaultProfile(name).profile('work', (profile) => ...).build()` |
+| `defineConfig({ profiles: { work: defineProfile({...}) } })` | `defineConfig().defaultProfile(name).profile('work', (profile) => ...).build()` |
 | `defineProfile({ bundles, layers, packages })` | the `.profile(name, (profile) => ...)` callback: `.bundle()`, `.generated()`, `.layer()`, `.package()` |
 | `layer(id, [insert(...), disable('x')])` | `.layer((layer) => layer.insert(...).disable('x'))`; a group is anonymous and identified by position |
 | `.layer('label', build)` | the string is now an optional, non-unique display label, not an identifier |
@@ -484,6 +530,31 @@ persisted plan format is unchanged, so published profiles are not stranded.
 `defineConfig().build()` is synchronous and returns Effect's native
 `Result<EedshConfig, Schema.SchemaError>`; export that Result from `config.ts`.
 The REPL no longer binds `profile` or `profiles`.
+
+## Upgrading from a bundled DSH
+
+The external-DSH release is breaking: eedsh no longer bundles an installation,
+the config declares no DSH value, and published artifacts carry no DSH engine.
+
+1. Install DSH separately (`npm install -g @deepseek-ai/dsh`) or point eedsh at an
+   installation with `--dsh <path>` or `EEDSH_DSH_ANCHOR`. The version must
+   satisfy `^0.2.1-rc.2`; `eedsh init`, `eedsh check`, and
+   `eedsh doctor --profile` keep working without one.
+2. Delete `.dsh(...)` from `config.ts` and any plain-config `dsh` field. A
+   config that still declares either is rejected; there is no ignored fallback.
+3. Run `eedsh sync`. It publishes a version-2 plan with no `dsh` field and a
+   generated manifest with no `engines.dsh`. Older published profiles are not
+   migrated in place and version-1 plans are rejected, not read.
+4. Use `dshVersion()` only to branch or log. It returns the exact selected
+   version and cannot narrow or pin the published artifact.
+5. Run `eedsh doctor` to confirm the discovered path and version, the supported
+   range, and no generation drift. After any DSH upgrade, run `eedsh sync` to
+   republish with the new version.
+
+**Rollback limits:** the previous eedsh reads version-1 plans, so it cannot read
+plans published by this release. Rolling back requires restoring the old config
+with `.dsh(...)` and re-syncing with the older release; there is no downgrade
+reader.
 
 ## How it works
 
@@ -588,9 +659,9 @@ TypeScript config alone reloads nothing; only a published generation does.
 | Package | Role |
 |---|---|
 | `@eedsh/plan` | The shared plan contract: the Effect Schema and derived plan types, strict `validatePlan`/`validateConfigValue`, the multi-profile config envelope, and canonical JSON. Imports Effect only through `effect/Schema` and `effect/Result`, and no Node builtins. |
-| `@eedsh/config` | Public typed authoring API: the fluent `defineConfig()` builder, `bundle()` query handles, layer and value builders, and normalization to plain plan data. Built on `@eedsh/plan`; synchronous, no Effect runtime, and re-exports plan types only. |
-| `@eedsh/cli` | The `eedsh` command: XDG config resolution, `init`, tsx-based evaluation, profile selection, `check`, Effect-based materialization, preflight, atomic publication, all-profile `sync --watch`, and `run`. Also depends on Effect, `@eedsh/plan` at runtime, and the TypeScript toolchain, which `@eedsh/runtime` does not; it resolves `@eedsh/config` only for the init manifest. |
-| `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. |
+| `@eedsh/config` | Public typed authoring API: the fluent `defineConfig()` builder, `bundle()` query handles, layer and value builders, `dshVersion()`, and normalization to plain plan data. Built on `@eedsh/plan`; synchronous, no Effect runtime, re-exports plan types only, and reads bundle contents through the CLI-installed capability bridge rather than any DSH package. |
+| `@eedsh/cli` | The `eedsh` command: DSH discovery and supported-range enforcement, XDG config resolution, `init`, tsx-based evaluation, profile selection, `check`, the capability bridge, Effect-based materialization, preflight, atomic publication, all-profile `sync --watch`, and `run`. It declares no production DSH or app-boot dependency: app-boot is loaded from the discovered installation. Also depends on Effect, `@eedsh/plan` at runtime, and the TypeScript toolchain, which `@eedsh/runtime` does not. |
+| `@eedsh/runtime` | A static DSH bundle and plugin that watches the published generation record and reloads it through DSH's HMR service. It declares `engines.node` and no `engines.dsh`, probes the HMR capabilities it needs, and warns when the record and running installation versions drift. |
 
 ### Effect boundaries
 
@@ -625,16 +696,19 @@ The resulting `Exit` is rendered once into a diagnostic and an exit code. Expect
 failures are `Result` values or Effect failures; only the external API adapters and
 the Effect-free runtime use exception handling. `test/architecture.test.ts` rejects
 new JavaScript `throw`, `try`, and `.catch` sites in production config and CLI
-source outside the one allowlisted impossible-state branch in the generated YAML
-emitter.
+source outside the documented allowlist of synchronous boundaries and discovery
+or bridge adapters.
 
 `test/architecture.test.ts` enforces the boundary: `@eedsh/plan` may import only
-`effect/Schema` and `effect/Result` and no Node builtins; `@eedsh/config` may import
-only those Effect modules and Effect-free DSH helpers, and re-exports plan types
-only; plan, config, and CLI must use the same exact Effect version; the workspace
-declares no separate `@effect/cli`, `@effect/platform`, or `@effect/printer*`
-packages and no source imports one; `@eedsh/runtime` may not depend on or import
-Effect or the TypeScript toolchain.
+`effect/Schema` and `effect/Result` and no Node builtins; `@eedsh/plan` accepts
+only plan version 2 and has no version-1 reader; `@eedsh/config` may import only
+those Effect modules and re-exports plan types only; `@eedsh/cli` and
+`@eedsh/config` declare no production DSH dependency and contain no static DSH
+import; no generated or runtime manifest carries `engines.dsh`; plan, config, and
+CLI must use the same exact Effect version; the workspace declares no separate
+`@effect/cli`, `@effect/platform`, or `@effect/printer*` packages and no source
+imports one; `@eedsh/runtime` may not depend on or import Effect or the
+TypeScript toolchain.
 
 ## Build from source
 

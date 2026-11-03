@@ -3,7 +3,7 @@
 The `eedsh` command. It creates the XDG config project, evaluates `config.ts`
 with `tsx`, selects one or every named profile, preflights each composition through
 DSH's own patch algorithm, publishes normal DSH profiles atomically, and can boot
-the pinned launcher.
+the discovered launcher.
 
 The package is bin-only: `lib/bin.js` (the `eedsh` binary) is the only build output,
 and there is no library export. For installation, Quick start, and config authoring,
@@ -23,11 +23,11 @@ synchronous at the config boundary and returns the native validation Result.
 
 ```sh
 eedsh init   [--no-install]
-eedsh sync   [--profile <name>] [--config <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
-eedsh doctor [--profile <name> | --config <path>] [--strict]
+eedsh sync   [--profile <name>] [--config <path>] [--dsh <path>] [--strict] [--watch] [--explain] [--adopt-ownership]
+eedsh doctor [--profile <name> | --config <path>] [--dsh <path>] [--strict]
 eedsh check  [--config <path>] [-- <tsc args>]
-eedsh run    [--profile <name>] [--config <path>] [--no-sync] [-- <dsh args>]
-eedsh repl   [--profile <name>] [--config <path>] [--sync] [--eval <expression>]
+eedsh run    [--profile <name>] [--config <path>] [--dsh <path>] [--no-sync] [-- <dsh args>]
+eedsh repl   [--profile <name>] [--config <path>] [--dsh <path>] [--sync] [--eval <expression>]
 eedsh --help | --version
 ```
 
@@ -36,6 +36,13 @@ eedsh --help | --version
   CLI's own `@eedsh/config` and `effect` in an unpublished workspace, declares the
   single `TYPESCRIPT_SPEC` TypeScript version, never overwrites an existing file,
   and creates no repository. It installs with pnpm unless `--no-install` is given.
+- `sync`, `run`, and `repl` must discover one `@deepseek-ai/dsh` installation
+  before evaluating a config: `--dsh <path>`, then `EEDSH_DSH_ANCHOR`, then a
+  `dsh` launcher on `PATH`, then a project-local package. The path may be the
+  package directory or its `package.json`. An invalid explicit selection fails
+  instead of falling through, and the discovered version must satisfy
+  `^0.2.1-rc.2`. `init`, `check`, and `doctor --profile` need no installation;
+  `doctor` uses one only when it is discoverable.
 - `--config` accepts an absolute or working-directory-relative `.ts` path. Without
   it, the CLI resolves `$XDG_CONFIG_HOME/eedsh/config.ts` and never searches the
   working directory. `.mts`, `.js`, and `.mjs` fail with
@@ -76,13 +83,17 @@ eedsh --help | --version
   forwards arguments after `--`, never evaluates the config or publishes a profile,
   takes no `--profile` (it is a usage error), and exits with the compiler's exit code.
 - `run` syncs the selected profile first unless `--no-sync`, then spawns
-  `node <pinned dsh>/lib/bin.js --profile <name> <your args>` with inherited stdio
-  and the invoking environment.
-- `doctor` inspects a published profile without changing it; see [Doctor](#doctor).
+  `node <discovered dsh>/lib/bin.js --profile <name> <your args>` with inherited
+  stdio and the invoking environment. Preflight, the generation record, and the
+  spawned process all come from that one installation.
+- `doctor` inspects a published profile without changing it. When a DSH is
+  discoverable it prints its path and version, errors on an unsupported version,
+  and warns about generation drift; see [Doctor](#doctor).
 - `repl` opens a TypeScript session over the loaded config. Bindings persist:
   `config` is the config view, `selectedProfile` is the selected profile view,
   `plan` is `selectedProfile.plan()`, and the curated authoring factories
-  `bundle`, `defineConfig`, `group`, and `js` are bound. The legacy `profile`
+  `bundle`, `defineConfig`, `definePreset`, `dshVersion`, `group`, and `js` are
+  bound. The legacy `profile`
   string and raw `profiles` map are not. Tab completes commands, chain methods,
   and profile, bundle, row, preset, and package names; a second Tab lists
   ambiguous matches. Saves are debounced and
@@ -118,7 +129,7 @@ configs are never read, renamed, or adopted.
 `eedsh init` creates the directory owner-only (where supported) and writes:
 
 ```
-config.ts        defineConfig with one "default" profile (dsh-base + dsh-web-app + generated)
+config.ts        defineConfig with one "default" profile (dsh-base + dsh-web-app + generated); no DSH declaration
 package.json     private ESM manifest; links @eedsh/config and effect locally in a 0.0.0 workspace
 tsconfig.json    es2024 / preserve / bundler, strict, noEmit; include ["**/*.ts"]
 ```
@@ -126,8 +137,8 @@ tsconfig.json    es2024 / preserve / bundler, strict, noEmit; include ["**/*.ts"
 Existing files are kept byte-for-byte and reported, so a partially created project
 is repaired by re-running init. Install failure leaves the files in place and exits
 `1`; `--no-install` writes the project and prints
-`cd <config dir> && pnpm install`. Init performs no git initialization and does not
-resolve DSH.
+`cd <config dir> && pnpm install`. Init performs no git initialization, writes no
+DSH declaration, and resolves no DSH pin or installation.
 
 Config evaluation registers tsx against the nearest `tsconfig.json` at or above
 `config.ts` (or no tsconfig when there is none), never against the caller's working
@@ -141,6 +152,10 @@ same process; `TSX_TSCONFIG_PATH` is never set.
 `eedsh doctor` inspects one published profile and reports findings without taking a
 lock, writing files, or repairing anything.
 
+- It reports the discovered DSH path and version, an unsupported version as an
+  error, and a record/runtime version difference as a `--strict`-sensitive
+  warning that recommends `eedsh sync`. It reads no `engines.dsh` and reports a
+  version-1 plan as unreadable.
 - It verifies the generation record, the authoritative
   `plans/<generationId>.json`, the `.eedsh/plan.json` mirror, managed bundles and
   dependencies, dependency-section conflicts, profile scaffolding, the lockfile, and
@@ -241,9 +256,10 @@ publication.
 
 ## Preflight
 
-Before publication the CLI resolves every selected bundle from the pinned DSH
-installation and the profile, reads its patch files, and composes them with the
-generated groups once through `composeEntries` — the same algorithm boot uses. That
+Before publication the CLI resolves every selected bundle from the discovered DSH
+installation and the profile through its capability bridge, reads its patch
+files, and composes them with the generated groups once through `composeEntries`
+— the same algorithm boot uses. That
 composition returns the entries, the raw unmatched-target warnings, and duplicate
 ids inserted by generated groups.
 

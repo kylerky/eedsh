@@ -109,6 +109,11 @@ function exceptionViolations(): { file: string; sites: string[] }[] {
   return violations
 }
 
+/** Production dependencies a published package may not declare. */
+const FORBIDDEN_DSH_DEPENDENCY = (dependency: string): boolean =>
+  dependency.startsWith('@deepseek-ai/dsh') ||
+  dependency === '@deepseek-ai/cordis-plugin-include'
+
 const TOOLCHAIN_PACKAGES = ['tsx', 'typescript']
 
 /** Packages that must share one exact Effect version. */
@@ -270,6 +275,46 @@ describe('package boundaries', () => {
     expect(exceptionSites('promise.catch(() => {})')).toEqual(['.catch'])
     expect(exceptionSites('Effect.catch(() => {})')).toEqual([])
     expect(exceptionSites('Effect.try({ try: () => 1, catch: () => 2 })')).toEqual([])
+  })
+
+  it('declares no production DSH dependency in the published CLI or authoring package', () => {
+    for (const name of ['cli', 'config'] as const) {
+      const production = Object.keys(manifest(name).dependencies ?? {})
+      expect(
+        production.filter(FORBIDDEN_DSH_DEPENDENCY),
+        `@eedsh/${name} must not depend on a DSH package in production`,
+      ).toEqual([])
+    }
+  })
+
+  it('contains no static DSH import in published sources', () => {
+    const offenders = ['cli', 'config'].flatMap((name) =>
+      offendingImports(name as PackageName, FORBIDDEN_DSH_DEPENDENCY),
+    )
+    expect(offenders, 'published sources must not statically import DSH').toEqual([])
+  })
+
+  it('publishes no DSH engine gate on generated or runtime bundles', () => {
+    const runtime = manifest('runtime')
+    expect(runtime.engines?.dsh, '@eedsh/runtime must not declare engines.dsh').toBeUndefined()
+    expect(runtime.engines?.node, '@eedsh/runtime must keep engines.node').toBeDefined()
+    const generated = readFileSync(
+      join(root, 'packages/cli/src/materialize/generated-bundle.ts'),
+      'utf8',
+    )
+    expect(generated, 'the generated manifest must not build an engines field').not.toMatch(
+      /\bengines\b/,
+    )
+  })
+
+  it('has no version-1 plan reader', () => {
+    const constants = readFileSync(join(root, 'packages/plan/src/constants.ts'), 'utf8')
+    expect(constants).toContain('PLAN_VERSION = 2')
+    for (const file of sourceFiles(join(root, 'packages/plan/src'))) {
+      expect(readFileSync(file, 'utf8'), `${file} must not accept version 1`).not.toMatch(
+        /version:\s*1\b/,
+      )
+    }
   })
 
   it('confines exception control flow to the documented allowlist', () => {

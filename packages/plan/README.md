@@ -19,9 +19,8 @@ readonly, and patch payloads are opaque `unknown` values:
 ```ts
 interface ProfilePlan {
   readonly format: 'eedsh/profile-plan'
-  readonly version: 1
+  readonly version: 2
   readonly profile: { readonly name: string }
-  readonly dsh: string // exact DSH pin
   readonly bundles: readonly (
     | {
         readonly kind: 'bundle'
@@ -39,10 +38,15 @@ interface ProfilePlan {
 }
 ```
 
+The plan declares no DSH version. Version 2 is the only accepted shape: a
+version-1 plan, or a version-2 plan carrying a `dsh` field, fails validation and
+is never read.
+
 The plan is JSON-compatible by contract. Validation rejects functions, symbols,
 BigInt, `undefined`, non-finite numbers, circular references, class instances, and
-malformed expression nodes, and it rejects missing identity, duplicate or unsafe
-layer ids, duplicate bundles or markers, reserved names, and invalid package specs.
+malformed expression nodes, and it rejects missing identity, an unsupported plan
+version, a `dsh` field, duplicate bundles or markers, reserved names, unsafe
+profile names, and invalid package specs.
 Each failure is reported with Effect's native formatted message: a message line
 followed by its path annotation (for example
 `profile name "" is not usable as a profile directory` and
@@ -57,8 +61,8 @@ truncation).
 - `ProfilePlanSchema` — the public Effect Schema and the single plan definition.
 - `PLAN_FORMAT` / `PLAN_VERSION` — the stable plan identifiers.
 - `canonicalJson(value)` — sorted-key JSON used for comparison and hashing.
-- `RESERVED_NAMES`, `isSafeProfileName`, `DshPinSchema`, and `ProfileNameSchema` —
-  the policy primitives the schema is built from.
+- `RESERVED_NAMES`, `isSafeProfileName`, and `ProfileNameSchema` — the policy
+  primitives the schema is built from.
 
 ## Config envelope
 
@@ -68,7 +72,6 @@ uses:
 
 ```ts
 interface EedshConfig {
-  readonly dsh: string
   readonly defaultProfile?: string
   readonly profiles: Readonly<
     Record<string, Result.Result<ProfilePlan, Schema.SchemaError>>
@@ -76,10 +79,10 @@ interface EedshConfig {
 }
 ```
 
-`EedshConfigSchema` is the public envelope schema: an exact DSH pin, a non-empty
-record of safe profile keys, and a `defaultProfile` that is declared. Profile keys
-are the sole profile identity; the shared `dsh` pin is injected into every profile
-plan.
+`EedshConfigSchema` is the public envelope schema: a non-empty record of safe
+profile keys and an optional `defaultProfile` that is declared. Profile keys are
+the sole profile identity. There is no shared DSH value; a legacy top-level `dsh`
+field is rejected as an excess property.
 
 `validateConfigValue(value)` accepts a plain config value or a config-valued
 `Result`. It unwraps a successful Result, validates the envelope, and revalidates

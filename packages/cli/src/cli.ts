@@ -1073,7 +1073,9 @@ export async function runEedsh(
     Flag.optional,
   )
   const dshFlag = Flag.String('dsh').pipe(
-    Flag.withDescription('DSH installation package directory or its package.json'),
+    Flag.withDescription(
+      'DSH installation package directory or package.json (default: EEDSH_DSH_ANCHOR, PATH, then a project-local package)',
+    ),
     Flag.optional,
   )
   const strictFlag = Flag.Boolean('strict').pipe(
@@ -1133,7 +1135,11 @@ export async function runEedsh(
     Effect.gen(function* () {
       exitCode = yield* runInitCommand({ noInstall: parsed.noInstall }, runtime)
     }),
-  ).pipe(Command.withDescription('create the XDG config project and install its dependencies'))
+  ).pipe(
+    Command.withDescription(
+      'create the XDG config project and install its dependencies (needs no DSH installation)',
+    ),
+  )
 
   const syncCommand = Command.make(
     'sync',
@@ -1161,7 +1167,11 @@ export async function runEedsh(
           runtime,
         )
       }),
-  ).pipe(Command.withDescription('evaluate the config, preflight the layers, and publish'))
+  ).pipe(
+    Command.withDescription(
+      'evaluate the config, preflight the layers, and publish (requires a discovered dsh)',
+    ),
+  )
 
   const runCommandLine = Command.make(
     'run',
@@ -1212,7 +1222,11 @@ export async function runEedsh(
           ? program
           : program.pipe(Effect.provide(fileSystem()))
       }),
-  ).pipe(Command.withDescription('inspect a published profile without changing it'))
+  ).pipe(
+    Command.withDescription(
+      'inspect a published profile without changing it; reports discovered DSH version and drift',
+    ),
+  )
 
   const replCommandLine = Command.make(
     'repl',
@@ -1243,7 +1257,9 @@ export async function runEedsh(
   )
 
   const rootCommand = Command.make('eedsh').pipe(
-    Command.withDescription('typed configuration for DeepSeek Harness profiles'),
+    Command.withDescription(
+      'typed configuration for DeepSeek Harness profiles; sync, run, and repl use a discovered dsh installation',
+    ),
     Command.withSubcommands([
       initCommandLine,
       syncCommand,

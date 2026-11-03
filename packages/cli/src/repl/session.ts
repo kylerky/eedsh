@@ -667,7 +667,7 @@ export class ReplSession {
         )
         this.stdout(`config: ${this.configPath}`)
         this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
-        this.stdout('bindings: config, selectedProfile, plan')
+        this.stdout('bindings: config, selectedProfile, plan, dshVersion()')
         this.stdout(
           'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names (a second Tab lists ambiguous matches)',
         )

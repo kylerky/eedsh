@@ -27,7 +27,6 @@ import { bundle, defineConfig, js } from '@eedsh/config'
 const standard = bundle('@deepseek-ai/dsh-web-app').presets()[0]
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile
@@ -56,13 +55,12 @@ export default defineConfig()
 
 `defineConfig()` returns a mutable, single-use builder:
 
-- `.dsh(pin)` sets one exact DSH version.
 - `.defaultProfile(name)` names the profile a command selects when none is named.
 - `.profile(name, build)` declares a profile; the callback receives a
   `ProfileBuilder` scoped to that profile, and its return value is ignored.
 - `.build()` normalizes typed objects, validates the envelope and every profile,
-  and returns `Result<EedshConfig, Schema.SchemaError>`. It never throws; a
-  missing pin, an empty profile record, an unsafe key, or an unknown default is
+  and returns `Result<EedshConfig, Schema.SchemaError>`. It never throws; a legacy
+  `dsh` field, an empty profile record, an unsafe key, or an unknown default is
   Effect's native schema failure. Each profile is validated independently and an
   invalid profile is stored as that profile's failure.
 
@@ -103,8 +101,9 @@ for a group entry and a runtime expression node.
 
 `bundle(name)` returns a `Bundle`: an ordered plan selection
 (`.toJSON()` is `{ kind: 'bundle', name }`) and a query handle. With no root,
-queries resolve from the pinned installation named by `EEDSH_DSH_ANCHOR` and
-never from a profile copy.
+queries resolve from the active installation the CLI selected for the invocation
+through its capability bridge, and never from a profile copy. Queries outside
+eedsh fail with `resolution.bridge_missing`.
 
 - `.fromProfile(profile | { name })` returns a query-only handle rooted at a
   profile's installed copy. The structural form lets a session view be passed
@@ -131,7 +130,7 @@ A handle is an immutable snapshot resolved on first use:
 - `.row(id)` returns one `Row` by Loader id; a missing id fails.
 - `.preset(id)` returns one `Preset` by preset id; a missing id fails.
 - `.version()`, `.packageDir()`, and `.origin()` report the resolved package
-  facts; `.origin()` is `pinned`, `profile`, `packageDir`, or `preview`.
+  facts; `.origin()` is `active`, `profile`, `packageDir`, or `preview`.
 
 `Row` exposes `bundle`, `id`, `data`, `toJSON()`, and the patch methods
 `disable()`, `enable()`, and `override(config)`. `Preset` adds `rowId`,
@@ -172,7 +171,6 @@ const adapted = definePreset('ptc-fresh')
   })
 
 export default defineConfig()
-  .dsh('0.2.1-rc.2')
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-web-app')
@@ -221,7 +219,6 @@ cannot be silently accepted as a plan selection.
 
 ```ts
 interface EedshConfig {
-  readonly dsh: string
   readonly defaultProfile?: string
   readonly profiles: Readonly<
     Record<string, Result.Result<ProfilePlan, Schema.SchemaError>>
@@ -238,8 +235,9 @@ valid sibling is unaffected.
 The public surface is the typed authoring API: `defineConfig`, `ConfigBuilder`,
 `ProfileBuilder`, `LayerBuilder`, `bundle`, `Bundle`, `BundleQuery`,
 `Row`, `Preset`, `definePreset`, `PresetDefinition`, `PresetChildren`,
-`PresetChild`, `PresetDefinitionError`, `group`, `js`, `ResolutionError`, the
-resolution-trace helpers, and the re-exported plan types. The legacy free helpers (`rows`,
+`PresetChild`, `PresetDefinitionError`, `group`, `js`, `dshVersion`,
+`ResolutionError`, the bridge registry helpers, the resolution-trace helpers, and
+the re-exported plan types. The legacy free helpers (`rows`,
 `presets`, `row`, `defineProfile`, `insert`, `override`, `disable`,
 `enable`, `layer`, `raw`) are not exported.
 
@@ -250,4 +248,6 @@ Runtime plan validation is not re-exported: import `validatePlan`,
 ## Migration
 
 The free-function API is intentionally replaced. The root [README](../README.md#migrating-from-the-free-function-api)
-has the full before/after mapping; the persisted plan format is unchanged.
+has the full before/after mapping. The external-DSH release removes `.dsh()`, bumps
+the plan to version 2, and turns query resolution into a CLI-installed bridge; see
+the root README's upgrade section.
