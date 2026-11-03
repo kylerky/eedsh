@@ -58,7 +58,7 @@ describe('preview cache', () => {
     const first = await preparePreview({
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -76,7 +76,7 @@ describe('preview cache', () => {
     const second = await preparePreview({
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -85,6 +85,31 @@ describe('preview cache', () => {
     expect(second.reused).toBe(true)
     expect(calls).toHaveLength(1)
     expect(second.dir).toBe(first.dir)
+  })
+
+  it('keys a preview by the selected installation version', async () => {
+    const profileDir = await profile()
+    const cacheRoot = join(work, 'cache')
+    const first = await preparePreview({
+      profileName: 'work',
+      profileDir,
+      dshVersion: '0.2.1-rc.2',
+      specs: [{ name: '@acme/x', version: '1.2.3' }],
+      env: {},
+      cacheRoot,
+      install: installer([]),
+    })
+    const second = await preparePreview({
+      profileName: 'work',
+      profileDir,
+      dshVersion: '0.2.1-rc.5',
+      specs: [{ name: '@acme/x', version: '1.2.3' }],
+      env: {},
+      cacheRoot,
+      install: installer([]),
+    })
+    expect(second.dir).not.toBe(first.dir)
+    expect(second.reused).toBe(false)
   })
 
   it('serializes concurrent installs for one key', async () => {
@@ -107,7 +132,7 @@ describe('preview cache', () => {
     const input = {
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -126,7 +151,7 @@ describe('preview cache', () => {
     const first = await preparePreview({
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -138,7 +163,7 @@ describe('preview cache', () => {
     const second = await preparePreview({
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -150,7 +175,7 @@ describe('preview cache', () => {
     const third = await preparePreview({
       profileName: 'work',
       profileDir,
-      dshPin: '0.2.1-rc.2',
+      dshVersion: '0.2.1-rc.2',
       specs: [{ name: '@acme/x', version: '1.2.3' }],
       env: {},
       cacheRoot,
@@ -166,7 +191,7 @@ describe('preview cache', () => {
       preparePreview({
         profileName: 'work',
         profileDir: dir,
-        dshPin: '0.2.1-rc.2',
+        dshVersion: '0.2.1-rc.2',
         specs: [{ name: '@acme/x', version: '1.2.3' }],
         env: {},
         cacheRoot: join(work, 'cache'),

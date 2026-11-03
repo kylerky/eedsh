@@ -611,7 +611,7 @@ describe('read-only exploration', () => {
     })
     takeResolutionTrace()
     const script = `
-      config.dsh
+      config.defaultProfile
       config.profiles().map((profile) => [profile.name, profile.valid])
       selectedProfile.bundles().map((bundle) => [bundle.name, bundle.profile])
       selectedProfile.bundles()[0].rows().map((row) => row.id)

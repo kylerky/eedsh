@@ -182,6 +182,19 @@ describe('session evaluation', () => {
     expect(await h.session.evaluate('definePreset()')).toBe('bound-define-preset')
   })
 
+  it('binds dshVersion from the config project authoring package', async () => {
+    const real = await import('@eedsh/config')
+    const h = await session({
+      authoringModule: {
+        ...real,
+        defineConfig: authoring.module.defineConfig,
+        definePreset: authoring.module.definePreset,
+      } as unknown as Record<string, unknown>,
+    })
+    expect(await h.session.evaluate('typeof dshVersion')).toBe('function')
+    expect(await h.session.evaluate('dshVersion()')).toBe('0.2.1-rc.2')
+  })
+
   it('selects the default profile and reports ambiguity or an unknown name', async () => {
     const defaulted = await session({
       config: configWithProfiles(['work', 'home'], 'home'),

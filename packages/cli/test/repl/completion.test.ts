@@ -99,7 +99,7 @@ describe('chain method completion', () => {
     const preset = at("bundle('@deepseek-ai/dsh-base').preset('standard').")
     expect(preset.hits).toContain('rowId')
     expect(preset.hits).toContain('disable')
-    expect(at('config.').hits).toEqual(['defaultProfile', 'dsh', 'profile', 'profiles'])
+    expect(at('config.').hits).toEqual(['defaultProfile', 'profile', 'profiles'])
     expect(at('selectedProfile.').hits).toContain('plan')
     expect(at('selectedProfile.').hits).toContain('bundles')
     expect(at('plan.').hits).toContain('packages')

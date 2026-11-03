@@ -43,7 +43,7 @@ async function writeBundle(
 }
 
 /**
- * Create a pinned DSH installation, one profile install, and one vendored
+ * Create the active DSH installation, one profile install, and one vendored
  * package directory for authoring and query tests.
  * @param tempRoot - workspace-relative temporary directory.
  * @returns the fixture paths.

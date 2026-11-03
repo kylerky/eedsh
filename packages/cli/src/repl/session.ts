@@ -162,7 +162,7 @@ interface ResolutionTrace {
   readonly bundle: string
   readonly packageDir: string
   readonly version: string
-  readonly origin: 'pinned' | 'profile' | 'packageDir' | 'preview'
+  readonly origin: 'active' | 'profile' | 'packageDir' | 'preview'
   readonly profile?: string
 }
 
@@ -180,7 +180,14 @@ function activeDshVersion(): string {
   return 'unknown'
 }
 /** The curated authoring factories bound into the prompt. */
-const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'definePreset', 'group', 'js'] as const
+const AUTHORING_BINDINGS = [
+  'bundle',
+  'defineConfig',
+  'definePreset',
+  'dshVersion',
+  'group',
+  'js',
+] as const
 
 /** The typed view names the prompt owns; an authoring export must not shadow one. */
 const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
@@ -188,6 +195,7 @@ const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
 const HELP_LINES = [
   'bindings:',
   '  config                the loaded config view: defaultProfile, profiles()',
+  '  dshVersion()          the exact version of the selected DSH installation',
   '  selectedProfile       the selected profile view: name, plan(), bundles(), layers()',
   '  plan                  selectedProfile.plan()',
   'Tab completes commands, chain methods, and profile, bundle, row, and preset names;',
@@ -884,7 +892,7 @@ export class ReplSession {
       if (item.kind === 'bundle') names.add(item.name)
     }
     for (const name of this.manifestBundles()) names.add(name)
-    for (const name of this.pinnedBundles()) names.add(name)
+    for (const name of this.activeBundles()) names.add(name)
     for (const spec of this.previewSpecs) names.add(spec.name)
     return [...names].sort()
   }
@@ -929,7 +937,7 @@ export class ReplSession {
     return [...names].sort()
   }
 
-  private pinnedBundles(): readonly string[] {
+  private activeBundles(): readonly string[] {
     const bridge = activeDshBridge()
     if (bridge === undefined) return []
     const anchor = bridge.installation.installAnchor
@@ -1059,7 +1067,7 @@ export class ReplSession {
             ? `profile ${JSON.stringify(trace.profile ?? '')}`
             : trace.origin === 'packageDir'
               ? 'an explicit package directory'
-              : 'the pinned installation'
+              : 'the active installation'
       this.stdout(
         `resolved ${trace.bundle} from ${source} at ${trace.packageDir} (${trace.version})`,
       )
@@ -1321,7 +1329,7 @@ export class ReplSession {
       prepared = await preparePreview({
         profileName: this.profileName,
         profileDir,
-        dshPin: activeDshVersion(),
+        dshVersion: activeDshVersion(),
         specs,
         env: this.env,
         ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),

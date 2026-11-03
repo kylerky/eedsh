@@ -246,7 +246,7 @@ export class BundleQuery {
 
 /**
  * A bundle selection that is also a query handle. It is a plan selection
- * (its `toJSON()` is the named bundle) and queries the pinned installation
+ * (its `toJSON()` is the named bundle) and queries the active installation
  * until rooted with `.fromProfile()` or `.fromPackageDir()`.
  */
 export class Bundle extends BundleQuery {

@@ -23,8 +23,8 @@ export interface PreparePreviewInput {
   readonly profileName: string
   /** Absolute real profile directory. */
   readonly profileDir: string
-  /** The config's exact DSH pin. */
-  readonly dshPin: string
+  /** The selected DSH installation version, part of the cache key. */
+  readonly dshVersion: string
   readonly specs: readonly PreviewSpec[]
   readonly env: Record<string, string | undefined>
   /** Cache root override, primarily for tests. */
@@ -110,7 +110,7 @@ export async function previewKey(input: PreparePreviewInput): Promise<string> {
     manifest,
     workspace,
     lockfile,
-    dsh: input.dshPin,
+    dshVersion: input.dshVersion,
     specs: normalizeSpecs(input.specs),
   })
   return createHash('sha256').update(material).digest('hex')
@@ -302,7 +302,7 @@ async function acquireFileLock(path: string): Promise<() => Promise<void>> {
 /**
  * Prepare or reuse a preview for the selected profile. Concurrent sessions
  * with the same key serialize on an in-process chain and a cache lock file.
- * @param input - profile, pin, specs, and cache/install seams.
+ * @param input - profile, selected DSH version, specs, and cache/install seams.
  * @returns the prepared preview and its profile-root override.
  */
 export async function preparePreview(input: PreparePreviewInput): Promise<PreparedPreview> {

@@ -31,7 +31,7 @@ export interface CompletionCatalogs {
   readonly commands: readonly string[]
   /** Declared profile names. */
   readonly profiles: readonly string[]
-  /** Authored, installed, pinned, and preview bundle names. */
+  /** Authored, installed, active, and preview bundle names. */
   readonly bundles: readonly string[]
   /** Declared package names. */
   readonly packages: readonly string[]
@@ -107,7 +107,7 @@ const METHODS: Record<MethodKind, readonly string[]> = {
     'rowId',
     'toJSON',
   ],
-  config: ['defaultProfile', 'dsh', 'profile', 'profiles'],
+  config: ['defaultProfile', 'profile', 'profiles'],
   profile: [
     'bundles',
     'composition',
@@ -121,7 +121,7 @@ const METHODS: Record<MethodKind, readonly string[]> = {
     'result',
     'valid',
   ],
-  plan: ['bundles', 'dsh', 'format', 'layers', 'packages', 'profile', 'version'],
+  plan: ['bundles', 'format', 'layers', 'packages', 'profile', 'version'],
 }
 
 const SYNC_VALUES = ['on', 'off'] as const

@@ -5,7 +5,9 @@ import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
+import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import { runEedsh } from '../src/cli'
+import { DshFailure } from '../src/internal/effect/errors'
 import {
   DshInstallation,
   PackageManager,
@@ -275,5 +277,83 @@ export default defineConfig()
     expect(discoveries).toBe(1)
     controller.abort()
     expect(await running).toBe(0)
+  })
+})
+describe('command DSH failure reporting', () => {
+  function countOf(text: string, needle: string): number {
+    return text.split('\n').filter((line) => line.includes(needle)).length
+  }
+
+  it('prints a discovery failure once and not as a config import failure', async () => {
+    const h = harness({})
+    const code = await runEedsh(['sync', '--config', fixture('basic')], {
+      ...h.options,
+      cwd: await tempDir('eedsh-report-not-found-'),
+    })
+    expect(code).toBe(1)
+    const errors = h.text().err
+    expect(countOf(errors, 'eedsh: dsh.not_found:')).toBe(1)
+    expect(errors).not.toContain('config.import_failed')
+    expect(errors).not.toContain('cannot import')
+  })
+
+  it('prints an unsupported-version failure once with its facts', async () => {
+    const unsupported = await writeFakeInstallation('0.3.0')
+    const h = harness({ EEDSH_DSH_ANCHOR: join(unsupported, 'package.json') })
+    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    expect(code).toBe(1)
+    const errors = h.text().err
+    expect(countOf(errors, 'eedsh: dsh.unsupported_version:')).toBe(1)
+    expect(errors).toContain('0.3.0')
+    expect(errors).toContain('^0.2.1-rc.2')
+    expect(errors).not.toContain('config.import_failed')
+  })
+
+  it('prints a capability failure once instead of a generic defect', async () => {
+    const h = harness(
+      { EEDSH_DSH_ANCHOR: installation.installAnchor },
+      {
+        loadDshBridge: async () =>
+          Result.fail(
+            new DshFailure({
+              code: 'dsh.capability_missing',
+              message: 'DSH 0.2.1-rc.2 does not provide the "composeEntries" capability',
+              capability: 'composeEntries',
+            }),
+          ),
+      },
+    )
+    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    expect(code).toBe(1)
+    const errors = h.text().err
+    expect(countOf(errors, 'eedsh: dsh.capability_missing:')).toBe(1)
+    expect(errors).toContain('composeEntries')
+    expect(errors).not.toContain('config.import_failed')
+  })
+
+  it('preserves a resolution.bridge_missing failure through config import', async () => {
+    clearDshBridge()
+    await mkdir(join(root, 'packages/cli/.tmp'), { recursive: true })
+    const dir = await mkdtemp(join(root, 'packages/cli/.tmp', 'bridge-missing-config-'))
+    const configPath = join(dir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { defineConfig, dshVersion } from '@eedsh/config'
+const version = dshVersion()
+export default defineConfig()
+  .profile('cli-fixture', (profile) => profile.bundle('@deepseek-ai/dsh-base').generated())
+  .build()
+`,
+    )
+    const h = harness(
+      { EEDSH_DSH_ANCHOR: installation.installAnchor },
+      { loadDshBridge: async () => Result.succeed({} as DshBridge) },
+    )
+    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    expect(code).toBe(1)
+    const errors = h.text().err
+    expect(countOf(errors, 'eedsh: resolution.bridge_missing:')).toBe(1)
+    expect(errors).toContain('eedsh sync')
+    expect(errors).not.toContain('config.import_failed')
   })
 })
