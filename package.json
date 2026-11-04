@@ -14,6 +14,7 @@
     "typecheck:watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "test": "vitest run",
     "test:slow": "vitest run --config vitest.slow.config.ts",
+    "update:matrix-pins": "node test/matrix/update-pins.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",

@@ -1,0 +1,7 @@
+{
+  "name": "eedsh-matrix-0.2.2-alpha.3",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.2-alpha.3"
+  }
+}

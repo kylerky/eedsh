@@ -6,10 +6,10 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -17,6 +17,7 @@ const root = new URL('../..', import.meta.url).pathname
 const cliPath = join(root, 'packages/cli/lib/bin.js')
 const fixture = join(root, 'packages/cli/test/fixtures/basic/config.ts')
 const runtimeWatcher = join(root, 'packages/runtime/src/watcher.ts')
+const pinsRoot = fileURLToPath(new URL('./pins/', import.meta.url))
 
 /**
  * The DSH versions every release must keep working. Prerelease pins move
@@ -61,8 +62,44 @@ async function run(command, args, options = {}) {
   }
 }
 
+/** Whether a matrix spec names an exact version rather than a dist-tag. */
+function isExactVersion(spec) {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(spec)
+}
+
+/** The frozen install inputs committed for one pinned version. */
+function pinDirectory(spec) {
+  return join(pinsRoot, spec)
+}
+
 /**
- * Install or reuse one isolated DSH installation.
+ * Install one pinned version from its committed package.json and lockfile.
+ * `--frozen-lockfile` guarantees later upstream releases cannot change the
+ * dependency graph a pinned matrix case exercises.
+ * @param spec - the pinned exact version.
+ * @param dir - the empty cache directory to install into.
+ */
+async function installFromPin(spec, dir) {
+  const pin = pinDirectory(spec)
+  const manifest = join(pin, 'package.json')
+  if (!existsSync(manifest)) {
+    throw new Error(
+      `no frozen install fixture for pinned DSH ${spec}; run ` +
+        '"node test/matrix/update-pins.mjs" and commit test/matrix/pins',
+    )
+  }
+  await cp(manifest, join(dir, 'package.json'))
+  await cp(join(pin, 'pnpm-lock.yaml'), join(dir, 'pnpm-lock.yaml'))
+  await run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--trust-lockfile'], {
+    cwd: dir,
+  })
+}
+
+/**
+ * Install one DSH build, or reuse a cached one. Exact pinned versions install
+ * from the frozen fixture below `test/matrix/pins`, so their dependency graph
+ * never drifts with upstream releases. Dist-tags such as `latest` and `alpha`
+ * resolve live on purpose: the canary jobs exist to detect upstream changes.
  * @param spec - an exact version or a dist-tag such as `latest`.
  * @returns the installation paths and exact manifest version.
  */
@@ -74,16 +111,22 @@ export async function ensureDsh(spec) {
   if (!existsSync(anchor)) {
     await rm(dir, { recursive: true, force: true })
     await mkdir(dir, { recursive: true })
-    await writeFile(
-      join(dir, 'package.json'),
-      JSON.stringify({
-        name: `eedsh-matrix-${spec.replace(/[^A-Za-z0-9.-]/g, '-')}`,
-        private: true,
-      }),
-    )
-    await run('pnpm', ['add', `@deepseek-ai/dsh@${spec}`, '--trust-lockfile', '--ignore-scripts'], {
-      cwd: dir,
-    })
+    if (isExactVersion(spec)) {
+      await installFromPin(spec, dir)
+    } else {
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: `eedsh-matrix-${spec.replace(/[^A-Za-z0-9.-]/g, '-')}`,
+          private: true,
+        }),
+      )
+      await run(
+        'pnpm',
+        ['add', `@deepseek-ai/dsh@${spec}`, '--trust-lockfile', '--ignore-scripts'],
+        { cwd: dir },
+      )
+    }
   }
   const manifest = JSON.parse(await readFile(anchor, 'utf8'))
   if (typeof manifest.version !== 'string') {
