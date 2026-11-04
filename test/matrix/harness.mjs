@@ -18,8 +18,13 @@ const cliPath = join(root, 'packages/cli/lib/bin.js')
 const fixture = join(root, 'packages/cli/test/fixtures/basic/config.ts')
 const runtimeWatcher = join(root, 'packages/runtime/src/watcher.ts')
 
-/** The DSH versions every release must keep working. */
-export const PINNED_VERSIONS = ['0.2.1-rc.2', '0.2.1-rc.5', '0.2.2-alpha.2']
+/**
+ * The DSH versions every release must keep working. Prerelease pins move
+ * forward when an upstream release's dependency ranges start resolving builds
+ * it was not built against: 0.2.2-alpha.2 resolved cordis 4.0.6-alpha.2, whose
+ * changed `internal/update` waterfall breaks that release's HMR reconcile.
+ */
+export const PINNED_VERSIONS = ['0.2.1-rc.2', '0.2.1-rc.5', '0.2.2-alpha.3']
 
 /**
  * Resolve the matrix cache. An explicit EEDSH_MATRIX_CACHE wins; the default is

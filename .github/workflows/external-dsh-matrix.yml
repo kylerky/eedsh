@@ -19,7 +19,9 @@ jobs:
         dsh:
           - 0.2.1-rc.2
           - 0.2.1-rc.5
-          - 0.2.2-alpha.2
+          # alpha.2's ~4.0.6-alpha.1 cordis range now resolves an incompatible
+          # update API; alpha.3 is its fixed successor.
+          - 0.2.2-alpha.3
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
