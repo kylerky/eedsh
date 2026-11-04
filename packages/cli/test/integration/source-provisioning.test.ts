@@ -22,7 +22,7 @@ import {
   Preflight,
   SyncLock,
 } from '../../src/internal/effect/services'
-import { sourceKey } from '../../src/provision/source'
+import { sourceKey, sourceLinkSpec } from '../../src/provision/source'
 import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 
 const root = process.cwd()
@@ -138,7 +138,7 @@ describe('source provisioning integration', () => {
 
     const key = sourceKey({ from: url })
     const checkoutDir = join(home, '.local', 'sources', key)
-    const link = `link:${checkoutDir}`
+    const link = sourceLinkSpec(checkoutDir)
     const profileDir = join(home, 'profiles', 'work')
     const manifest = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>

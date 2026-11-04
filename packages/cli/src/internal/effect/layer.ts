@@ -7,6 +7,7 @@
 import { Effect, Layer, Stream } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import { pnpmInvocation } from '../../command-runner'
 import { resolveBundleLayers } from '../../dsh'
 import type { DiscoveredDshInstallation } from '../../dsh-discovery'
 import { posixSyncLock } from '../lock-posix'
@@ -36,7 +37,10 @@ function installWithPnpm(
 > {
   return Effect.scoped(
     Effect.gen(function* () {
-      const handle = yield* ChildProcess.make('pnpm', ['install'], { cwd: profileDir })
+      const invocation = pnpmInvocation(['install'])
+      const handle = yield* ChildProcess.make(invocation.command, [...invocation.args], {
+        cwd: profileDir,
+      })
       const [stderr, exitCode] = yield* Effect.all(
         [handle.stderr.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
         { concurrency: 'unbounded' },

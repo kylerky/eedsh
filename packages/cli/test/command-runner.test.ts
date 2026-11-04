@@ -5,6 +5,7 @@ import {
   DEFAULT_VERSION_PROBE_TIMEOUT_MS,
   defaultCommandRunner,
   parseVersionOutput,
+  pnpmInvocation,
   probeLauncherVersion,
 } from '../src/command-runner'
 
@@ -16,6 +17,13 @@ describe('command invocation', () => {
     const line = invocation.args[3] ?? ''
     expect(line).toContain('"C:\\Program Files\\pnpm\\dsh.CMD"')
     expect(line).toContain('--version')
+  })
+
+  it('runs pnpm through cmd.exe on Windows and directly elsewhere', () => {
+    const windows = pnpmInvocation(['install'], 'win32')
+    expect(windows.command.toLowerCase()).toContain('cmd')
+    expect(windows.args).toEqual(['/d', '/s', '/c', '"pnpm" "install"'])
+    expect(pnpmInvocation(['install'], 'linux')).toEqual({ command: 'pnpm', args: ['install'] })
   })
 
   it('runs non-batch commands directly', () => {

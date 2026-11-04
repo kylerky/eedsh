@@ -201,7 +201,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
       return yield* Effect.fail(
         checkFailure(
           'check.config_not_in_project',
-          `${input.configPath} is not included by ${tsconfigPath}; add it to the tsconfig's "include" or "files"`,
+          `${input.configPath} is not included by ${tsconfigPath.value}; add it to the tsconfig's "include" or "files"`,
         ),
       )
     }

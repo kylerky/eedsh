@@ -6,7 +6,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -36,8 +36,12 @@ import { fakeSpawner } from './support/process'
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
-const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
-const unmatchedManifest = '/home/profiles/cli-unmatched/.eedsh/generated/package.json'
+// The CLI resolves DSH_HOME, so expectations must use the same platform path.
+const homeRoot = resolve('/home')
+const generatedPath = (profile: string) =>
+  join(homeRoot, 'profiles', profile, '.eedsh', 'generated', 'package.json')
+const generatedManifest = generatedPath('cli-fixture')
+const unmatchedManifest = generatedPath('cli-unmatched')
 
 /** A base layer row the unmatched fixture patches across. */
 const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]

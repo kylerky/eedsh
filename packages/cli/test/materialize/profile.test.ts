@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { canonicalJson, type PlanBundle, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import { describe, expect, it } from 'vitest'
@@ -518,35 +519,40 @@ describe('manifest reconciliation', () => {
 })
 
 describe('profile files', () => {
+  const profileDir = '/profile'
+  const patchPath = join(profileDir, 'cordis.patch.yml')
+  const rootConfigPath = join(profileDir, 'cordis.yml')
+  const workspacePath = join(profileDir, 'pnpm-workspace.yaml')
+
   it('never rewrites an existing profile patch', async () => {
     const existing = '- id: timer\n  config:\n    interval: 1\n'
-    const fs = memoryFileSystem({ '/profile/cordis.patch.yml': existing })
-    const result = await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
+    const fs = memoryFileSystem({ [patchPath]: existing })
+    const result = await Effect.runPromise(ensureProfileFiles(profileDir, fs.fs))
     expect(result.createdPatch).toBe(false)
-    expect(fs.files.get('/profile/cordis.patch.yml')).toBe(existing)
+    expect(fs.files.get(patchPath)).toBe(existing)
   })
 
   it('creates an empty profile patch when missing', async () => {
     const fs = memoryFileSystem()
-    const result = await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
+    const result = await Effect.runPromise(ensureProfileFiles(profileDir, fs.fs))
     expect(result.createdPatch).toBe(true)
-    expect(fs.files.get('/profile/cordis.patch.yml')?.trim()).toBe('[]')
+    expect(fs.files.get(patchPath)?.trim()).toBe('[]')
   })
 
   it('creates the empty root config and the profile workspace when missing', async () => {
     const fs = memoryFileSystem()
-    await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
-    expect(fs.files.get('/profile/cordis.yml')?.trim()).toBe('[]')
-    expect(fs.files.get('/profile/pnpm-workspace.yaml')).toContain('nodeLinker: hoisted')
+    await Effect.runPromise(ensureProfileFiles(profileDir, fs.fs))
+    expect(fs.files.get(rootConfigPath)?.trim()).toBe('[]')
+    expect(fs.files.get(workspacePath)).toContain('nodeLinker: hoisted')
   })
 
   it('does not rewrite existing root and workspace files', async () => {
     const fs = memoryFileSystem({
-      '/profile/cordis.yml': '# mine\n[]\n',
-      '/profile/pnpm-workspace.yaml': 'packages:\n  - .\n',
+      [rootConfigPath]: '# mine\n[]\n',
+      [workspacePath]: 'packages:\n  - .\n',
     })
-    await Effect.runPromise(ensureProfileFiles('/profile', fs.fs))
-    expect(fs.files.get('/profile/cordis.yml')).toBe('# mine\n[]\n')
-    expect(fs.files.get('/profile/pnpm-workspace.yaml')).toBe('packages:\n  - .\n')
+    await Effect.runPromise(ensureProfileFiles(profileDir, fs.fs))
+    expect(fs.files.get(rootConfigPath)).toBe('# mine\n[]\n')
+    expect(fs.files.get(workspacePath)).toBe('packages:\n  - .\n')
   })
 })

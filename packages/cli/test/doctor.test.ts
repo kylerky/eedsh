@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import { describe, expect, it } from 'vitest'
@@ -21,7 +22,7 @@ import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './supp
 import { planOf } from './support/plan'
 import { bundle, generated, insert, layer } from './support/plan-parts'
 
-const LOCKFILE_PATH = `${PROFILE_DIR}/pnpm-lock.yaml`
+const LOCKFILE_PATH = join(PROFILE_DIR, 'pnpm-lock.yaml')
 
 /** Lockfile text with the managed entries, optionally overridden. */
 function lockfileText(options: { pluginSpecifier?: string; pluginVersion?: string } = {}): string {
@@ -57,7 +58,7 @@ function addInstalled(
   version: string,
 ): void {
   h.fs.files.set(
-    `${PROFILE_DIR}/node_modules/${name}/package.json`,
+    join(PROFILE_DIR, 'node_modules', ...name.split('/'), 'package.json'),
     `${JSON.stringify({ name, version })}\n`,
   )
 }
@@ -140,11 +141,11 @@ function editRecord(
 }
 
 function planPath(h: Awaited<ReturnType<typeof published>>): string {
-  return `${PROFILE_DIR}/.eedsh/generated/plans/${recordOf(h).eedsh.generationId}.json`
+  return join(PROFILE_DIR, '.eedsh', 'generated', 'plans', `${recordOf(h).eedsh.generationId}.json`)
 }
 
 describe('doctor provenance sidecar', () => {
-  const PROVENANCE_PATH = `${PROFILE_DIR}/.eedsh/provenance.json`
+  const PROVENANCE_PATH = join(PROFILE_DIR, '.eedsh', 'provenance.json')
 
   function sidecarFor(h: Awaited<ReturnType<typeof published>>, generationId?: string): string {
     return `${JSON.stringify(
@@ -299,7 +300,7 @@ describe('doctor consistency checks', () => {
 
   it('warns when the plan mirror is missing or different', async () => {
     const h = await published()
-    const mirrorPath = `${PROFILE_DIR}/.eedsh/plan.json`
+    const mirrorPath = join(PROFILE_DIR, '.eedsh', 'plan.json')
     h.fs.files.delete(mirrorPath)
     const missing = await diagnose(h.fs.fs)
     expect(finding(missing, 'mirror')).toMatchObject({ severity: 'warning', check: 'mirror' })
@@ -380,7 +381,7 @@ describe('doctor manifest checks', () => {
 describe('doctor scaffolding checks', () => {
   it('warns when a scaffolding file is missing', async () => {
     const h = await published()
-    h.fs.files.delete(`${PROFILE_DIR}/cordis.yml`)
+    h.fs.files.delete(join(PROFILE_DIR, 'cordis.yml'))
     const result = await diagnose(h.fs.fs)
     expect(finding(result, 'scaffolding')).toMatchObject({
       severity: 'warning',
@@ -556,7 +557,7 @@ describe('doctor installed checks', () => {
 
   it('errors when a managed package is not installed', async () => {
     const h = await published()
-    h.fs.files.delete(`${PROFILE_DIR}/node_modules/@scope/plugin/package.json`)
+    h.fs.files.delete(join(PROFILE_DIR, 'node_modules', '@scope', 'plugin', 'package.json'))
     const result = await diagnose(h.fs.fs)
     const installed = finding(result, 'installed')
     expect(installed).toMatchObject({ severity: 'error', check: 'installed' })
@@ -606,7 +607,7 @@ describe('doctor report and exit status', () => {
   it('prints errors before warnings and ends with a summary', async () => {
     const h = await published()
     h.fs.files.delete(planPath(h))
-    h.fs.files.delete(`${PROFILE_DIR}/cordis.yml`)
+    h.fs.files.delete(join(PROFILE_DIR, 'cordis.yml'))
     const manifest = JSON.parse(h.fs.files.get(MANIFEST_PATH) ?? '{}') as {
       dependencies: Record<string, string>
     }
@@ -816,15 +817,17 @@ importers:
       plan: sourcePlan(),
       directories: [
         CHECKOUT_DIR,
-        `${CHECKOUT_DIR}/lib`,
-        `${CHECKOUT_DIR}/.git`,
-        `${CHECKOUT_DIR}/.git/refs/heads`,
+        join(CHECKOUT_DIR, 'lib'),
+        join(CHECKOUT_DIR, '.git'),
+        join(CHECKOUT_DIR, '.git', 'refs', 'heads'),
       ],
       files: {
-        [`${CHECKOUT_DIR}/package.json`]: `${JSON.stringify({ name: SOURCE_NAME, main: './lib/index.js' })}\n`,
-        [`${CHECKOUT_DIR}/lib/index.js`]: 'export {}\n',
-        [`${CHECKOUT_DIR}/.git/HEAD`]: 'ref: refs/heads/main\n',
-        [`${CHECKOUT_DIR}/.git/refs/heads/main`]: `${options.headCommit ?? HEAD_COMMIT}\n`,
+        [join(CHECKOUT_DIR, 'package.json')]:
+          `${JSON.stringify({ name: SOURCE_NAME, main: './lib/index.js' })}\n`,
+        [join(CHECKOUT_DIR, 'lib', 'index.js')]: 'export {}\n',
+        [join(CHECKOUT_DIR, '.git', 'HEAD')]: 'ref: refs/heads/main\n',
+        [join(CHECKOUT_DIR, '.git', 'refs', 'heads', 'main')]:
+          `${options.headCommit ?? HEAD_COMMIT}\n`,
         [SOURCE_STATE]: `${JSON.stringify({
           format: 1,
           name: SOURCE_NAME,
@@ -840,7 +843,7 @@ importers:
     addRuntimeState(h)
     h.fs.files.set(LOCKFILE_PATH, sourceLockfile(LINK_SPEC))
     h.fs.files.set(
-      `${PROFILE_DIR}/node_modules/${SOURCE_NAME}/package.json`,
+      join(PROFILE_DIR, 'node_modules', ...SOURCE_NAME.split('/'), 'package.json'),
       `${JSON.stringify({ name: SOURCE_NAME, version: '1.0.0' })}\n`,
     )
     return h
@@ -874,7 +877,7 @@ importers:
   it('errors when the provisioned location is missing', async () => {
     const h = await publishedSource()
     for (const path of [...h.fs.files.keys()]) {
-      if (path.startsWith(`${CHECKOUT_DIR}/`)) h.fs.files.delete(path)
+      if (path.startsWith(CHECKOUT_DIR)) h.fs.files.delete(path)
     }
     h.fs.directories.delete(CHECKOUT_DIR)
     const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
@@ -902,12 +905,12 @@ importers:
 
   it('errors when the provisioned package is not built', async () => {
     const h = await publishedSource()
-    h.fs.files.delete(`${CHECKOUT_DIR}/lib/index.js`)
+    h.fs.files.delete(join(CHECKOUT_DIR, 'lib', 'index.js'))
     const result = await diagnose(h.fs.fs, { dshHome: DSH_HOME })
     const item = sourcesFinding(result)
     expect(item).toMatchObject({ severity: 'error', check: 'sources' })
     expect(item?.message).toContain(SOURCE_NAME)
-    expect(item?.message).toContain(`${CHECKOUT_DIR}/lib/index.js`)
+    expect(item?.message).toContain(join(CHECKOUT_DIR, 'lib', 'index.js'))
     expect(doctorExitCode(result, false)).toBe(1)
   })
 

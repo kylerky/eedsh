@@ -85,8 +85,8 @@ const statePath = sourceStatePath(home, sourceKey(defaults))
 /** A valid provisioned package manifest and its main entry. */
 function gitFiles(): Record<string, string> {
   return {
-    [`${checkoutDir}/package.json`]: JSON.stringify({ name, main: './lib/index.js' }),
-    [`${checkoutDir}/lib/index.js`]: 'export {}\n',
+    [join(checkoutDir, 'package.json')]: JSON.stringify({ name, main: './lib/index.js' }),
+    [join(checkoutDir, 'lib', 'index.js')]: 'export {}\n',
   }
 }
 
@@ -364,7 +364,7 @@ describe('per-source lock', () => {
       sourceLockPath(home, sourceKey(other)),
     )
     expect(sourceLockPath(home, sourceKey(defaults))).toBe(
-      `${home}/.local/locks/${sourceKey(defaults)}.lock`,
+      join(home, '.local', 'locks', `${sourceKey(defaults)}.lock`),
     )
   })
 })

@@ -69,6 +69,25 @@ export function commandInvocation(
 }
 
 /**
+ * Build the invocation that runs the `pnpm` package manager. Node cannot spawn
+ * the Windows `pnpm.cmd` shim directly, so Windows runs it through `cmd.exe`;
+ * other platforms execute the binary on `PATH`.
+ * @param args - the pnpm arguments.
+ * @param platform - platform override for tests.
+ * @returns the platform-specific invocation.
+ */
+export function pnpmInvocation(
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): CommandInvocation {
+  if (platform === 'win32') {
+    const line = ['pnpm', ...args].map(quoteWindowsArgument).join(' ')
+    return { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', line] }
+  }
+  return { command: 'pnpm', args: [...args] }
+}
+
+/**
  * Run one command synchronously with a bound. The default runner is the only
  * production code that spawns for an anchor setup step.
  * @param command - the executable or launcher path.

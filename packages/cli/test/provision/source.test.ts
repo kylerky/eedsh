@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   resolveSourceLocation,
@@ -51,7 +51,7 @@ describe('source location resolution', () => {
   it('resolves a relative path against the config directory', () => {
     expect(resolveSourceLocation('../acme-bundle', configDir)).toEqual({
       kind: 'local',
-      location: '/work/profiles/acme-bundle',
+      location: resolve(configDir, '../acme-bundle'),
     })
   })
 
@@ -65,7 +65,7 @@ describe('source location resolution', () => {
   it('expands a home-relative path', () => {
     expect(resolveSourceLocation('~/src/acme-bundle', configDir, '/home/me')).toEqual({
       kind: 'local',
-      location: '/home/me/src/acme-bundle',
+      location: resolve('/home/me', 'src', 'acme-bundle'),
     })
   })
 

@@ -70,7 +70,8 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
  * and DSH calls in tagged failures. The anchor helpers wrap Node's
  * exception-shaped read/stat/realpath calls and convert every expected failure
  * to a tagged DshFailure or a reported write result, and the bootstrap treats
- * malformed package-manager JSON as no candidate.
+ * malformed package-manager JSON as no candidate. Authoring provenance decodes
+ * exception-shaped stack-frame module URLs so attribution stays best effort.
  */
 const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
@@ -80,6 +81,7 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/config/src/bridge.ts',
   'packages/config/src/builders.ts',
   'packages/config/src/source.ts',
+  'packages/config/src/provenance.ts',
   'packages/cli/src/repl/completion.ts',
   'packages/cli/src/repl/preview.ts',
   'packages/cli/src/repl/prompt.ts',

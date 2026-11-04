@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { ConfigProvenance } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
@@ -40,7 +40,12 @@ import { fakeSpawner } from './support/process'
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
-const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
+// The CLI resolves DSH_HOME, so expectations must use the same platform path.
+const homeRoot = resolve('/home')
+const homePath = (...parts: string[]) => join(homeRoot, ...parts)
+const generatedPath = (profile: string) =>
+  homePath('profiles', profile, '.eedsh', 'generated', 'package.json')
+const generatedManifest = generatedPath('cli-fixture')
 
 /** Wrap one validated config for the injected loader seam. */
 function loaded(config: EedshConfig, provenance?: ConfigProvenance) {
@@ -185,7 +190,7 @@ describe('eedsh sync', () => {
     const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
     expect(code).toBe(0)
     expect(h.fs.files.has(generatedManifest)).toBe(true)
-    expect(h.packages.installs).toEqual(['/home/profiles/cli-fixture'])
+    expect(h.packages.installs).toEqual([homePath('profiles', 'cli-fixture')])
     expect(h.out.join('\n')).toContain('cli-fixture')
     expect(h.err.join('\n')).not.toContain('eedsh:')
   })
@@ -291,7 +296,7 @@ export default defineConfig()
     })
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile xdg-profile')
-    expect(h.fs.files.has('/home/profiles/xdg-profile/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('xdg-profile'))).toBe(true)
     expect(configPath.endsWith(join('eedsh', 'config.ts'))).toBe(true)
   })
 
@@ -307,7 +312,7 @@ export default defineConfig()
       })
       expect(code).toBe(0)
       expect(h.out.join('\n')).toContain('profile xdg-profile')
-      expect(h.fs.files.has('/home/profiles/xdg-profile/.eedsh/generated/package.json')).toBe(true)
+      expect(h.fs.files.has(generatedPath('xdg-profile'))).toBe(true)
     }
   })
 
@@ -367,7 +372,7 @@ describe('config evaluation', () => {
     const code = await runEedsh(['sync', '--config', fixture('enum')], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile enum-basic')
-    expect(h.fs.files.has('/home/profiles/enum-basic/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('enum-basic'))).toBe(true)
   })
 
   it('evaluates a config in a CommonJS project', async () => {
@@ -375,7 +380,7 @@ describe('config evaluation', () => {
     const code = await runEedsh(['sync', '--config', fixture('cjs-project')], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile cli-cjs')
-    expect(h.fs.files.has('/home/profiles/cli-cjs/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('cli-cjs'))).toBe(true)
   })
 
   it('reports a syntax error as config.import_failed', async () => {
@@ -539,7 +544,7 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile result-export')
-    expect(h.fs.files.has('/home/profiles/result-export/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('result-export'))).toBe(true)
   })
 
   it('accepts a plain config export', async () => {
@@ -548,7 +553,7 @@ export default {}
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile plain-export')
-    expect(h.fs.files.has('/home/profiles/plain-export/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('plain-export'))).toBe(true)
   })
 
   it('reports a failed Result export with the native schema message', async () => {
@@ -659,7 +664,7 @@ export default defineConfig()
     const configPath = await writeConfig(soleSource)
     expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
     expect(h.out.join('\n')).toContain('profile solo')
-    expect(h.fs.files.has('/home/profiles/solo/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('solo'))).toBe(true)
   })
 
   it('syncs a valid profile when a sibling profile is invalid', async () => {
@@ -667,7 +672,7 @@ export default defineConfig()
     const configPath = await writeConfig(invalidSiblingSource)
     expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(1)
     expect(h.out.join('\n')).toContain('profile work')
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(true)
     expect(h.err.join('\n')).toContain('owned by the materializer')
   })
 })
@@ -741,8 +746,8 @@ export default defineConfig()
     const code = await runEedsh(['sync', '--config', configPath, '--profile', 'home'], h.options)
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile home')
-    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    expect(h.fs.files.has(generatedPath('home'))).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(false)
   })
 
   it('reports an unknown --profile as a usage error listing the names', async () => {
@@ -762,8 +767,8 @@ export default defineConfig()
     const configPath = await writeConfig(withDefault)
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(0)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(true)
+    expect(h.fs.files.has(generatedPath('home'))).toBe(true)
     expect(h.out.join('\n')).toContain('profile work')
     expect(h.out.join('\n')).toContain('profile home')
   })
@@ -812,19 +817,19 @@ export default defineConfig()
     const configPath = await writeConfig(invalidHome)
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(true)
     const errors = h.err.join('\n')
     expect(errors).toContain('home')
     expect(errors).toContain('owned by the materializer')
   })
 
   it('keeps syncing valid profiles after a locked sibling', async () => {
-    const h = harness({ lockContendedPaths: ['/home/profiles/work/.eedsh/sync.lock'] })
+    const h = harness({ lockContendedPaths: [homePath('profiles', 'work', '.eedsh', 'sync.lock')] })
     const configPath = await writeConfig(withDefault)
     const code = await runEedsh(['sync', '--config', configPath], h.options)
     expect(code).toBe(1)
-    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    expect(h.fs.files.has(generatedPath('home'))).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(false)
     expect(h.err.join('\n')).toContain('another sync is running')
   })
 
@@ -834,8 +839,8 @@ export default defineConfig()
     const configPath = await writeConfig(strictWork)
     const code = await runEedsh(['sync', '--strict', '--config', configPath], h.options)
     expect(code).toBe(1)
-    expect(h.fs.files.has('/home/profiles/home/.eedsh/generated/package.json')).toBe(true)
-    expect(h.fs.files.has('/home/profiles/work/.eedsh/generated/package.json')).toBe(false)
+    expect(h.fs.files.has(generatedPath('home'))).toBe(true)
+    expect(h.fs.files.has(generatedPath('work'))).toBe(false)
     expect(h.err.join('\n')).toContain('missing-row')
   })
 
@@ -936,7 +941,7 @@ describe('strict mode', () => {
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('generated #1')
     expect(errors).toContain('--explain')
-    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('cli-unmatched'))).toBe(true)
   })
 
   it('attributes warnings with --explain and omits the hint', async () => {
@@ -948,7 +953,7 @@ describe('strict mode', () => {
     expect(errors).toContain('[missing-row]:')
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('--explain')
-    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('cli-unmatched'))).toBe(true)
   })
 
   it('keeps strict failures raw and prints the hint', async () => {
@@ -959,7 +964,7 @@ describe('strict mode', () => {
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('generated #1')
     expect(errors).toContain('--explain')
-    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(false)
+    expect(h.fs.files.has(generatedPath('cli-unmatched'))).toBe(false)
   })
 
   it('attributes strict failures with --strict --explain and omits the hint', async () => {
@@ -974,7 +979,7 @@ describe('strict mode', () => {
     expect(errors).toContain('[missing-row]:')
     expect(errors).toContain('missing-row')
     expect(errors).not.toContain('--explain')
-    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(false)
+    expect(h.fs.files.has(generatedPath('cli-unmatched'))).toBe(false)
   })
 
   it('syncs a plain plan without provenance using positional attribution', async () => {
@@ -992,7 +997,7 @@ describe('strict mode', () => {
     const errors = h.err.join('\n')
     expect(errors).toContain('generated #1 [missing-row]:')
     expect(errors).not.toContain('(config.ts:')
-    expect(h.fs.files.has('/home/profiles/cli-unmatched/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('cli-unmatched'))).toBe(true)
   })
 
   it('warns on an empty generated layer and fails strict without committing', async () => {
@@ -1009,7 +1014,7 @@ export default defineConfig()
   .build()
 `,
     )
-    const manifest = '/home/profiles/cli-empty/.eedsh/generated/package.json'
+    const manifest = generatedPath('cli-empty')
     const warned = harness({ basePatches, realPreflight: true })
     expect(await runEedsh(['sync', '--config', configPath], warned.options)).toBe(0)
     const warnings = warned.err.join('\n')
@@ -1029,12 +1034,12 @@ export default defineConfig()
     expect(code).toBe(0)
     expect(h.err.join('\n')).not.toContain('warning:')
     expect(h.err.join('\n')).not.toContain('--explain')
-    expect(h.fs.files.has('/home/profiles/cli-fixture/.eedsh/generated/package.json')).toBe(true)
+    expect(h.fs.files.has(generatedPath('cli-fixture'))).toBe(true)
   })
 })
 
 describe('generation record diagnostics', () => {
-  const profileDir = '/home/profiles/cli-fixture'
+  const profileDir = homePath('profiles', 'cli-fixture')
   const recordPath = `${profileDir}/.eedsh/generated/package.json`
   const manifestPath = `${profileDir}/package.json`
   const adopted = '@edsh/adapted-ptc'
@@ -1119,7 +1124,7 @@ describe('generation record diagnostics', () => {
 
 /** Add the lockfile and installed packages a clean doctor run expects. */
 function addPublishedRuntimeState(h: ReturnType<typeof harness>): void {
-  const profileDir = '/home/profiles/cli-fixture'
+  const profileDir = homePath('profiles', 'cli-fixture')
   const record = JSON.parse(
     h.fs.files.get(`${profileDir}/.eedsh/generated/package.json`) ?? '{}',
   ) as { eedsh?: { packages?: Record<string, string> } }
@@ -1154,7 +1159,7 @@ function doctorOptions(h: ReturnType<typeof harness>) {
 }
 
 describe('eedsh doctor', () => {
-  const profileDir = '/home/profiles/cli-fixture'
+  const profileDir = homePath('profiles', 'cli-fixture')
   const profileName = 'cli-fixture'
 
   it('inspects --profile without evaluating a config', async () => {
@@ -1225,7 +1230,7 @@ describe('eedsh doctor', () => {
 })
 
 describe('dependency section notices', () => {
-  const manifestPath = '/home/profiles/cli-fixture/package.json'
+  const manifestPath = homePath('profiles', 'cli-fixture', 'package.json')
 
   it('prints a cleanup notice and still reinstalls the profile', async () => {
     const h = harness()
@@ -1270,7 +1275,7 @@ describe('tagged failures', () => {
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('another sync is running')
-    expect(errors).toContain('/home/profiles/cli-fixture/.eedsh/sync.lock')
+    expect(errors).toContain(homePath('profiles', 'cli-fixture', '.eedsh', 'sync.lock'))
     expect(errors).not.toMatch(/pid/i)
   })
 
@@ -1557,7 +1562,7 @@ describe('eedsh sync --watch', () => {
     expect(code).toBe(0)
     expect(started).toBe(true)
     expect(lockHeldAtStop).toBe(false)
-    expect(releasesAtStop).toContain('/home/profiles/cli-fixture/.eedsh/sync.lock')
+    expect(releasesAtStop).toContain(homePath('profiles', 'cli-fixture', '.eedsh', 'sync.lock'))
     expect(watcherClosesAtStop).toBe(1)
     expect(layerFinalizersAtStop).toBe(1)
   })
@@ -1589,7 +1594,7 @@ describe('eedsh sync --watch', () => {
 })
 
 describe('multi-profile sync --watch', () => {
-  const manifestPath = (name: string) => `/home/profiles/${name}/.eedsh/generated/package.json`
+  const manifestPath = (name: string) => generatedPath(name)
 
   function watchControl() {
     let onChange: (() => void) | undefined

@@ -8,6 +8,7 @@
  * because a config project may resolve its own copy of `@eedsh/config`.
  * @module @eedsh/config/provenance
  */
+import { fileURLToPath } from 'node:url'
 
 /** One authoring site; the file is absolute in memory. */
 export interface AuthoringSite {
@@ -89,8 +90,18 @@ const MODULE_DIR = moduleDirectory(import.meta.url)
 /** One V8 stack frame with an absolute file, line, and column. */
 const STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:.*?\s+\()?(.+?):(\d+):(\d+)\)?\s*$/
 
+/** Convert a stack-frame module URL to a host path when it is a file URL. */
+function framePath(file: string): string {
+  if (!file.startsWith('file://')) return file
+  try {
+    return fileURLToPath(file)
+  } catch {
+    return decodeURIComponent(file.slice('file://'.length))
+  }
+}
+
 function moduleDirectory(url: string): string {
-  const path = url.startsWith('file://') ? decodeURIComponent(url.slice('file://'.length)) : url
+  const path = framePath(url)
   const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return slash === -1 ? path : path.slice(0, slash)
 }
@@ -106,10 +117,8 @@ function isInside(file: string, directory: string): boolean {
 function frameSite(line: string): AuthoringSite | undefined {
   const match = STACK_FRAME.exec(line)
   if (match === null) return undefined
-  let file = match[1] as string
-  if (file.startsWith('file://')) file = decodeURIComponent(file.slice('file://'.length))
   // A cache-busting query on an evaluated module URL is not part of the path.
-  file = file.replace(/\?eedsh=[^#]*$/, '')
+  const file = framePath((match[1] as string).replace(/\?eedsh=[^#]*$/, ''))
   if (!isAbsolutePath(file)) return undefined
   if (isInside(file, MODULE_DIR)) return undefined
   const lineNumber = Number(match[2])

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Layer } from 'effect'
@@ -16,11 +17,11 @@ import { bundle, generated, insert, layer } from './plan-parts'
 /** Absolute profile directory every materialization test publishes into. */
 export const PROFILE_DIR = '/home/profiles/work'
 /** The profile manifest path. */
-export const MANIFEST_PATH = `${PROFILE_DIR}/package.json`
+export const MANIFEST_PATH = join(PROFILE_DIR, 'package.json')
 /** The generated package manifest path (the generation record). */
-export const RECORD_PATH = `${PROFILE_DIR}/.eedsh/generated/package.json`
+export const RECORD_PATH = join(PROFILE_DIR, '.eedsh', 'generated', 'package.json')
 /** The stable plan mirror path. */
-export const MIRROR_PATH = `${PROFILE_DIR}/.eedsh/plan.json`
+export const MIRROR_PATH = join(PROFILE_DIR, '.eedsh', 'plan.json')
 /** The dependency specification for the runtime bundle. */
 export const RUNTIME_SPEC = 'link:/repo/packages/runtime'
 /** The dependency specification for the generated bundle. */

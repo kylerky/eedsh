@@ -11,6 +11,7 @@ import { copyFile, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'n
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { canonicalJson } from '@eedsh/plan'
+import { pnpmInvocation } from '../command-runner'
 
 /** One exact package request for a preview. */
 export interface PreviewSpec {
@@ -172,8 +173,9 @@ async function reusable(
 
 /** The default installer: pnpm install inside the preview directory. */
 export async function installPreviewWithPnpm(dir: string): Promise<void> {
+  const invocation = pnpmInvocation(['install'])
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn('pnpm', ['install'], {
+    const child = spawn(invocation.command, [...invocation.args], {
       cwd: dir,
       stdio: ['ignore', 'ignore', 'pipe'],
       env: process.env,

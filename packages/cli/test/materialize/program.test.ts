@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { canonicalJson } from '@eedsh/plan'
 import { describe, expect, it } from 'vitest'
 import {
@@ -38,7 +39,7 @@ describe('generation-record trust', () => {
 
 describe('authoritative plan verification', () => {
   function planFileFor(generationId: string): string {
-    return `${PROFILE_DIR}/.eedsh/generated/plans/${generationId}.json`
+    return join(PROFILE_DIR, '.eedsh', 'generated', 'plans', `${generationId}.json`)
   }
 
   it('republishes the same generation when the authoritative plan is missing', async () => {
@@ -81,7 +82,7 @@ describe('authoritative plan verification', () => {
 
 describe('plan mirror verification', () => {
   function mirrorPath(): string {
-    return `${PROFILE_DIR}/.eedsh/plan.json`
+    return join(PROFILE_DIR, '.eedsh', 'plan.json')
   }
 
   it('republishes the same generation when the mirror is missing', async () => {
@@ -121,7 +122,7 @@ describe('plan mirror verification', () => {
 })
 
 describe('provenance sidecar', () => {
-  const SIDECAR_PATH = `${PROFILE_DIR}/.eedsh/provenance.json`
+  const SIDECAR_PATH = join(PROFILE_DIR, '.eedsh', 'provenance.json')
   const configDir = '/repo/config'
   const provenance = {
     profiles: {
@@ -212,7 +213,7 @@ describe('invalid generation records', () => {
   it('fails when a leftover generated directory marks the profile as published', async () => {
     const h = harness({
       files: { [MANIFEST_PATH]: JSON.stringify({ name: 'mine' }) },
-      directories: [`${PROFILE_DIR}/.eedsh/generated`],
+      directories: [join(PROFILE_DIR, '.eedsh', 'generated')],
     })
     expect(failureOf(await h.runExit())).toMatchObject({
       _tag: 'OwnershipRecordInvalid',

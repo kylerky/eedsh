@@ -81,7 +81,9 @@ export function relativizeSite(
   configDir: string,
 ): ProvenanceSite | null {
   if (site === undefined) return null
-  const file = isAbsolute(site.file) ? relative(configDir, site.file) : site.file
+  const relativeFile = isAbsolute(site.file) ? relative(configDir, site.file) : site.file
+  // The sidecar is host-path-free, so Windows separators are normalized too.
+  const file = relativeFile.replaceAll('\\', '/')
   if (file === '' || isAbsolute(file)) return null
   return { file, line: site.line, column: site.column }
 }

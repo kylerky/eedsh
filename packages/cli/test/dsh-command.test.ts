@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { Layer } from 'effect'
@@ -33,7 +33,14 @@ import { fakeSpawner } from './support/process'
 
 const root = process.cwd()
 const fixture = (name: string) => join(root, 'packages/cli/test/fixtures', name, 'config.ts')
-const generatedManifest = '/home/profiles/cli-fixture/.eedsh/generated/package.json'
+const generatedManifest = join(
+  resolve('/home'),
+  'profiles',
+  'cli-fixture',
+  '.eedsh',
+  'generated',
+  'package.json',
+)
 const installation = devDshInstallation()
 
 function harness(env: Record<string, string | undefined>, options: Record<string, unknown> = {}) {

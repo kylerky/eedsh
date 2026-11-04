@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { Effect, Exit, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
@@ -17,11 +18,11 @@ import { planOf } from '../support/plan'
 import { bundle, generated, insert, layer } from '../support/plan-parts'
 
 const PROFILE_DIR = '/home/profiles/work'
-const MANIFEST_PATH = `${PROFILE_DIR}/package.json`
-const LOCKFILE_PATH = `${PROFILE_DIR}/pnpm-lock.yaml`
-const MIRROR_PATH = `${PROFILE_DIR}/.eedsh/plan.json`
-const PROVENANCE_PATH = `${PROFILE_DIR}/.eedsh/provenance.json`
-const GENERATED_MANIFEST_PATH = `${PROFILE_DIR}/.eedsh/generated/package.json`
+const MANIFEST_PATH = join(PROFILE_DIR, 'package.json')
+const LOCKFILE_PATH = join(PROFILE_DIR, 'pnpm-lock.yaml')
+const MIRROR_PATH = join(PROFILE_DIR, '.eedsh', 'plan.json')
+const PROVENANCE_PATH = join(PROFILE_DIR, '.eedsh', 'provenance.json')
+const GENERATED_MANIFEST_PATH = join(PROFILE_DIR, '.eedsh', 'generated', 'package.json')
 
 const CONFIG_DIR = '/repo/config'
 const PROVENANCE = {
@@ -123,7 +124,7 @@ async function publish(options: PublishOptions = {}) {
   const state = (): StepState => ({
     mirror: fs.files.get(MIRROR_PATH),
     commit: fs.files.has(GENERATED_MANIFEST_PATH),
-    plan: fs.files.has(`${PROFILE_DIR}/.eedsh/generated/${bundleValue.authoritativePlanPath}`),
+    plan: fs.files.has(join(PROFILE_DIR, '.eedsh', 'generated', bundleValue.authoritativePlanPath)),
   })
   const packages: PackageManagerShape = {
     install: () => {

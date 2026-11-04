@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import type { ProfilePlan } from '@eedsh/plan'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
@@ -28,10 +29,10 @@ import { bundle, insert, layer as planLayer } from '../support/plan-parts'
 const profileDir = '/profiles/work'
 const runtimeSpec = 'link:/repo/packages/runtime'
 const generatedSpec = 'link:./.eedsh/generated'
-const manifestPath = `${profileDir}/package.json`
-const lockfilePath = `${profileDir}/pnpm-lock.yaml`
-const lockPath = `${profileDir}/.eedsh/sync.lock`
-const generatedManifestPath = `${profileDir}/.eedsh/generated/package.json`
+const manifestPath = join(profileDir, 'package.json')
+const lockfilePath = join(profileDir, 'pnpm-lock.yaml')
+const lockPath = join(profileDir, '.eedsh', 'sync.lock')
+const generatedManifestPath = join(profileDir, '.eedsh', 'generated', 'package.json')
 
 function fixturePlan(): ProfilePlan {
   return planOf({
@@ -106,8 +107,8 @@ describe('Effect materialization', () => {
     const generated = JSON.parse(test.fs.files.get(generatedManifestPath) ?? '{}')
     expect(generated.eedsh.generationId).toBe(result.generationId)
     expect(generated.dsh.bundle.patch).toHaveLength(1)
-    expect(test.fs.files.has(`${profileDir}/.eedsh/plan.json`)).toBe(true)
-    expect(test.fs.files.has(`${profileDir}/cordis.patch.yml`)).toBe(true)
+    expect(test.fs.files.has(join(profileDir, '.eedsh', 'plan.json'))).toBe(true)
+    expect(test.fs.files.has(join(profileDir, 'cordis.patch.yml'))).toBe(true)
     expect(test.fs.files.has(lockPath)).toBe(false)
     expect(test.fs.renameOrder.at(-1)).toBe(generatedManifestPath)
     expect(test.lock.acquires).toEqual([lockPath])

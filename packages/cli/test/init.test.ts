@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
@@ -19,10 +19,10 @@ import { PackageManager } from '../src/internal/effect/services'
 import { fakePackageManager, memoryFileSystem } from './support/fakes'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
-const configDir = '/xdg/eedsh'
-const configPath = `${configDir}/config.ts`
-const packagePath = `${configDir}/package.json`
-const tsconfigPath = `${configDir}/tsconfig.json`
+const configDir = join('/xdg', 'eedsh')
+const configPath = join(configDir, 'config.ts')
+const packagePath = join(configDir, 'package.json')
+const tsconfigPath = join(configDir, 'tsconfig.json')
 
 interface HarnessOptions {
   files?: Record<string, string>
@@ -41,7 +41,7 @@ function harness(options: HarnessOptions = {}) {
       ? {
           ...fs.fs,
           writeFileString: (path: string, content: string) =>
-            path.startsWith('/dsh-home/.local')
+            path.startsWith(join(resolve('/dsh-home'), '.local'))
               ? Effect.fail(
                   PlatformError.systemError({
                     _tag: 'PermissionDenied',
@@ -257,7 +257,10 @@ describe('init on a real filesystem', () => {
       stderr: () => {},
     })
     expect(code).toBe(0)
-    expect((await stat(join(home, 'eedsh'))).mode & 0o077).toBe(0)
+    // Windows has no POSIX permission bits; the mode is only meaningful elsewhere.
+    if (process.platform !== 'win32') {
+      expect((await stat(join(home, 'eedsh'))).mode & 0o077).toBe(0)
+    }
   })
 
   it('writes the installation anchor owner-only', async () => {
@@ -275,7 +278,7 @@ describe('init on a real filesystem', () => {
     if (process.platform !== 'win32') expect((await stat(anchor)).mode & 0o077).toBe(0)
   })
 })
-const anchorHome = '/dsh-home'
+const anchorHome = resolve('/dsh-home')
 const anchorPath = join(anchorHome, '.local', 'state', 'installation.json')
 
 interface DshFixture {

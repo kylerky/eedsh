@@ -508,10 +508,14 @@ describe('exploration snapshots', () => {
           .profile('home', (profile) => profile.generated()),
       ),
     })
-    expect(await h.session.evaluate('selectedProfile.published().dir')).toContain('profiles/work')
+    expect(await h.session.evaluate('selectedProfile.published().dir')).toContain(
+      join('profiles', 'work'),
+    )
     await h.session.command('.profile home')
     expect(await h.session.evaluate('selectedProfile.name')).toBe('home')
-    expect(await h.session.evaluate('selectedProfile.published().dir')).toContain('profiles/home')
+    expect(await h.session.evaluate('selectedProfile.published().dir')).toContain(
+      join('profiles', 'home'),
+    )
   })
 
   it('uses the preview directory as the selected profile root', async () => {

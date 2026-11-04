@@ -59,7 +59,7 @@ describe('local profile path resolution', () => {
     const previous = process.env.DSH_HOME
     process.env.DSH_HOME = '/tmp/eedsh-home'
     try {
-      expect(resolveProfileDir('work')).toBe(join('/tmp/eedsh-home', 'profiles', 'work'))
+      expect(resolveProfileDir('work')).toBe(join(resolve('/tmp/eedsh-home'), 'profiles', 'work'))
     } finally {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
