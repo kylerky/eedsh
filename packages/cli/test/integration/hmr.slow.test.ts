@@ -61,7 +61,10 @@ function webPlan(name: string, layers: ProfilePlan['layers']): ProfilePlan {
 
 describe('slow Web HMR integration', () => {
   beforeAll(async () => {
-    await execFileAsync('pnpm', ['--filter', '@eedsh/runtime', 'build'], { cwd: root })
+    await execFileAsync('pnpm', ['--filter', '@eedsh/runtime', 'build'], {
+      cwd: root,
+      shell: process.platform === 'win32',
+    })
     const matrixDir = process.env.EEDSH_MATRIX_DSH_DIR
     if (matrixDir !== undefined && matrixDir !== '') {
       const nested = join(matrixDir, 'node_modules', '@deepseek-ai', 'dsh')

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Option } from 'effect'
@@ -6,8 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { resolveTypeScript } from '../src/check'
 import { findTsconfigPath } from '../src/internal/tsconfig'
 
-function tempProject(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'eedsh-check-test-'))
+/** Create a temporary project whose path is already canonical. */
+async function tempProject(): Promise<string> {
+  return realpath(await mkdtemp(join(tmpdir(), 'eedsh-check-test-')))
 }
 
 describe('tsconfig discovery', () => {

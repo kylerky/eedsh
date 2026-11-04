@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
@@ -53,21 +53,21 @@ function failureOf(result: Result.Result<unknown, DshFailure>): DshFailure {
 describe('CLI installation anchor location', () => {
   it('resolves the cache below resolveDshHome', () => {
     expect(installationAnchorPathForEnv({ DSH_HOME: '/custom/home' })).toBe(
-      join('/custom/home', '.local', 'state', 'installation.json'),
+      resolve('/custom/home', '.local', 'state', 'installation.json'),
     )
     expect(installationAnchorPathForEnv({ HOME: '/users/me' })).toBe(
-      join('/users/me', '.dsh', '.local', 'state', 'installation.json'),
+      resolve('/users/me', '.dsh', '.local', 'state', 'installation.json'),
     )
     expect(installationAnchorPathForEnv({ HOME: '/users/me', DSH_HOME: '/explicit' })).toBe(
-      join('/explicit', '.local', 'state', 'installation.json'),
+      resolve('/explicit', '.local', 'state', 'installation.json'),
     )
   })
 
   it('never places the cache in the config project', () => {
     const env = { DSH_HOME: '/dsh-home', XDG_CONFIG_HOME: '/xdg' }
     const path = installationAnchorPathForEnv(env)
-    expect(path.startsWith(join('/dsh-home'))).toBe(true)
-    expect(path.startsWith(join('/xdg'))).toBe(false)
+    expect(path.startsWith(resolve('/dsh-home'))).toBe(true)
+    expect(path.startsWith(resolve('/xdg'))).toBe(false)
   })
 })
 

@@ -1,0 +1,4 @@
+# Check out every tracked text file with LF line endings on every platform.
+# Without this, Git for Windows converts them to CRLF and the Biome format
+# check fails during `pnpm verify`.
+* text=auto eol=lf

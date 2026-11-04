@@ -13,5 +13,6 @@ export default async function setup(): Promise<void> {
   await execFileAsync('pnpm', ['-r', 'build'], {
     cwd: process.cwd(),
     maxBuffer: 32 * 1024 * 1024,
+    shell: process.platform === 'win32',
   })
 }

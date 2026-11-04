@@ -29,11 +29,16 @@ describe('config directory watcher', () => {
     })
     sessions.push(session)
 
+    // A native watcher can deliver delayed notifications for the files created
+    // before it started; wait for that initial burst to settle.
+    await delay(300)
+    const settled = changes
+
     await writeFile(join(dir, 'node_modules', 'pkg', 'index.js'), 'export default 2\n')
-    await delay(250)
-    expect(changes).toBe(0)
+    await delay(500)
+    expect(changes).toBe(settled)
 
     await writeFile(join(dir, 'config.ts'), 'export default 2\n')
-    expect(await waitFor(() => changes > 0)).toBe(true)
+    expect(await waitFor(() => changes > settled)).toBe(true)
   })
 })

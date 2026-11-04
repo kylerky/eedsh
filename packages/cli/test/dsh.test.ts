@@ -231,7 +231,9 @@ describe('DSH discovery precedence', () => {
     if (Result.isSuccess(result)) {
       expect(result.success.source).toBe('path')
       expect(result.success.version).toBe('0.2.1-rc.5')
-      expect(result.success.binPath).toBe(await realpath(launcher))
+      // The launcher's case depends on the filesystem, so compare case-insensitively
+      // the way Windows would.
+      expect(result.success.binPath.toLowerCase()).toBe((await realpath(launcher)).toLowerCase())
     }
   })
 })

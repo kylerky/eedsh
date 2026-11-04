@@ -221,8 +221,11 @@ describe('init on a real filesystem', () => {
     })
     expect(code).toBe(0)
     const dir = join(home, 'eedsh')
-    const mode = (await stat(dir)).mode & 0o777
-    expect(mode).toBe(0o700)
+    // Windows has no POSIX permission bits; the mode is only meaningful elsewhere.
+    if (process.platform !== 'win32') {
+      const mode = (await stat(dir)).mode & 0o777
+      expect(mode).toBe(0o700)
+    }
     for (const name of ['config.ts', 'package.json', 'tsconfig.json']) {
       expect(existsSync(join(dir, name))).toBe(true)
     }

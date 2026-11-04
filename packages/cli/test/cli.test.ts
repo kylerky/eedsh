@@ -171,7 +171,10 @@ function harness(options: HarnessOptions = {}) {
 
 beforeAll(async () => {
   if (!existsSync(join(root, 'packages/config/lib/index.js'))) {
-    await execFileAsync('pnpm', ['--filter', '@eedsh/config', 'build'], { cwd: root })
+    await execFileAsync('pnpm', ['--filter', '@eedsh/config', 'build'], {
+      cwd: root,
+      shell: process.platform === 'win32',
+    })
   }
   await installTestBridge()
 }, 120_000)

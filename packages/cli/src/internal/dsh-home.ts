@@ -9,15 +9,20 @@ import { join, resolve } from 'node:path'
 /** Directory below the DSH home that holds profiles. */
 export const PROFILES_DIR = 'profiles'
 
-function defaultDshHome(env: Record<string, string | undefined>): string {
-  const home = env.HOME !== undefined && env.HOME.trim().length > 0 ? env.HOME : homedir()
-  return join(home, '.dsh')
+/** The home directory an environment mapping resolves, falling back to the OS home. */
+function homeDirectory(env: Record<string, string | undefined>): string {
+  return env.HOME !== undefined && env.HOME.trim().length > 0 ? env.HOME : homedir()
 }
 
-/** Expand `~`, `~/`, and `~\\` prefixes against the OS home. */
-function expandHomePath(path: string): string {
-  if (path === '~') return homedir()
-  if (path.startsWith('~/') || path.startsWith('~\\')) return join(homedir(), path.slice(2))
+function defaultDshHome(env: Record<string, string | undefined>): string {
+  return join(homeDirectory(env), '.dsh')
+}
+
+/** Expand `~`, `~/`, and `~\\` prefixes against the environment's home directory. */
+function expandHomePath(path: string, env: Record<string, string | undefined>): string {
+  const home = homeDirectory(env)
+  if (path === '~') return home
+  if (path.startsWith('~/') || path.startsWith('~\\')) return join(home, path.slice(2))
   return path
 }
 
@@ -36,7 +41,7 @@ export function resolveDshHome(
   const chosen =
     configured ??
     (fromEnv !== undefined && fromEnv.trim().length > 0 ? fromEnv : defaultDshHome(env))
-  return resolve(expandHomePath(chosen))
+  return resolve(expandHomePath(chosen, env))
 }
 
 /**

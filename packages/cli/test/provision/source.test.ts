@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   resolveSourceLocation,
@@ -125,8 +126,8 @@ describe('source identity', () => {
 
   it('places checkouts, state, and locks below the DSH home .local directory', () => {
     const key = 'bundle-abc'
-    expect(sourceCheckoutDir(home, key)).toBe('/dsh-home/.local/sources/bundle-abc')
-    expect(sourceStatePath(home, key)).toBe('/dsh-home/.local/state/sources/bundle-abc.json')
-    expect(sourceLockPath(home, key)).toBe('/dsh-home/.local/locks/bundle-abc.lock')
+    expect(sourceCheckoutDir(home, key)).toBe(join(home, '.local', 'sources', key))
+    expect(sourceStatePath(home, key)).toBe(join(home, '.local', 'state', 'sources', `${key}.json`))
+    expect(sourceLockPath(home, key)).toBe(join(home, '.local', 'locks', `${key}.lock`))
   })
 })

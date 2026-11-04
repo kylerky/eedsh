@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clearDshBridge, type DshBridge } from '@eedsh/config'
@@ -69,7 +69,7 @@ function harness(env: Record<string, string | undefined>, options: Record<string
 }
 
 async function tempDir(prefix: string): Promise<string> {
-  return mkdtemp(join(tmpdir(), prefix))
+  return realpath(await mkdtemp(join(tmpdir(), prefix)))
 }
 
 async function writeFakeInstallation(version: string): Promise<string> {
