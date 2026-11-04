@@ -462,7 +462,7 @@ export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
     })
     const patches = () =>
       [...h.fs.files.entries()]
-        .filter(([path]) => path.includes('/.eedsh/generated/patches/'))
+        .filter(([path]) => path.includes(join('.eedsh', 'generated', 'patches')))
         .map(([, content]) => content)
 
     expect(await waitFor(() => patches().some((patch) => patch.includes('row-a')))).toBe(true)
@@ -1040,8 +1040,8 @@ export default defineConfig()
 
 describe('generation record diagnostics', () => {
   const profileDir = homePath('profiles', 'cli-fixture')
-  const recordPath = `${profileDir}/.eedsh/generated/package.json`
-  const manifestPath = `${profileDir}/package.json`
+  const recordPath = join(profileDir, '.eedsh', 'generated', 'package.json')
+  const manifestPath = join(profileDir, 'package.json')
   const adopted = '@edsh/adapted-ptc'
 
   function managedManifest(
@@ -1126,19 +1126,19 @@ describe('generation record diagnostics', () => {
 function addPublishedRuntimeState(h: ReturnType<typeof harness>): void {
   const profileDir = homePath('profiles', 'cli-fixture')
   const record = JSON.parse(
-    h.fs.files.get(`${profileDir}/.eedsh/generated/package.json`) ?? '{}',
+    h.fs.files.get(join(profileDir, '.eedsh', 'generated', 'package.json')) ?? '{}',
   ) as { eedsh?: { packages?: Record<string, string> } }
   const packages = record.eedsh?.packages ?? {}
   const entries = Object.entries(packages)
     .map(([name, spec]) => `      '${name}':\n        specifier: ${spec}`)
     .join('\n')
   h.fs.files.set(
-    `${profileDir}/pnpm-lock.yaml`,
+    join(profileDir, 'pnpm-lock.yaml'),
     `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n${entries}\n`,
   )
   for (const name of Object.keys(packages)) {
     h.fs.files.set(
-      `${profileDir}/node_modules/${name}/package.json`,
+      join(profileDir, 'node_modules', ...name.split('/'), 'package.json'),
       `${JSON.stringify({ name, version: '0.0.0' })}\n`,
     )
   }
@@ -1204,7 +1204,7 @@ describe('eedsh doctor', () => {
 
   it('exits 1 when a finding is an error', async () => {
     const h = await syncedProfile()
-    h.fs.files.delete(`${profileDir}/.eedsh/generated/package.json`)
+    h.fs.files.delete(join(profileDir, '.eedsh', 'generated', 'package.json'))
     const code = await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))
     expect(code).toBe(1)
     expect(h.out.join('\n')).toContain('error: record:')
@@ -1212,7 +1212,7 @@ describe('eedsh doctor', () => {
 
   it('exits 0 with warnings and 1 with --strict', async () => {
     const h = await syncedProfile()
-    h.fs.files.delete(`${profileDir}/cordis.yml`)
+    h.fs.files.delete(join(profileDir, 'cordis.yml'))
     expect(await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))).toBe(0)
     expect(h.out.join('\n')).toContain('warning: scaffolding:')
     const strict = await runEedsh(
@@ -1709,7 +1709,7 @@ export default defineConfig()
 
   const generatedPatches = (h: ReturnType<typeof harness>) =>
     [...h.fs.files.entries()]
-      .filter(([path]) => path.includes('/.eedsh/generated/patches/'))
+      .filter(([path]) => path.includes(join('.eedsh', 'generated', 'patches')))
       .map(([, content]) => content)
 
   it('publishes every profile on a bare watch and on reruns', async () => {

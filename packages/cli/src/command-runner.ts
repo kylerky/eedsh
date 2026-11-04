@@ -81,8 +81,9 @@ export function pnpmInvocation(
   platform: NodeJS.Platform = process.platform,
 ): CommandInvocation {
   if (platform === 'win32') {
-    const line = ['pnpm', ...args].map(quoteWindowsArgument).join(' ')
-    return { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', line] }
+    // cmd.exe matches an unquoted command through PATHEXT and joins these
+    // words into the `/c` command line, quoting any argument that needs it.
+    return { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', 'pnpm', ...args] }
   }
   return { command: 'pnpm', args: [...args] }
 }

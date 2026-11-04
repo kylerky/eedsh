@@ -22,7 +22,7 @@ describe('command invocation', () => {
   it('runs pnpm through cmd.exe on Windows and directly elsewhere', () => {
     const windows = pnpmInvocation(['install'], 'win32')
     expect(windows.command.toLowerCase()).toContain('cmd')
-    expect(windows.args).toEqual(['/d', '/s', '/c', '"pnpm" "install"'])
+    expect(windows.args).toEqual(['/d', '/s', '/c', 'pnpm', 'install'])
     expect(pnpmInvocation(['install'], 'linux')).toEqual({ command: 'pnpm', args: ['install'] })
   })
 

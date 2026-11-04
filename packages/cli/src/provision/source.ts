@@ -22,10 +22,10 @@ export interface ResolvedSourceLocation {
   readonly location: string
 }
 
-/** Expand `~`, `~/`, and `~\\` prefixes against one home directory. */
+/** Expand `~`, `~/`, and `~\\` prefixes into an absolute home path. */
 function expandHome(from: string, home: string): string {
-  if (from === '~') return home
-  if (from.startsWith('~/') || from.startsWith('~\\')) return join(home, from.slice(2))
+  if (from === '~') return resolve(home)
+  if (from.startsWith('~/') || from.startsWith('~\\')) return resolve(join(home, from.slice(2)))
   return from
 }
 

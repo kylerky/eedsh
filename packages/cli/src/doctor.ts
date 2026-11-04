@@ -5,7 +5,7 @@
  * `eedsh sync --adopt-ownership`.
  * @module @eedsh/cli/doctor
  */
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import { canonicalJson, type PlanSource, type ProfilePlan, ProfilePlanSchema } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -612,7 +612,7 @@ function checkSources(
         )
         continue
       }
-      const location = spec.slice('link:'.length)
+      const location = spec.slice('link:'.length).replaceAll('/', sep)
       if (!(yield* existsOrFalse(fs, location))) {
         findings.push(
           errorFinding(

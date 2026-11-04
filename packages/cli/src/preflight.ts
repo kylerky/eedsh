@@ -5,6 +5,7 @@
  * @module @eedsh/cli/preflight
  */
 
+import { isAbsolute, relative, sep } from 'node:path'
 import {
   type AuthoringSite,
   activeDshBridge,
@@ -93,8 +94,9 @@ export interface PreflightComposition {
 /** A site's file, relative to the config directory when it is below it. */
 function relativeFile(file: string, configDir: string | undefined): string {
   if (configDir === undefined) return file
-  const prefix = configDir.endsWith('/') ? configDir : `${configDir}/`
-  return file.startsWith(prefix) ? file.slice(prefix.length) : file
+  const path = relative(configDir, file)
+  if (path === '' || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) return file
+  return path
 }
 
 function siteText(
