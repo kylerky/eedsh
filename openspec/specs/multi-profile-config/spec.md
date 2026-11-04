@@ -5,19 +5,19 @@ Defines how one config declares several named profiles, how the CLI selects betw
 
 ## Requirements
 
-### Requirement: One config declares named profiles with a shared DSH pin
+### Requirement: One config declares named profiles without a DSH value
 
-The authoring surface SHALL accept an exact DSH pin, an optional default profile name, and a record of named profiles. Each key SHALL be a safe profile name and the profile's sole identity. Each profile SHALL accept ordered bundles, ordered layers, and package dependencies. The shared pin SHALL apply to every plan, and records built dynamically from spreads, computed keys, loops, or environment values SHALL be accepted.
+The authoring surface SHALL accept an optional default profile name and a record of named profiles. Each key SHALL be a safe profile name and the profile's sole identity. Each profile SHALL accept ordered bundles, ordered layers, and package dependencies. The config SHALL NOT accept a DSH value or require one. Records built dynamically from spreads, computed keys, loops, or environment values SHALL be accepted.
 
 #### Scenario: Several profiles produce separate plans
 
 - **WHEN** a config declares profiles `work` and `home`
 - **THEN** eedsh produces one profile plan for `work` and one for `home`
 
-#### Scenario: The shared pin is applied to every plan
+#### Scenario: No DSH value is required
 
-- **WHEN** a config declares one DSH pin and two profiles
-- **THEN** both profile plans carry that exact pin
+- **WHEN** a config declares a profile and no DSH value
+- **THEN** the config validates
 
 #### Scenario: The record key is the profile name
 
@@ -29,9 +29,9 @@ The authoring surface SHALL accept an exact DSH pin, an optional default profile
 - **WHEN** a config constructs its profile record with a spread or a computed key
 - **THEN** every resulting key produces a profile with that key as its name
 
-### Requirement: Config-level defects fail the whole config
+### Requirement: Config-level defects fail the whole config before publication
 
-Config-level defects SHALL fail the whole config before any profile is selected or published: an absent or malformed DSH pin, an empty profile record, an unsafe profile key, or a default profile name that is not a key. The failure SHALL be Effect's native schema failure, the command SHALL exit 1, and no profile SHALL be published or booted.
+Config-level defects SHALL fail the whole config before any profile is selected or published: a legacy `dsh` field, an empty profile record, an unsafe profile key, or a default profile name that is not a key. The failure SHALL be Effect's native schema failure, the command SHALL exit 1, and no profile SHALL be published or booted.
 
 #### Scenario: Empty profile record is rejected
 
@@ -49,11 +49,11 @@ Config-level defects SHALL fail the whole config before any profile is selected 
 - **WHEN** `defaultProfile` names a key that is not declared
 - **THEN** the command exits 1 with the native schema failure identifying the default name
 
-#### Scenario: Malformed DSH pin is rejected
+#### Scenario: Legacy DSH value is rejected
 
-- **WHEN** the config's DSH pin is not an exact version
-- **THEN** the command exits 1 with the native schema failure identifying the pin
-
+- **WHEN** a config supplies a `dsh` field or calls the removed `.dsh()` method
+- **THEN** the config does not validate
+- **AND** the diagnostic identifies the unsupported DSH value
 ### Requirement: Profiles validate independently
 
 Each profile plan SHALL be validated independently. An invalid profile SHALL be reported by name with its native schema failure and SHALL NOT prevent a different valid profile from being selected, run, or published. A command that explicitly selects an invalid profile, or that resolves to one by default, SHALL fail with that profile's native failure and exit 1. A plain config export SHALL be validated profile by profile under the same rule.

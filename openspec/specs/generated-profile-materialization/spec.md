@@ -160,7 +160,7 @@ Materialization SHALL write generated artifacts atomically and SHALL publish the
 - **AND** an unchanged materialization of the same generation does not write one
 
 ### Requirement: Preflight validates composition before publication
-Before publication, the system SHALL compose generated patch layers against the selected bundle layers using DSH-compatible patch semantics. It SHALL report unmatched id-targeted patches and SHALL reject malformed patch entries and duplicate ids inserted by the generated layers. A strict operation SHALL treat unmatched targets as failures and SHALL NOT publish.
+Before publication, the system SHALL compose generated patch layers against the selected bundle layers using the composition semantics of the discovered DSH installation. It SHALL report unmatched id-targeted patches and SHALL reject malformed patch entries and duplicate ids inserted by the generated layers. A strict operation SHALL treat unmatched targets as failures and SHALL NOT publish.
 
 #### Scenario: Unmatched override is reported
 - **WHEN** a generated patch targets an id that no selected row provides
@@ -177,6 +177,12 @@ Before publication, the system SHALL compose generated patch layers against the 
 #### Scenario: Malformed patch entry is rejected
 - **WHEN** a patch entry or expression node has a malformed shape
 - **THEN** validation fails before publication
+
+#### Scenario: Composition follows the active installation
+
+- **WHEN** preflight composes the selected bundle layers
+- **THEN** it uses the entry composition provided by the selected DSH installation
+- **AND** a warning emitted by that composition is reported unchanged
 
 ### Requirement: The generation record is observable provenance
 The system SHALL write a generation record containing the format version, generation identifier, plan hash, eedsh and DSH versions, ordered patch-group file names and hashes, managed bundle order, and managed package specifications. It SHALL write the validated plan as canonical JSON inside the generated package at `plans/<generationId>.json`, before the package manifest, so the record's generation identifier locates it and its canonical content hashes to the record's plan hash. It SHALL also maintain `.eedsh/plan.json` as a mirror of the committed plan, written at the publication commit point. The mirror is not authoritative. The generation identifier SHALL change only when the validated plan or its generated artifacts change. A later successful materialization SHALL rewrite a missing or differing mirror.
@@ -298,3 +304,18 @@ Ownership SHALL be determined by the generation record of the last successful pu
 
 - **WHEN** a bundle is absent from the new plan and is added to the manifest before the removal is published
 - **THEN** the pending removal removes it, because the previous record still marks it managed
+
+### Requirement: The generated manifest declares no DSH engine
+
+The generated package manifest SHALL NOT contain an `engines.dsh` field. The generation record SHALL keep the exact discovered DSH version as `dshVersion`. The generated bundle SHALL continue to declare its ordered patch files through `dsh.bundle.patch`.
+
+#### Scenario: Generated manifest has no DSH engine
+
+- **WHEN** a profile is materialized
+- **THEN** its generated package manifest contains no `engines.dsh`
+- **AND** it lists its generated patch files in application order
+
+#### Scenario: Record keeps exact provenance
+
+- **WHEN** a profile is materialized under a discovered DSH
+- **THEN** the generation record's `dshVersion` is that exact version
