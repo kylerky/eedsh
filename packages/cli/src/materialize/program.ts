@@ -277,6 +277,8 @@ export function materialize(
         Option.isSome(existingManifest) &&
         lookup._tag === 'valid' &&
         lookup.record.generationId === generated.generationId &&
+        lookup.record.eedshVersion === generated.generation.eedshVersion &&
+        lookup.record.dshVersion === generated.generation.dshVersion &&
         canonicalJson(existingManifest.value) === canonicalJson(reconciled.manifest) &&
         (yield* authoritativePlanIntact(fs, options.profileDir, generated)) &&
         (yield* planMirrorIntact(fs, options.profileDir, generated))

@@ -37,6 +37,38 @@ describe('generation-record trust', () => {
   })
 })
 
+describe('publication provenance drift', () => {
+  function recordOf(h: ReturnType<typeof harness>): {
+    eedsh: { generationId: string; eedshVersion: string; dshVersion: string }
+  } {
+    return JSON.parse(h.fs.files.get(RECORD_PATH) ?? '{}') as {
+      eedsh: { generationId: string; eedshVersion: string; dshVersion: string }
+    }
+  }
+
+  it('republishes the same generation when the DSH installation changed', async () => {
+    const h = harness()
+    const first = await h.run()
+    const preflights = h.preflight.calls.length
+    h.dsh.setVersion('0.2.1-rc.5')
+
+    const second = await h.run()
+    expect(second.changed).toBe(true)
+    expect(second.generationId).toBe(first.generationId)
+    expect(recordOf(h).eedsh.dshVersion).toBe('0.2.1-rc.5')
+    expect(h.preflight.calls.length).toBe(preflights + 1)
+  })
+
+  it('republishes when the eedsh version changed', async () => {
+    const h = harness()
+    await h.run()
+
+    const second = await h.run({ eedshVersion: '0.0.1' })
+    expect(second.changed).toBe(true)
+    expect(recordOf(h).eedsh.eedshVersion).toBe('0.0.1')
+  })
+})
+
 describe('authoritative plan verification', () => {
   function planFileFor(generationId: string): string {
     return join(PROFILE_DIR, '.eedsh', 'generated', 'plans', `${generationId}.json`)

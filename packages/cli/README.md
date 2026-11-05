@@ -58,6 +58,11 @@ eedsh --help | --version
   publication transaction. An invalid, locked, or failed profile is reported with its
   name and does not stop its valid siblings; the command exits `1` if any selected
   profile failed or was invalid.
+- Sync treats a differing recorded DSH version or eedsh version as a change even
+  when the plan's layers are identical: it republishes the same generation with
+  refreshed provenance and re-runs preflight against the running installation.
+  This is how a manual `eedsh sync` after an upgrade converges without editing
+  `config.ts`.
 - Preflight warnings are raw DSH messages by default, without a group prefix.
   In a multi-profile run each profile gets a header before its warnings and results.
   Raw warnings are followed by a one-line hint pointing at `--explain`.

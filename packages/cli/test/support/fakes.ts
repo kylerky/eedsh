@@ -137,11 +137,14 @@ export function fakePackageManager(
   return { shape, installs }
 }
 
-/** DSH installation with a fixed bundle layer. */
+/** DSH installation with a fixed bundle layer and a changeable version. */
 export function fakeDsh(options: { patches?: Record<string, unknown>[]; version?: string } = {}) {
   const calls: { packageName: string; profileDir: string }[] = []
+  let version = options.version ?? '0.2.1-rc.2'
   const shape: DshInstallationShape = {
-    version: options.version ?? '0.2.1-rc.2',
+    get version() {
+      return version
+    },
     installAnchor: '/dsh/package.json',
     binPath: '/dsh/lib/bin.js',
     resolveBundlePatches: (packageName, profileDir) => {
@@ -149,7 +152,14 @@ export function fakeDsh(options: { patches?: Record<string, unknown>[]; version?
       return Effect.succeed(options.patches ?? [])
     },
   }
-  return { shape, calls }
+  return {
+    shape,
+    calls,
+    /** Publish the next generation against another DSH version. */
+    setVersion: (next: string) => {
+      version = next
+    },
+  }
 }
 
 /** Preflight that succeeds with optional warnings or fails with a tagged error. */
