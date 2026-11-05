@@ -124,11 +124,22 @@ The profile manifest SHALL declare the plan's package dependencies plus the runt
 - **THEN** package installation runs for the profile
 
 ### Requirement: Publication is atomic and idempotent
-Materialization SHALL write generated artifacts atomically and SHALL publish the generation record only after every other artifact is complete. The generated package manifest SHALL remain the commit point. A failed validation, package operation, preflight, plan-mirror write, provenance-sidecar write, or commit write SHALL leave the previously published generation intact and bootable, and SHALL restore the profile manifest, lockfile, plan mirror, and provenance sidecar to their pre-publication bytes. Materializing an unchanged plan with intact artifacts SHALL NOT change generated artifact content or the generation identifier. The unchanged check SHALL verify the authoritative plan; when it is missing or does not match the record's plan hash, materialization SHALL publish with the same generation identifier and restore the plan artifact.
+Materialization SHALL write generated artifacts atomically and SHALL publish the generation record only after every other artifact is complete. The generated package manifest SHALL remain the commit point. A failed validation, package operation, preflight, plan-mirror write, provenance-sidecar write, or commit write SHALL leave the previously published generation intact and bootable, and SHALL restore the profile manifest, lockfile, plan mirror, and provenance sidecar to their pre-publication bytes. Materializing an unchanged plan with intact artifacts SHALL NOT change generated artifact content or the generation identifier. The unchanged check SHALL verify the authoritative plan and the record's `dshVersion` and `eedshVersion`. The plan and layers do not include the running DSH or eedsh version, so when either recorded version differs, materialization SHALL publish with the same generation identifier and refresh the record and its manifest. When the authoritative plan is missing or does not match the record's plan hash, materialization SHALL publish with the same generation identifier and restore the plan artifact.
 
 #### Scenario: Unchanged plan is a no-op
-- **WHEN** the same plan is materialized twice and the authoritative plan and mirror are intact
+- **WHEN** the same plan is materialized twice, the authoritative plan and mirror are intact, and the recorded DSH and eedsh versions match
 - **THEN** no generated artifact content changes and the generation identifier is unchanged
+
+#### Scenario: DSH provenance refresh republishes the same generation
+- **WHEN** the plan is unchanged but the record's `dshVersion` differs from the running installation
+- **THEN** materialization publishes the same generation identifier with the new `dshVersion`
+- **AND** preflight runs against the running installation
+- **AND** the command is not treated as unchanged
+
+#### Scenario: Eedsh provenance refresh republishes the same generation
+- **WHEN** the plan is unchanged but the record's `eedshVersion` differs from the running eedsh
+- **THEN** materialization publishes the same generation identifier with the new `eedshVersion`
+- **AND** the command is not treated as unchanged
 
 #### Scenario: Failure does not publish a partial generation
 - **WHEN** materialization fails after writing some generated files
