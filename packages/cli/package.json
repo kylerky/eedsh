@@ -17,16 +17,17 @@
     "build": "tsdown"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.6",
     "@deepseek-ai/node-addon-system": "0.1.2",
+    "@eedsh/bundle": "workspace:*",
     "@eedsh/config": "workspace:*",
     "@eedsh/plan": "workspace:*",
     "@eedsh/runtime": "workspace:*",
+    "@effect/platform-node": "4.0.6",
     "chokidar": "4.0.3",
     "effect": "4.0.6",
     "js-yaml": "4.3.2",
-    "semver": "7.8.5",
     "koffi": "3.1.1",
+    "semver": "7.8.5",
     "tsx": "4.23.15"
   },
   "devDependencies": {

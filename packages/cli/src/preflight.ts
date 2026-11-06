@@ -6,6 +6,7 @@
  */
 
 import { isAbsolute, relative, sep } from 'node:path'
+import { loadPatchesYaml } from '@eedsh/bundle'
 import {
   type AuthoringSite,
   activeDshBridge,
@@ -16,7 +17,6 @@ import {
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
-import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
 import {
   DshInstallation,
@@ -26,7 +26,6 @@ import {
 } from './internal/effect/services'
 import { readRecord } from './internal/schema-readers'
 import type { GeneratedBundle } from './materialize/generated-bundle'
-import { entryListSchema } from './materialize/yaml-schema'
 
 /** The selected DSH's entry composer. */
 type ComposeEntries = DshBridge['composeEntries']
@@ -345,7 +344,7 @@ export function parseGeneratedLayers(
     const position = index + 1
     const group = `generated #${position}`
     const parsed = Result.try({
-      try: () => yaml.load(file.content, { schema: entryListSchema }),
+      try: () => loadPatchesYaml(file.content),
       catch: (cause) => fail(`cannot parse ${group}: ${String(cause)}`),
     })
     if (Result.isFailure(parsed)) return Result.fail(parsed.failure)

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
+import { emitPatchesYaml, loadPatchesYaml } from '@eedsh/bundle'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { describe, expect, it } from 'vitest'
 import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
 import { classifyGenerationRecord } from '../../src/materialize/generation-record'
-import { emitPatchesYaml } from '../../src/materialize/yaml'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, js, layer, override } from '../support/plan-parts'
 
@@ -211,8 +211,6 @@ describe('generated bundle', () => {
 
 describe('yaml emission', () => {
   it('emits expressions as !!js scalars that survive a DSH patch parse', async () => {
-    const yaml = await import('js-yaml')
-    const { entryListSchema } = await import('../../src/materialize/yaml-schema')
     const text = emitPatchesYaml([
       {
         insert: [
@@ -225,7 +223,7 @@ describe('yaml emission', () => {
       },
     ])
     expect(text).toContain('!!js')
-    const parsed = yaml.load(text, { schema: entryListSchema }) as unknown
+    const parsed = loadPatchesYaml(text)
     expect(parsed).toEqual([
       {
         insert: [
@@ -241,8 +239,6 @@ describe('yaml emission', () => {
 })
 describe('preset expression emission', () => {
   it('emits nested preset child expressions that survive the DSH patch parse', async () => {
-    const yaml = await import('js-yaml')
-    const { entryListSchema } = await import('../../src/materialize/yaml-schema')
     const plan = planOf({
       name: 'work',
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
@@ -274,7 +270,7 @@ describe('preset expression emission', () => {
     const layerFile = result.files.find((file) => file.path.endsWith('.yml'))
     expect(layerFile?.content).toContain('!!js')
     expect(layerFile?.content).not.toContain('$eedsh')
-    const parsed = yaml.load(layerFile?.content ?? '', { schema: entryListSchema }) as unknown
+    const parsed = loadPatchesYaml(layerFile?.content ?? '')
     expect(parsed).toMatchObject([
       {
         insert: [

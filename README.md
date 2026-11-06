@@ -333,6 +333,31 @@ The dependency is materialized as `link:<absolute checkout>` and reconciled as m
 
 If a git remote is unreachable, a sync with an existing checkout and record warns and keeps the recorded commit; without a usable checkout it fails and names the source. `--rebuild` forces every preparation step, while `--no-build` fails naming the source and the commands it would run. The two flags are mutually exclusive.
 
+## Plugin bundle authoring
+
+A plugin can generate its own `cordis.patch.yml` from TypeScript with the `@eedsh/bundle` package instead of hand-writing the layer. The package is a development dependency only: the generated YAML is committed and included in the plugin tarball, so plain DSH can install the plugin without eedsh, and a profile can still override the plugin's rows by id.
+
+```ts
+import { defineBundlePatch, group, js } from '@eedsh/bundle'
+
+export default defineBundlePatch((patch) => {
+  patch
+    .insert({ id: 'my-plugin', name: 'my-plugin' })
+    .insert({
+      id: 'my-plugin-windows',
+      name: 'my-plugin/windows',
+      disabled: js("process.platform !== 'win32'"),
+    })
+    .insert(
+      group('my-plugin-tools', { name: 'cordis:group', isolate: { myPlugin: true } }, [
+        { id: 'my-plugin-tool', name: 'my-plugin/tool' },
+      ]),
+    )
+})
+```
+
+See [Authoring a plugin bundle patch from TypeScript](docs/plugin-bundle-authoring.md) for the build script, package metadata, compatibility rules, and the external `dsh-superagent` migration.
+
 ## How it works
 
 ### The layer model
@@ -390,6 +415,7 @@ Restart-required outcomes are reported, never presented as a hot reload: a chang
 |---|---|
 | `@eedsh/plan` | Shared plan contract: Effect Schema, derived plan types, `validatePlan`/`validateConfigValue`, the multi-profile envelope, and canonical JSON. Imports Effect only through `effect/Schema` and `effect/Result`, and no Node builtins. |
 | `@eedsh/config` | Public typed authoring API: the fluent builder, query handles, layer/value builders, `dshVersion()`, and plan normalization. Synchronous, no Effect runtime, re-exports plan types only, and reads bundles through the CLI-installed capability bridge. |
+| `@eedsh/bundle` | Publishable build-time API for a plugin bundle's Loader patch: typed `insert`/`override`/`disable`/`enable`/`raw`/`group`/`js`, DSH `!!js` YAML emission, and write/check helpers. Self-contained ESM plus declarations; no DSH or eedsh runtime dependency. |
 | `@eedsh/cli` | The `eedsh` command: discovery, config resolution, `init`, tsx evaluation, selection, `check`, materialization, preflight, atomic publication, watch, and `run`. It declares no production DSH/app-boot dependency; app-boot comes from the discovered installation. |
 | `@eedsh/runtime` | Static DSH bundle and plugin that watches the generation record and reloads through DSH HMR. Declares `engines.node` and no `engines.dsh`, probes the HMR capabilities it needs, and warns on version drift. |
 
@@ -397,7 +423,7 @@ Restart-required outcomes are reported, never presented as a hot reload: a chang
 
 Effect `4.0.6` is pinned in `@eedsh/plan`, `@eedsh/config`, and `@eedsh/cli`. The plan package owns the schema and validation; the config package composes authoring primitives and may import Effect only through `effect/Schema` and `effect/Result`. The CLI takes its command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`, and runs one Effect program per invocation with tagged failures plus the core `FileSystem` and `ChildProcessSpawner` services. `@eedsh/runtime` stays a plain Cordis plugin, and `defineConfig().build()` stays synchronous because a config module exports data.
 
-Within the CLI, external contracts are decoded with `effect/Schema`, domain absence is `Option`, and expected failures are `Result` or Effect failures; only adapters and the Effect-free runtime use exceptions. `test/architecture.test.ts` enforces the boundaries: plan imports only `effect/Schema`/`effect/Result` and no Node builtins; plan accepts version 2 only; config re-exports plan types only; CLI/config declare no production DSH dependency and contain no static DSH import; generated/runtime manifests omit `engines.dsh`; the same exact Effect version is used; no separate `@effect/cli`, `@effect/platform`, or `@effect/printer*` packages exist; runtime does not import Effect or the TypeScript toolchain.
+Within the CLI, external contracts are decoded with `effect/Schema`, domain absence is `Option`, and expected failures are `Result` or Effect failures; only adapters and the Effect-free runtime use exceptions. `@eedsh/bundle` is self-contained and Effect-free so a plugin repository can install it without this workspace. `test/architecture.test.ts` enforces the boundaries: plan imports only `effect/Schema`/`effect/Result` and no Node builtins; plan accepts version 2 only; config re-exports plan types only; CLI/config declare no production DSH dependency and contain no static DSH import; bundle declares no Effect, DSH, or private `@eedsh/*` dependency; generated/runtime manifests omit `engines.dsh`; the same exact Effect version is used; no separate `@effect/cli`, `@effect/platform`, or `@effect/printer*` packages exist; runtime does not import Effect or the TypeScript toolchain.
 
 ## Build from source
 
@@ -418,7 +444,7 @@ node packages/cli/lib/bin.js sync
 
 ## Development
 
-Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` typechecks; Vitest tests. The root pins `typescript@7.1.0-beta` and `tsdown@0.23.2`; package builds emit declarations with the native TypeScript Go generator and fail without that compiler API. The root `tsconfig.json` adds `noEmit`, `@eedsh/*` path mappings, and the full include set, so `pnpm typecheck` fails on a type error anywhere, including config fixtures. Each package builds with `tsdown` to one bundled ESM entry under `lib/`: config, plan, and runtime emit `lib/index.js` with declarations and maps; CLI emits only `lib/bin.js`. Dependencies and workspace packages stay external; relative imports in package sources and tests are extensionless.
+Biome 2.x formats, lints, and organizes imports; `tsc --noEmit` typechecks; Vitest tests. The root pins `typescript@7.1.0-beta` and `tsdown@0.23.2`; package builds emit declarations with the native TypeScript Go generator and fail without that compiler API. The root `tsconfig.json` adds `noEmit`, `@eedsh/*` path mappings, and the full include set, so `pnpm typecheck` fails on a type error anywhere, including config fixtures. Each package builds with `tsdown` to one bundled ESM entry under `lib/`: config, plan, bundle, and runtime emit `lib/index.js` with declarations and maps; CLI emits only `lib/bin.js`. Dependencies and workspace packages stay external; relative imports in package sources and tests are extensionless.
 
 ```sh
 pnpm format          # biome format --write .
@@ -442,6 +468,7 @@ CI runs `pnpm verify` on Node 26 only.
 ```
 packages/plan     @eedsh/plan
 packages/config   @eedsh/config
+packages/bundle   @eedsh/bundle (publish-ready build-time plugin bundle API)
 packages/cli      @eedsh/cli (bin: eedsh)
 packages/runtime  @eedsh/runtime (DSH bundle + HMR watcher)
 test/             workspace smoke, architecture, and (slow) integration tests

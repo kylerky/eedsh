@@ -1,0 +1,35 @@
+{
+  "name": "@eedsh/bundle",
+  "version": "0.1.0",
+  "description": "Build-time TypeScript authoring and YAML emission for a DSH plugin bundle's cordis.patch.yml",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "4.0.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

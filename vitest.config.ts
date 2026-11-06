@@ -13,6 +13,10 @@ export default defineConfig({
         ),
       },
       {
+        find: '@eedsh/bundle',
+        replacement: fileURLToPath(new URL('packages/bundle/src/index.ts', import.meta.url)),
+      },
+      {
         find: '@eedsh/config',
         replacement: fileURLToPath(new URL('packages/config/src/index.ts', import.meta.url)),
       },
