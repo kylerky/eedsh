@@ -7,7 +7,7 @@ generation through DSH's HMR service. It has no Effect dependency and imports on
 Node builtins at runtime.
 
 ```
-cordis.patch.yml            inserts the '@eedsh/runtime' row
+cordis.patch.yml            generated from src/cordis.ts; inserts the '@eedsh/runtime' row
 lib/index.js                the bundled Cordis plugin (exports name + apply) and startup
 lib/installation-anchor.js  the shared anchor path, format, and validation helpers
 ```
@@ -19,7 +19,10 @@ source modules directly. The `./installation-anchor` subpath export is the
 Node-only helper the CLI shares for the anchor record; it contains no Effect and
 no DSH import.
 
-`dsh.bundle.patch` points at `./cordis.patch.yml`. The package declares
+`cordis.patch.yml` is generated from `src/cordis.ts` with `@eedsh/bundle` and
+committed. `pnpm --filter @eedsh/runtime bundle:write` regenerates it;
+`pnpm --filter @eedsh/runtime bundle:check` verifies it, and the package test
+also fails on drift. `dsh.bundle.patch` points at `./cordis.patch.yml`. The package declares
 `engines.node` and no `engines.dsh`: DSH does not gate eedsh bundles by version,
 and eedsh's CLI and doctor enforce the supported range instead. The materializer places this bundle
 immediately before `@eedsh/generated` so it survives every regeneration; it is never

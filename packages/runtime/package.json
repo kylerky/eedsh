@@ -21,7 +21,9 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsdown"
+    "build": "tsdown",
+    "bundle:check": "node scripts/bundle.ts --check",
+    "bundle:write": "node scripts/bundle.ts"
   },
   "engines": {
     "node": ">=26"
@@ -33,6 +35,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-hmr": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-hmr": "0.2.1-rc.2",
+    "@eedsh/bundle": "workspace:*"
   }
 }
