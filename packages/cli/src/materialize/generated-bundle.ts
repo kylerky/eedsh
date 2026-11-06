@@ -5,13 +5,13 @@
  * @module @eedsh/cli/materialize/generated-bundle
  */
 import { dirname, join } from 'node:path'
+import { emitPatchesYaml } from '@eedsh/bundle'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import { writeFileAtomic } from '../internal/atomic-write'
 import { sha256 } from '../internal/sha256'
-import { emitPatchesYaml } from './yaml'
 
 /** The generated bundle's package name. */
 export const GENERATED_PACKAGE_NAME = '@eedsh/generated'

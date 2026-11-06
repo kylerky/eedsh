@@ -246,7 +246,7 @@ describe('preflight composition', () => {
     expect(Result.isFailure(failed)).toBe(true)
     if (Result.isFailure(failed)) {
       expect(failed.failure._tag).toBe('PreflightFailure')
-      expect(failed.failure.message).toContain('must be a top-level YAML array')
+      expect(failed.failure.message).toContain('top-level YAML array')
     }
   })
 
