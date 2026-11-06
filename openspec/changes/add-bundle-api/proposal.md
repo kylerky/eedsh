@@ -8,11 +8,11 @@ A published build-time package is the delivery vehicle: a plugin repository adds
 
 - Add a new publishable package `@eedsh/bundle` with a synchronous build-time API for one bundle's Loader patch layer: `defineBundlePatch`, a patch builder (`insert`, `override`, `disable`, `enable`, `raw`), `group`, `js`, and `emitBundlePatch`/`writeBundlePatch`/`checkBundlePatch`.
 - Emit DSH-native YAML: a top-level patch array, group/isolate entries, and `!!js` expressions through the vendored Loader schema. Output SHALL be deterministic, self-describing, free of `$eedsh` nodes and generator versions, and safe to commit.
-- Publish the package to npm as ESM with TypeScript declarations: runtime dependency on `js-yaml` only; no DSH, `@eedsh/*` private package, Effect, or Node-26-only API; Node >=22.19; MIT.
+- Prepare the package for publication as ESM with TypeScript declarations: runtime dependency on `js-yaml` only; no DSH, `@eedsh/*` private package, Effect, or Node-26-only API; Node >=22.19; MIT. The repository owner performs the final npm publication.
 - Reuse the package's emitter from the eedsh CLI so profile generation and plugin bundles share one YAML dialect.
 - Define and test the compatibility contract: the generated plugin keeps a standard `dsh.bundle.patch` field, ships the committed YAML in `files`, adds no eedsh manifest fields or runtime dependency, and loads under plain DSH without eedsh.
 - Dogfood the package in `@eedsh/runtime` and add a representative fixture covering rows, groups/isolate, presets, and `!!js`. Document the external `dsh-superagent` migration; do not modify that repository here.
-- Add a release path: `private: false`, `publishConfig.access: public`, a first `0.1.0` publication, and a clean-install check from the registry.
+- Add a publish-ready release path: `private: false`, `publishConfig.access: public`, version `0.1.0`, `pnpm pack` content checks, and a clean-install check from the packed tarball. The repository owner publishes it.
 
 Out of scope:
 
@@ -21,6 +21,7 @@ Out of scope:
 - Changing DSH, the profile plan format, or the generated profile layout.
 - Migrating the external `dsh-superagent` repository or publishing on its behalf.
 - Any UI, profile behavior, or CLI command surface beyond the emitter reuse.
+- Performing the final npm publication; the implementation stops at a publish-ready handoff and the repository owner publishes it.
 
 ## Capabilities
 
@@ -39,5 +40,5 @@ None.
 - New package `packages/bundle` and its build, tests, README, and package metadata.
 - `packages/cli`: the patch YAML emitter moves to (or delegates to) the new package; generated profile output and existing tests must not change semantically.
 - `packages/runtime`: its `cordis.patch.yml` becomes a generated, committed artifact.
-- Root README, architecture documentation, and CI/release workflow; npm `@eedsh` scope and publication credentials are release prerequisites.
+- Root README, architecture documentation, and CI/release workflow; the repository owner's npm `@eedsh` scope and credentials are needed for the final publication, not for this implementation.
 - No DSH change, no profile plan change, and no runtime dependency for plugin consumers.

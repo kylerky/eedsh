@@ -49,7 +49,7 @@ The package SHALL provide a write operation that writes exactly the emitted byte
 
 ### Requirement: Invalid patch data fails before writing
 
-The package SHALL reject invalid patch shapes with an actionable diagnostic: a non-array `insert`, an inserted entry without a `name` or `group: true`, a targeted patch without a non-empty `id`, a non-string `name`, a `group`/`disabled` value that is neither boolean nor null, or a malformed expression node. It SHALL NOT attempt composition or semantic validation that requires a bundle stack or a running DSH.
+The package SHALL reject invalid patch shapes with an actionable diagnostic: a non-array `insert`, an inserted entry without a `name` or `group: true`, a targeted patch without a non-empty `id`, a non-string `name`, a `group`/`disabled` value that is not boolean, null, or a valid expression node, or a malformed expression node. It SHALL NOT attempt composition or semantic validation that requires a bundle stack or a running DSH.
 
 #### Scenario: Invalid insert is rejected
 

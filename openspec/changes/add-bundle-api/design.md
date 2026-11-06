@@ -67,11 +67,11 @@ The plugin package must keep `dsh.bundle.patch` as its only composition declarat
 
 Alternatives: allow an eedsh-only optional generator field (would let eedsh improve the plugin but breaks the promise that plain DSH sees the same artifact); evaluate the definition inside eedsh sync (rejected: the plugin would no longer be portable and the CLI would execute third-party code).
 
-### 8. Release under the eedsh scope with an explicit release gate
+### 8. Leave the package publish-ready under the eedsh scope
 
-The package is `@eedsh/bundle`, version `0.1.0`, MIT (the repository now has an MIT LICENSE), `type: module`, Node `>=22.19`, and `publishConfig.access: public`. The first release is manual from an authenticated account that owns the scope; the task stops before publishing if authentication or scope ownership is missing. CI may automate later, but the first release is a deliberate human gate. The package version is independent of the eedsh CLI version, and the generated YAML never embeds it.
+The package is `@eedsh/bundle`, version `0.1.0`, MIT (the repository now has an MIT LICENSE), `type: module`, Node `>=22.19`, and `publishConfig.access: public`. The implementation stages, packs, and verifies the artifact but never runs `npm publish`; the repository owner performs the final publication from the owned `@eedsh` scope. The package version is independent of the eedsh CLI version, and the generated YAML never embeds it.
 
-Alternatives: publish immediately from CI without checking the scope (risks a failed or wrong-scope publication); reuse the CLI's version (couples unrelated release cadences); publish under another scope (loses the eedsh identity).
+Alternatives: run the publication from the implementation (the user explicitly reserved the final publication for themselves); publish immediately from CI without an ownership check (risks a failed or wrong-scope publication); reuse the CLI's version (couples unrelated release cadences); publish under another scope (loses the eedsh identity).
 
 ### 9. Dogfood in-repo and document the external migration
 
@@ -81,7 +81,7 @@ Alternatives: require the external migration in this change (cross-repository co
 
 ## Risks / Trade-offs
 
-- [The npm scope or credentials are unavailable] → The release task verifies `npm whoami` and scope ownership before publishing; it stops and reports rather than publishing under another name. The implementation can still land and be consumed by a local link until the release gate is cleared.
+- [The repository owner has not published the package yet] → The implementation verifies the packed tarball, metadata, and a clean install, and hands off; the owner publishes from the owned scope. It never runs `npm publish` and never publishes under another name.
 - [The public API becomes a compatibility surface] → Keep the surface to the patch layer, release at `0.x`, and treat additive changes as minor and behavior/removal changes as major; the package contract is covered by specs and tests.
 - [Patch validation drifts from the eedsh plan schema] → The CLI continues to validate profiles with `@eedsh/plan`; the public package owns only the structural patch subset, and tests pin the shared insertion/group/expression rules. The CLI uses the same emitter, so bytes cannot drift between profile and plugin layers.
 - [Hand-written YAML comments are lost] → The TypeScript definition carries the rationale and the generated file has a short header pointing at it; if comment preservation becomes important, a later additive `comment()` API can emit comments without changing existing output.
@@ -95,7 +95,7 @@ Alternatives: require the external migration in this change (cross-repository co
 1. Land and release `@eedsh/bundle`; keep the existing `@eedsh/runtime` hand-written patch until the package is installed and green.
 2. Switch the CLI's patch emitter to the package's emitter and keep the generated profile output semantically unchanged; run the existing materialization tests.
 3. Generate `packages/runtime/cordis.patch.yml` from a TypeScript definition commit the artifact and its check.
-4. Publish `0.1.0` and verify a clean external install.
+4. Verify the packed `0.1.0` artifact and a clean external install; hand publication to the repository owner.
 5. Migrate `dsh-superagent` in its own repository (documented here, not changed here): replace the hand-written patch with a definition, commit the generated file, and run its existing DSH-loader test plus the new drift check.
 
 Rollback: keep the hand-written patch files in history; reverting the generation commit restores them. The package is a dev dependency only, so removing it never affects a published plugin's runtime.

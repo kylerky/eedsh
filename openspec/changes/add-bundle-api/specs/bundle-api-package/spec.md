@@ -38,16 +38,18 @@ The package manifest SHALL NOT declare `dsh.bundle` or otherwise advertise itsel
 - **WHEN** a profile declares the package as an ordinary dependency
 - **THEN** no bundle patch is loaded and no row is added by the package
 
-### Requirement: The release is versioned and independent of the eedsh CLI
+### Requirement: The package is publish-ready and independent of the eedsh CLI
 
-The package SHALL be released from this repository under its own semantic version, beginning at `0.1.0`, with `publishConfig.access` set to `public` and a license compatible with redistribution. The emitted YAML SHALL NOT embed the package version, so upgrading the package SHALL NOT change output unless the definition or emitter behavior changes.
+The package SHALL be prepared for release from this repository under its own semantic version, beginning at `0.1.0`, with `publishConfig.access` set to `public` and a license compatible with redistribution. The emitted YAML SHALL NOT embed the package version, so upgrading the package SHALL NOT change output unless the definition or emitter behavior changes.
 
 #### Scenario: A patch release leaves an unchanged definition byte-identical
 
 - **WHEN** a definition is emitted before and after a package patch release
 - **THEN** the two outputs are byte-identical
 
-#### Scenario: Publishing requires an authenticated scope owner
+#### Scenario: The release is handed off publish-ready
 
-- **WHEN** the release job cannot authenticate to npm as an owner of the package scope
-- **THEN** the release stops before publishing and names the missing credential or scope
+- **WHEN** the implementation completes the release preparation
+- **THEN** `pnpm pack` produces the declared files and a clean project installs the tarball, typechecks a consumer, and emits a patch
+- **AND** the manifest identifies `@eedsh/bundle` `0.1.0` with public access
+- **AND** the repository owner performs the final npm publication
