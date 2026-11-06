@@ -335,7 +335,7 @@ If a git remote is unreachable, a sync with an existing checkout and record warn
 
 ## Plugin bundle authoring
 
-A plugin can generate its own `cordis.patch.yml` from TypeScript with the published `@eedsh/bundle` package instead of hand-writing the layer. The package is a development dependency only: the generated YAML is committed and included in the plugin tarball, so plain DSH can install the plugin without eedsh, and a profile can still override the plugin's rows by id.
+A plugin can generate its own `cordis.patch.yml` from TypeScript with the `@eedsh/bundle` package instead of hand-writing the layer. The package is a development dependency only: the generated YAML is committed and included in the plugin tarball, so plain DSH can install the plugin without eedsh, and a profile can still override the plugin's rows by id.
 
 ```ts
 import { defineBundlePatch, group, js } from '@eedsh/bundle'
@@ -415,7 +415,7 @@ Restart-required outcomes are reported, never presented as a hot reload: a chang
 |---|---|
 | `@eedsh/plan` | Shared plan contract: Effect Schema, derived plan types, `validatePlan`/`validateConfigValue`, the multi-profile envelope, and canonical JSON. Imports Effect only through `effect/Schema` and `effect/Result`, and no Node builtins. |
 | `@eedsh/config` | Public typed authoring API: the fluent builder, query handles, layer/value builders, `dshVersion()`, and plan normalization. Synchronous, no Effect runtime, re-exports plan types only, and reads bundles through the CLI-installed capability bridge. |
-| `@eedsh/bundle` | Published build-time API for a plugin bundle's Loader patch: typed `insert`/`override`/`disable`/`enable`/`raw`/`group`/`js`, DSH `!!js` YAML emission, and write/check helpers. Self-contained ESM plus declarations; no DSH or eedsh runtime dependency. |
+| `@eedsh/bundle` | Publishable build-time API for a plugin bundle's Loader patch: typed `insert`/`override`/`disable`/`enable`/`raw`/`group`/`js`, DSH `!!js` YAML emission, and write/check helpers. Self-contained ESM plus declarations; no DSH or eedsh runtime dependency. |
 | `@eedsh/cli` | The `eedsh` command: discovery, config resolution, `init`, tsx evaluation, selection, `check`, materialization, preflight, atomic publication, watch, and `run`. It declares no production DSH/app-boot dependency; app-boot comes from the discovered installation. |
 | `@eedsh/runtime` | Static DSH bundle and plugin that watches the generation record and reloads through DSH HMR. Declares `engines.node` and no `engines.dsh`, probes the HMR capabilities it needs, and warns on version drift. |
 
@@ -468,7 +468,7 @@ CI runs `pnpm verify` on Node 26 only.
 ```
 packages/plan     @eedsh/plan
 packages/config   @eedsh/config
-packages/bundle   @eedsh/bundle (published build-time plugin bundle API)
+packages/bundle   @eedsh/bundle (publish-ready build-time plugin bundle API)
 packages/cli      @eedsh/cli (bin: eedsh)
 packages/runtime  @eedsh/runtime (DSH bundle + HMR watcher)
 test/             workspace smoke, architecture, and (slow) integration tests

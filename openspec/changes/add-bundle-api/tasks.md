@@ -54,5 +54,5 @@
 
 ## 9. Verification and archive
 
-- [ ] 9.1 Run `pnpm verify`, the external DSH matrix, and `openspec validate add-bundle-api --strict`; fix actionable failures.
-- [ ] 9.2 Mark completed tasks, archive `add-bundle-api` only after 8.2 and 8.3 pass, and verify `openspec status --change add-bundle-api` reports all artifacts complete.
+- [x] 9.1 Run `pnpm verify`, the external DSH matrix, and `openspec validate add-bundle-api --strict`; fix actionable failures.
+- [ ] 9.2 After this change is merged and the repository owner publishes `@eedsh/bundle`, archive `add-bundle-api` and verify `openspec status --change add-bundle-api` reports all artifacts complete.
