@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const packages = ['plan', 'config', 'cli', 'runtime'] as const
+const packages = ['plan', 'config', 'bundle', 'cli', 'runtime'] as const
 
 type PackageName = (typeof packages)[number]
 
@@ -275,6 +275,33 @@ describe('package boundaries', () => {
         dependency,
       )
     }
+  })
+
+  it('keeps @eedsh/bundle self-contained and publishable', () => {
+    const bundle = manifest('bundle')
+    expect(bundle.name).toBe('@eedsh/bundle')
+    expect(bundle.private).toBeUndefined()
+    expect(bundle.publishConfig?.access).toBe('public')
+    expect(bundle.dsh).toBeUndefined()
+    expect(bundle.engines?.node).toBeDefined()
+    expect(Object.keys(bundle.dependencies ?? {}).sort()).toEqual(['js-yaml'])
+    for (const dependency of dependencyNames('bundle')) {
+      expect(dependency.startsWith('@deepseek-ai/'), dependency).toBe(false)
+      expect(dependency.startsWith('@eedsh/'), dependency).toBe(false)
+    }
+    const effect = offendingImports(
+      'bundle',
+      (specifier) => specifier === 'effect' || specifier.startsWith('effect/'),
+    )
+    expect(effect, '@eedsh/bundle must stay Effect-free').toEqual([])
+    const privateImports = offendingImports('bundle', (specifier) =>
+      specifier.startsWith('@eedsh/'),
+    )
+    expect(privateImports, '@eedsh/bundle must not import a private eedsh package').toEqual([])
+    const dshImports = offendingImports('bundle', (specifier) =>
+      specifier.startsWith('@deepseek-ai/'),
+    )
+    expect(dshImports, '@eedsh/bundle must not import DSH').toEqual([])
   })
 
   it('rejects new expected-failure exception control flow', () => {
