@@ -15,8 +15,8 @@ import { selectSyncProfiles } from '../selection'
 import { watchConfigDirectory } from '../watch'
 import type { CliService, CommandRuntime } from './context'
 import { type ProvisioningMode, serviceLayerFor, syncProgram } from './materialize'
-import { describeError, printResult, report } from './report'
 import { loadConfigValue, reportProfileFailure, reportProfileSyncFailure } from './prepare'
+import { describeError, printResult, report } from './report'
 
 /** A stop signal from an injected `AbortSignal`, SIGINT, or SIGTERM. */
 export function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {

@@ -5,11 +5,12 @@
  * root and every command adapter share these types instead of redeclaring them.
  * @module @eedsh/cli/command/context
  */
-import * as NodeServices from '@effect/platform-node/NodeServices'
+
 import type { ConfigProvenance, DshBridge } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
-import { Layer } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import type { Effect } from 'effect'
+import { Layer } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as Option from 'effect/Option'
 import type { ChildProcessSpawner } from 'effect/process'
@@ -18,6 +19,8 @@ import type { CommandRunner } from '../command-runner'
 import type { ConfigLoadFailure, LoadedConfig } from '../config'
 import type { DiscoveredDshInstallation } from '../dsh'
 import type { BootstrapInput, BootstrappedDsh } from '../dsh-bootstrap'
+import type { InitService } from '../init'
+import type { InstallationAnchorStore } from '../installation-anchor'
 import type { DshFailure, DshResolveFailure } from '../internal/effect/errors'
 import { liveServiceLayerFor } from '../internal/effect/layer'
 import type {
@@ -26,8 +29,6 @@ import type {
   PreflightShape,
   SyncLockShape,
 } from '../internal/effect/services'
-import type { InitService } from '../init'
-import type { InstallationAnchorStore } from '../installation-anchor'
 import { preflightLayer } from '../preflight'
 import type { SpawnLike } from '../spawn'
 import type { WatchSession } from '../watch'
