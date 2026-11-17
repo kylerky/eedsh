@@ -375,10 +375,15 @@ describe('installation anchor boundaries', () => {
 
   it('imports the bootstrap only from the setup command path', () => {
     const importers = sourceImports('cli')
-      .filter(({ specifier }) => specifier === './dsh-bootstrap')
+      .filter(
+        ({ specifier }) => specifier === './dsh-bootstrap' || specifier === '../dsh-bootstrap',
+      )
       .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
+    // `context.ts` names the injected bootstrap seam's types; `prepare.ts` is
+    // the setup path that calls it.
     expect(importers, 'only the sync/run setup path may import the bootstrap').toEqual([
-      'packages/cli/src/cli.ts',
+      'packages/cli/src/command/context.ts',
+      'packages/cli/src/command/prepare.ts',
     ])
   })
 
