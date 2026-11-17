@@ -16,24 +16,31 @@ import { EXIT_FAILURE, EXIT_USAGE } from '../../exit'
 import { defaultInstallationAnchorStore } from '../../installation-anchor'
 import { resolveDshHome } from '../../internal/dsh-home'
 import { selectProfile } from '../../selection'
+import { configFlag, dshFlag, doctorStrictFlag, profileFlag } from '../../surface'
 import type { CommandRuntime } from '../context'
+import type { Parsed } from '../options'
 import { loadConfigValue, profileDirForName, resolveConfigPath, selectionFailure } from '../prepare'
 
-export interface DoctorCommandInput {
-  configPath: Option.Option<string>
-  profile: Option.Option<string>
-  dsh: Option.Option<string>
-  strict: boolean
+/** The `eedsh doctor` flag record. */
+export const doctorOptions = {
+  config: configFlag,
+  profile: profileFlag,
+  dsh: dshFlag,
+  strict: doctorStrictFlag,
 }
+
+/** The parsed input for {@link runDoctorCommand}. */
+export type DoctorInput = Parsed<typeof doctorOptions>
 
 /** Inspect one published profile and print its findings. */
 export function runDoctorCommand(
-  input: DoctorCommandInput,
+  input: DoctorInput,
   runtime: CommandRuntime,
 ): Effect.Effect<number, ConfigLoadFailure, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
-    if (Option.isSome(input.profile) && Option.isSome(input.configPath)) {
+    const requestedConfig = input.config
+    if (Option.isSome(input.profile) && Option.isSome(requestedConfig)) {
       runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
@@ -65,7 +72,7 @@ export function runDoctorCommand(
       }
       profileName = input.profile.value
     } else {
-      const configPath = resolveConfigPath(input.configPath, runtime)
+      const configPath = resolveConfigPath(requestedConfig, runtime)
       if (Option.isNone(configPath)) return EXIT_FAILURE
       const loaded = yield* loadConfigValue(configPath.value, runtime)
       const selection = selectProfile(loaded.config, Option.none())

@@ -11,27 +11,33 @@ import * as Option from 'effect/Option'
 import { EXIT_FAILURE, EXIT_OK } from '../../exit'
 import { runReplLoop } from '../../repl/prompt'
 import { ReplSession } from '../../repl/session'
+import { configFlag, dshFlag, evalFlag, profileFlag, replSyncFlag } from '../../surface'
 import type { CommandRuntime } from '../context'
 import { NO_PROVISIONING_MODE, serviceLayerFor, syncProgram } from '../materialize'
+import type { Parsed } from '../options'
 import { requireDsh, resolveConfigPath } from '../prepare'
 import { report } from '../report'
 
-export interface ReplCommandInput {
-  configPath: Option.Option<string>
-  profile: Option.Option<string>
-  dsh: Option.Option<string>
-  sync: boolean
-  eval: Option.Option<string>
+/** The `eedsh repl` flag record. */
+export const replOptions = {
+  config: configFlag,
+  profile: profileFlag,
+  dsh: dshFlag,
+  sync: replSyncFlag,
+  eval: evalFlag,
 }
+
+/** The parsed input for {@link runReplCommand}. */
+export type ReplInput = Parsed<typeof replOptions>
 
 /** Open the config REPL, or evaluate one expression with --eval. */
 export function runReplCommand(
-  input: ReplCommandInput,
+  input: ReplInput,
   runtime: CommandRuntime,
 ): Effect.Effect<number, unknown> {
   return Effect.gen(function* () {
     runtime.setFailureContext(undefined)
-    const configPath = resolveConfigPath(input.configPath, runtime)
+    const configPath = resolveConfigPath(input.config, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const installation = yield* requireDsh(runtime, input.dsh)
     const profile = Option.getOrUndefined(input.profile)

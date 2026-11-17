@@ -10,9 +10,11 @@ import type { ConfigLoadFailure } from '../../config'
 import { EXIT_FAILURE } from '../../exit'
 import type { DshFailure, MaterializeError, SpawnFailure } from '../../internal/effect/errors'
 import { selectProfile } from '../../selection'
+import { configFlag, dshFlag, noSyncFlag, runProfileFlag } from '../../surface'
 import { runBoot } from '../boot'
 import type { CommandContext, CommandRuntime } from '../context'
 import { NO_PROVISIONING_MODE, syncOnce } from '../materialize'
+import type { Parsed } from '../options'
 import {
   loadConfigValue,
   reportProfileFailure,
@@ -22,21 +24,25 @@ import {
 } from '../prepare'
 import { printResult } from '../report'
 
-export interface RunCommandInput {
-  configPath: Option.Option<string>
-  profile: Option.Option<string>
-  dsh: Option.Option<string>
-  noSync: boolean
-  dshArgs: readonly string[]
+/** The `eedsh run` flag record. */
+export const runOptions = {
+  config: configFlag,
+  profile: runProfileFlag,
+  dsh: dshFlag,
+  noSync: noSyncFlag,
 }
 
+/** The parsed input for {@link runRunCommand}; `dshArgs` comes from `--`. */
+export type RunInput = Parsed<typeof runOptions> & { dshArgs: readonly string[] }
+
 export function runRunCommand(
-  input: RunCommandInput,
+  input: RunInput,
   runtime: CommandRuntime,
 ): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure | SpawnFailure> {
   return Effect.gen(function* () {
     runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
-    const configPath = resolveConfigPath(input.configPath, runtime)
+    const requestedConfig = input.config
+    const configPath = resolveConfigPath(requestedConfig, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: !input.noSync })
     const loaded = yield* loadConfigValue(configPath.value, runtime)

@@ -10,8 +10,20 @@ import type { ConfigLoadFailure } from '../../config'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from '../../exit'
 import type { DshFailure, MaterializeError } from '../../internal/effect/errors'
 import { selectSyncProfiles } from '../../selection'
+import {
+  adoptOwnershipFlag,
+  configFlag,
+  dshFlag,
+  explainFlag,
+  noBuildFlag,
+  rebuildFlag,
+  strictFlag,
+  syncProfileFlag,
+  watchFlag,
+} from '../../surface'
 import type { CommandContext, CommandRuntime } from '../context'
 import { type ProvisioningMode, syncOnce } from '../materialize'
+import type { Parsed } from '../options'
 import {
   loadConfigValue,
   reportProfileFailure,
@@ -23,20 +35,24 @@ import {
 import { printResult } from '../report'
 import { syncWatch, type WatchContext } from '../watch'
 
-export interface SyncCommandInput {
-  configPath: Option.Option<string>
-  profile: Option.Option<string>
-  dsh: Option.Option<string>
-  strict: boolean
-  watch: boolean
-  explain: boolean
-  adoptOwnership: boolean
-  rebuild: boolean
-  noBuild: boolean
+/** The `eedsh sync` flag record. */
+export const syncOptions = {
+  config: configFlag,
+  profile: syncProfileFlag,
+  dsh: dshFlag,
+  strict: strictFlag,
+  watch: watchFlag,
+  explain: explainFlag,
+  adoptOwnership: adoptOwnershipFlag,
+  rebuild: rebuildFlag,
+  noBuild: noBuildFlag,
 }
 
+/** The parsed input for {@link runSyncCommand}. */
+export type SyncInput = Parsed<typeof syncOptions>
+
 export function runSyncCommand(
-  input: SyncCommandInput,
+  input: SyncInput,
   runtime: CommandRuntime,
 ): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure> {
   return Effect.gen(function* () {
@@ -49,7 +65,8 @@ export function runSyncCommand(
       rebuild: input.rebuild,
       noBuild: input.noBuild,
     }
-    const configPath = resolveConfigPath(input.configPath, runtime)
+    const requestedConfig = input.config
+    const configPath = resolveConfigPath(requestedConfig, runtime)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
     const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: true })

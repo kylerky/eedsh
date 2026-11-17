@@ -9,13 +9,13 @@
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit } from 'effect'
 import * as Console from 'effect/Console'
-import { CliError, Command, Flag } from 'effect/cli'
-import { runCheckCommand } from './command/adapters/check'
-import { runDoctorCommand } from './command/adapters/doctor'
-import { runInitCommand } from './command/adapters/init'
-import { runReplCommand } from './command/adapters/repl'
-import { runRunCommand } from './command/adapters/run'
-import { runSyncCommand } from './command/adapters/sync'
+import { CliError, Command } from 'effect/cli'
+import { checkOptions, runCheckCommand } from './command/adapters/check'
+import { doctorOptions, runDoctorCommand } from './command/adapters/doctor'
+import { initOptions, runInitCommand } from './command/adapters/init'
+import { replOptions, runReplCommand } from './command/adapters/repl'
+import { runOptions, runRunCommand } from './command/adapters/run'
+import { runSyncCommand, syncOptions } from './command/adapters/sync'
 import type { CliRunOptions, CommandRuntime, FailureContext } from './command/context'
 import { cliConsole, report, reportSyncError } from './command/report'
 import { cliVersion } from './command/version'
@@ -76,203 +76,56 @@ export async function runEedsh(
   // here; failures flow through the single Exit boundary below.
   let exitCode: number = EXIT_OK
 
-  const configFlag = Flag.String('config').pipe(
-    Flag.withDescription('config file to load (default: $XDG_CONFIG_HOME/eedsh/config.ts)'),
-    Flag.optional,
-  )
-  const dshFlag = Flag.String('dsh').pipe(
-    Flag.withDescription(
-      'DSH installation package directory or package.json (default: EEDSH_DSH_ANCHOR, PATH, then a project-local package)',
-    ),
-    Flag.optional,
-  )
-  const strictFlag = Flag.Boolean('strict').pipe(
-    Flag.withDescription('treat preflight warnings as failures'),
-    Flag.withDefault(false),
-  )
-  const watchFlag = Flag.Boolean('watch').pipe(
-    Flag.withDescription('re-run sync when files in the config directory change'),
-    Flag.withDefault(false),
-  )
-  const explainFlag = Flag.Boolean('explain').pipe(
-    Flag.withDescription('attribute preflight warnings to their source layer'),
-    Flag.withDefault(false),
-  )
-  const noSyncFlag = Flag.Boolean('no-sync').pipe(
-    Flag.withDescription('skip publication and boot the last published generation'),
-    Flag.withDefault(false),
-  )
-  const noInstallFlag = Flag.Boolean('no-install').pipe(
-    Flag.withDescription('write the config project without running pnpm install'),
-    Flag.withDefault(false),
-  )
-  const adoptOwnershipFlag = Flag.Boolean('adopt-ownership').pipe(
-    Flag.withDescription(
-      're-baseline ownership from the current manifest when the generation record is unreadable',
-    ),
-    Flag.withDefault(false),
-  )
-  const rebuildFlag = Flag.Boolean('rebuild').pipe(
-    Flag.withDescription('run every source preparation step even when the source is unchanged'),
-    Flag.withDefault(false),
-  )
-  const noBuildFlag = Flag.Boolean('no-build').pipe(
-    Flag.withDescription('fail instead of preparing when a declared source needs preparation'),
-    Flag.withDefault(false),
-  )
-  const syncProfileFlag = Flag.String('profile').pipe(
-    Flag.withDescription('profile to sync (default: every profile in the config)'),
-    Flag.optional,
-  )
-  const runProfileFlag = Flag.String('profile').pipe(
-    Flag.withDescription('profile to boot (default: the declared default, then the sole profile)'),
-    Flag.optional,
-  )
-  const profileFlag = Flag.String('profile').pipe(
-    Flag.withDescription(
-      'profile name to inspect under DSH_HOME (default: the config default or sole profile)',
-    ),
-    Flag.optional,
-  )
-  const doctorStrictFlag = Flag.Boolean('strict').pipe(
-    Flag.withDescription('exit 1 when there is at least one warning'),
-    Flag.withDefault(false),
-  )
-  const replSyncFlag = Flag.Boolean('sync').pipe(
-    Flag.withDescription('sync the selected profile after each successful save'),
-    Flag.withDefault(false),
-  )
-  const evalFlag = Flag.String('eval').pipe(
-    Flag.withDescription('evaluate one expression, print its value, and exit'),
-    Flag.optional,
-  )
-
-  const initCommandLine = Command.make(
-    'init',
-    { noInstall: noInstallFlag, dsh: dshFlag },
-    (parsed) =>
-      Effect.gen(function* () {
-        exitCode = yield* runInitCommand({ noInstall: parsed.noInstall, dsh: parsed.dsh }, runtime)
-      }),
+  const initCommandLine = Command.make('init', initOptions, (parsed) =>
+    Effect.gen(function* () {
+      exitCode = yield* runInitCommand(parsed, runtime)
+    }),
   ).pipe(
     Command.withDescription(
       'create the XDG config project and install its dependencies (needs no DSH installation)',
     ),
   )
 
-  const syncCommand = Command.make(
-    'sync',
-    {
-      config: configFlag,
-      profile: syncProfileFlag,
-      dsh: dshFlag,
-      strict: strictFlag,
-      watch: watchFlag,
-      explain: explainFlag,
-      adoptOwnership: adoptOwnershipFlag,
-      rebuild: rebuildFlag,
-      noBuild: noBuildFlag,
-    },
-    (parsed) =>
-      Effect.gen(function* () {
-        exitCode = yield* runSyncCommand(
-          {
-            configPath: parsed.config,
-            profile: parsed.profile,
-            dsh: parsed.dsh,
-            strict: parsed.strict,
-            watch: parsed.watch,
-            explain: parsed.explain,
-            adoptOwnership: parsed.adoptOwnership,
-            rebuild: parsed.rebuild,
-            noBuild: parsed.noBuild,
-          },
-          runtime,
-        )
-      }),
+  const syncCommand = Command.make('sync', syncOptions, (parsed) =>
+    Effect.gen(function* () {
+      exitCode = yield* runSyncCommand(parsed, runtime)
+    }),
   ).pipe(
     Command.withDescription(
       'evaluate the config, preflight the layers, and publish (requires a discovered dsh)',
     ),
   )
 
-  const runCommandLine = Command.make(
-    'run',
-    { config: configFlag, profile: runProfileFlag, dsh: dshFlag, noSync: noSyncFlag },
-    (parsed) =>
-      Effect.gen(function* () {
-        exitCode = yield* runRunCommand(
-          {
-            configPath: parsed.config,
-            profile: parsed.profile,
-            dsh: parsed.dsh,
-            noSync: parsed.noSync,
-            dshArgs: split.passthrough,
-          },
-          runtime,
-        )
-      }),
+  const runCommandLine = Command.make('run', runOptions, (parsed) =>
+    Effect.gen(function* () {
+      exitCode = yield* runRunCommand({ ...parsed, dshArgs: split.passthrough }, runtime)
+    }),
   ).pipe(Command.withDescription('sync (unless --no-sync) and boot the discovered dsh'))
 
-  const checkCommandLine = Command.make('check', { config: configFlag }, (parsed) =>
+  const checkCommandLine = Command.make('check', checkOptions, (parsed) =>
     Effect.gen(function* () {
-      exitCode = yield* runCheckCommand(
-        {
-          configPath: parsed.config,
-          tscArgs: split.passthrough,
-        },
-        runtime,
-      )
+      exitCode = yield* runCheckCommand({ ...parsed, tscArgs: split.passthrough }, runtime)
     }),
   ).pipe(Command.withDescription("typecheck the config's project with its own tsc"))
 
-  const doctorCommandLine = Command.make(
-    'doctor',
-    { config: configFlag, profile: profileFlag, dsh: dshFlag, strict: doctorStrictFlag },
-    (parsed) =>
-      Effect.gen(function* () {
-        const program = runDoctorCommand(
-          {
-            configPath: parsed.config,
-            profile: parsed.profile,
-            dsh: parsed.dsh,
-            strict: parsed.strict,
-          },
-          runtime,
-        )
-        const fileSystem = runtime.options.fileSystem
-        exitCode = yield* fileSystem === undefined
-          ? program
-          : program.pipe(Effect.provide(fileSystem()))
-      }),
+  const doctorCommandLine = Command.make('doctor', doctorOptions, (parsed) =>
+    Effect.gen(function* () {
+      const program = runDoctorCommand(parsed, runtime)
+      const fileSystem = runtime.options.fileSystem
+      exitCode = yield* fileSystem === undefined
+        ? program
+        : program.pipe(Effect.provide(fileSystem()))
+    }),
   ).pipe(
     Command.withDescription(
       'inspect a published profile without changing it; reports discovered DSH version and drift',
     ),
   )
 
-  const replCommandLine = Command.make(
-    'repl',
-    {
-      config: configFlag,
-      profile: profileFlag,
-      dsh: dshFlag,
-      sync: replSyncFlag,
-      eval: evalFlag,
-    },
-    (parsed) =>
-      Effect.gen(function* () {
-        exitCode = yield* runReplCommand(
-          {
-            configPath: parsed.config,
-            profile: parsed.profile,
-            dsh: parsed.dsh,
-            sync: parsed.sync,
-            eval: parsed.eval,
-          },
-          runtime,
-        )
-      }),
+  const replCommandLine = Command.make('repl', replOptions, (parsed) =>
+    Effect.gen(function* () {
+      exitCode = yield* runReplCommand(parsed, runtime)
+    }),
   ).pipe(
     Command.withDescription(
       'evaluate the config interactively, watch it for changes, and publish on request',

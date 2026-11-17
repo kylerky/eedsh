@@ -23,16 +23,19 @@ import {
   installationFromSelection,
 } from '../../installation-anchor'
 import type { DshFailure, PackageInstallFailure } from '../../internal/effect/errors'
+import { dshFlag, noInstallFlag } from '../../surface'
 import type { CommandRuntime } from '../context'
+import type { Parsed } from '../options'
 
-export interface InitCommandInput {
-  noInstall: boolean
-  dsh: Option.Option<string>
-}
+/** The `eedsh init` flag record. */
+export const initOptions = { noInstall: noInstallFlag, dsh: dshFlag }
+
+/** The parsed input for {@link runInitCommand}. */
+export type InitInput = Parsed<typeof initOptions>
 
 /** Create the XDG config project and print what to do next. */
 export function runInitCommand(
-  input: InitCommandInput,
+  input: InitInput,
   runtime: CommandRuntime,
 ): Effect.Effect<
   number,
