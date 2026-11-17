@@ -878,6 +878,7 @@ function checkInstalled(
         continue
       }
       const installed = decoded.value.version
+      if (!isSemverRange(spec)) continue
       const lockVersion = Option.flatMap(lockfile, (dependencies) =>
         Option.flatMap(Option.fromUndefinedOr(dependencies.get(name)), (entry) =>
           Option.flatMap(entry.version, resolvedVersion),
@@ -892,7 +893,6 @@ function checkInstalled(
           ),
         )
       }
-      if (!isSemverRange(spec)) continue
       const matches = versionSatisfies(spec, installed)
       if (matches === false) {
         findings.push(

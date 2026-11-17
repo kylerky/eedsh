@@ -178,7 +178,8 @@ export default defineConfig()
     expect(sync.stdout).toContain('published profile home')
 
     const doctor = await capture(['doctor'])
-    expect(doctor.output).toContain(join(home, 'dsh', 'profiles', 'work'))
+    expect(doctor.code).toBe(0)
+    expect(doctor.output).toContain('clean: 0 errors, 0 warnings')
     expect(doctor.output).not.toContain(join(home, 'dsh', 'profiles', 'home'))
 
     const version = await execFileAsync(

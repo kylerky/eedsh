@@ -37,8 +37,10 @@ importers:
         version: ${version}
       '@eedsh/runtime':
         specifier: link:/repo/packages/runtime
+        version: link:../../../repo/packages/runtime
       '@eedsh/generated':
         specifier: link:./.eedsh/generated
+        version: link:.eedsh/generated
 `
 }
 
@@ -49,6 +51,16 @@ function rangePlan() {
     bundles: [bundle(BUNDLE), generated()],
     layers: [layer('cli', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })])],
     packages: { '@scope/plugin': '^1.0.0' },
+  })
+}
+
+/** A plan whose managed package uses a non-semver local-file specification. */
+function filePlan() {
+  return planOf({
+    name: 'work',
+    bundles: [bundle(BUNDLE), generated()],
+    layers: [layer('cli', [insert({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })])],
+    packages: { '@scope/plugin': 'file:../plugin' },
   })
 }
 
@@ -85,8 +97,13 @@ function addRuntimeState(
   addInstalled(h, '@eedsh/generated', '0.0.0')
 }
 
-async function published(options: { range?: boolean } = {}) {
-  const h = options.range === true ? harness({ plan: rangePlan() }) : harness()
+async function published(options: { range?: boolean; file?: boolean } = {}) {
+  const h =
+    options.file === true
+      ? harness({ plan: filePlan() })
+      : options.range === true
+        ? harness({ plan: rangePlan() })
+        : harness()
   await h.run()
   addRuntimeState(h)
   return h
@@ -587,10 +604,25 @@ describe('doctor installed checks', () => {
     expect(result.findings).toEqual([])
   })
 
-  it('reports a link specification without a range error', async () => {
+  it('reports no installed finding for a link specification', async () => {
     const h = await published()
     const result = await diagnose(h.fs.fs)
+    expect(result.errors).toBe(0)
     expect(result.findings.filter((item) => item.check === 'installed')).toEqual([])
+    expect(doctorExitCode(result, false)).toBe(0)
+  })
+
+  it('reports no installed finding for a file specification', async () => {
+    const h = await published({ file: true })
+    h.fs.files.set(
+      LOCKFILE_PATH,
+      lockfileText({ pluginSpecifier: 'file:../plugin', pluginVersion: 'file:../plugin' }),
+    )
+    addInstalled(h, '@scope/plugin', '0.0.0')
+    const result = await diagnose(h.fs.fs)
+    expect(result.findings.filter((item) => item.check === 'installed')).toEqual([])
+    expect(result.errors).toBe(0)
+    expect(doctorExitCode(result, false)).toBe(0)
   })
 })
 
