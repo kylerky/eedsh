@@ -9,15 +9,17 @@ Node builtins at runtime.
 ```
 cordis.patch.yml            inserts the '@eedsh/runtime' row
 lib/index.js                the bundled Cordis plugin (exports name + apply) and startup
-lib/installation-anchor.js  the shared anchor path, format, and validation helpers
+lib/installation-anchor.js  the shared anchor path, format, encoder, and atomic writer
 ```
 
 The package builds two bundled ESM entries, `lib/index.js` and
 `lib/installation-anchor.js`, with their declarations and source maps in `lib/`;
 the startup and watcher modules are inlined into the plugin and tests import the
 source modules directly. The `./installation-anchor` subpath export is the
-Node-only helper the CLI shares for the anchor record; it contains no Effect and
-no DSH import.
+Node-only helper the CLI shares for the anchor record: it exposes the record
+path, the format constant, the record type, its encoder, and the atomic writer.
+Decoding and validation live in the CLI, which is the only reader of the record;
+the subpath contains no Effect and no DSH import.
 
 `dsh.bundle.patch` points at `./cordis.patch.yml`. The package declares
 `engines.node` and no `engines.dsh`: DSH does not gate eedsh bundles by version,

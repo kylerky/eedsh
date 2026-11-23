@@ -34,11 +34,7 @@ import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
 import { resolveDshHome } from './internal/dsh-home'
 import { DshFailure } from './internal/effect/errors'
 import { messageOf } from './internal/error-message'
-import {
-  readNonEmptyString,
-  readOptionalString,
-  readRecord,
-} from './internal/schema-readers'
+import { readNonEmptyString, readOptionalString, readRecord } from './internal/schema-readers'
 
 /** The DSH package name the anchor must name. */
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'

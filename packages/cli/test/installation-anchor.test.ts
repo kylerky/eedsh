@@ -199,29 +199,27 @@ describe('CLI installation anchor decoder', () => {
   })
 
   it('rejects a relative installAnchor', () => {
-    expect(decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: 'dsh/package.json' })))
-      .toEqual({
-        ok: false,
-        reason: 'installAnchor must be an absolute package.json path: "dsh/package.json"',
-      })
+    expect(
+      decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: 'dsh/package.json' })),
+    ).toEqual({
+      ok: false,
+      reason: 'installAnchor must be an absolute package.json path: "dsh/package.json"',
+    })
   })
 
   it('rejects an installAnchor that is not a package.json', () => {
-    expect(decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: '/opt/dsh/index' })))
-      .toEqual({
-        ok: false,
-        reason: 'installAnchor must name a package.json: "/opt/dsh/index"',
-      })
+    expect(
+      decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: '/opt/dsh/index' })),
+    ).toEqual({
+      ok: false,
+      reason: 'installAnchor must name a package.json: "/opt/dsh/index"',
+    })
   })
 
   const invalidFields: readonly [string, Record<string, unknown>, string][] = [
     ['a non-string version', { version: 3 }, 'version must be a non-empty string when present'],
     ['an empty version', { version: '' }, 'version must be a non-empty string when present'],
-    [
-      'a non-string launcher',
-      { launcher: 3 },
-      'launcher must be a non-empty string when present',
-    ],
+    ['a non-string launcher', { launcher: 3 }, 'launcher must be a non-empty string when present'],
     [
       'a relative launcher',
       { launcher: 'bin/dsh' },
@@ -232,8 +230,16 @@ describe('CLI installation anchor decoder', () => {
       { manager: 'yarn' },
       'manager must be "pnpm" or "npm" when present: "yarn"',
     ],
-    ['an empty recordedBy', { recordedBy: '' }, 'recordedBy must be a non-empty string when present'],
-    ['a non-string recordedAt', { recordedAt: 7 }, 'recordedAt must be a non-empty string when present'],
+    [
+      'an empty recordedBy',
+      { recordedBy: '' },
+      'recordedBy must be a non-empty string when present',
+    ],
+    [
+      'a non-string recordedAt',
+      { recordedAt: 7 },
+      'recordedAt must be a non-empty string when present',
+    ],
   ]
 
   it.each(invalidFields)('rejects %s', (_label, extra, reason) => {
@@ -400,9 +406,11 @@ describe('CLI package manifest launcher resolution', () => {
   })
 
   it('uses the dsh entry of an object bin', async () => {
-    const fixture = await writeManifest('manifest-object-bin-', { bin: { dsh: './custom/bin.js' } }, [
-      join('custom', 'bin.js'),
-    ])
+    const fixture = await writeManifest(
+      'manifest-object-bin-',
+      { bin: { dsh: './custom/bin.js' } },
+      [join('custom', 'bin.js')],
+    )
     expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
   })
 
@@ -414,9 +422,7 @@ describe('CLI package manifest launcher resolution', () => {
   })
 
   it('falls back to lib/bin.js for a malformed main', async () => {
-    const fixture = await writeManifest('manifest-lib-bin-', { main: 7 }, [
-      join('lib', 'bin.js'),
-    ])
+    const fixture = await writeManifest('manifest-lib-bin-', { main: 7 }, [join('lib', 'bin.js')])
     expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'lib', 'bin.js'))
   })
 

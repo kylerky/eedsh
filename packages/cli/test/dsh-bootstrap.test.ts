@@ -311,7 +311,12 @@ describe('pnpm metadata tolerance', () => {
   })
 
   it('ignores entries without a usable path', async () => {
-    for (const dependency of [{ version: '0.2.1-rc.2' }, { path: '' }, { path: 5 }, { path: null }]) {
+    for (const dependency of [
+      { version: '0.2.1-rc.2' },
+      { path: '' },
+      { path: 5 },
+      { path: null },
+    ]) {
       const { result } = await withPnpm(() =>
         JSON.stringify([
           { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': dependency } },
@@ -324,7 +329,10 @@ describe('pnpm metadata tolerance', () => {
   it('keeps an entry whose version is not a string', async () => {
     const { installation, result } = await withPnpm((anchor) =>
       JSON.stringify([
-        { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': { path: anchor, version: 7 } } },
+        {
+          path: '/pnpm/global/6',
+          dependencies: { '@deepseek-ai/dsh': { path: anchor, version: 7 } },
+        },
       ]),
     )
     if (Result.isFailure(result)) throw result.failure
