@@ -22,6 +22,7 @@ import {
 } from '../internal/effect/services'
 import { messageOf } from '../internal/error-message'
 import { selectSyncProfiles } from '../selection'
+import { asEedshError } from './errors'
 import { type MaterializeServices, type ProvisioningMode, syncProgram } from './materialize'
 import { loadConfigValue, reportProfileFailure, reportProfileSyncFailure } from './prepare'
 import { describeError, printResult } from './report'
@@ -56,7 +57,7 @@ export function runWatchSelection(
     const loaded = yield* Effect.exit(loadConfigValue(context.configPath))
     if (Exit.isFailure(loaded)) {
       if (Cause.hasInterruptsOnly(loaded.cause)) return yield* Effect.interrupt
-      const failure = Cause.squash(loaded.cause)
+      const failure = asEedshError(Cause.squash(loaded.cause))
       for (const line of describeError(failure)) output.stderr(`eedsh: ${line}`)
       return
     }
@@ -91,7 +92,12 @@ export function runWatchSelection(
       )
       if (Exit.isFailure(runExit)) {
         if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
-        reportProfileSyncFailure(output.stderr, entry.name, Cause.squash(runExit.cause), explain)
+        reportProfileSyncFailure(
+          output.stderr,
+          entry.name,
+          asEedshError(Cause.squash(runExit.cause)),
+          explain,
+        )
         continue
       }
       printResult(output.stdout, output.stderr, plan, runExit.value, explain)
@@ -134,7 +140,7 @@ export function syncWatch(
         }).pipe(
           Effect.catch((error) =>
             Effect.sync(() => {
-              for (const line of describeError(error)) {
+              for (const line of describeError(asEedshError(error))) {
                 output.stderr(`eedsh: warning: ${line}`)
               }
             }),

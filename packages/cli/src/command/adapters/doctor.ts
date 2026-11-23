@@ -22,6 +22,7 @@ import {
 } from '../../internal/effect/services'
 import { selectProfile } from '../../selection'
 import { configFlag, doctorStrictFlag, dshFlag, profileFlag } from '../../surface'
+import { asEedshError } from '../errors'
 import type { Parsed } from '../options'
 import { loadConfigValue, profileDirForName, resolveConfigPath, selectionFailure } from '../prepare'
 import { failWith } from '../report'
@@ -89,5 +90,5 @@ export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, neve
     })
     for (const line of formatDoctorReport(result)) output.stdout(line)
     return doctorExitCode(result, input.strict)
-  }).pipe(Effect.catch((error) => failWith(error)))
+  }).pipe(Effect.catch((error) => failWith(asEedshError(error))))
 }

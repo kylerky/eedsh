@@ -22,17 +22,13 @@ const AUTHORING_ERROR_TAGS: ReadonlySet<string> = new Set([
  * @param tagged - the caught tagged value.
  * @returns the printable diagnostic lines.
  */
-export function presetDefinitionErrorLines(tagged: Record<string, unknown>): string[] {
-  const lines = [`${String(tagged.code)}: ${String(tagged.message)}`]
+export function presetDefinitionErrorLines(failure: PresetDefinitionError): string[] {
+  const lines = [`${failure.code}: ${failure.message}`]
   const facts: string[] = []
-  if (typeof tagged.presetId === 'string' && tagged.presetId !== '') {
-    facts.push(`preset ${JSON.stringify(tagged.presetId)}`)
-  }
-  if (typeof tagged.rowId === 'string' && tagged.rowId !== '') {
-    facts.push(`row ${JSON.stringify(tagged.rowId)}`)
-  }
-  if (typeof tagged.childId === 'string' && tagged.childId !== '') {
-    facts.push(`child ${JSON.stringify(tagged.childId)}`)
+  if (failure.presetId !== '') facts.push(`preset ${JSON.stringify(failure.presetId)}`)
+  if (failure.rowId !== '') facts.push(`row ${JSON.stringify(failure.rowId)}`)
+  if (failure.childId !== undefined && failure.childId !== '') {
+    facts.push(`child ${JSON.stringify(failure.childId)}`)
   }
   if (facts.length > 0) lines.push(facts.join(' '))
   return lines

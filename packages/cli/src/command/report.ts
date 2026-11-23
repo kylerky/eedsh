@@ -1,21 +1,23 @@
 /**
- * Reporting for the CLI: describe a tagged failure, print preflight warnings,
- * and print a materialization result. One module decides how an `eedsh:` line is
- * rendered, so every command reports the same way.
+ * Reporting for the CLI: describe a failure from the one failure vocabulary,
+ * print preflight warnings, and print a materialization result. One module
+ * decides how an `eedsh:` line is rendered, so every command reports the same
+ * way, and the match below is exhaustive: a failure without a diagnostic fails
+ * the type check.
  * @module @eedsh/cli/command/report
  */
 import type { ProfilePlan } from '@eedsh/plan'
-import { Effect } from 'effect'
+import { Effect, Match } from 'effect'
 import type * as Console from 'effect/Console'
+import * as PlatformError from 'effect/PlatformError'
 import * as Schema from 'effect/Schema'
 import { EXIT_FAILURE } from '../exit'
 import { presetDefinitionErrorLines } from '../internal/authoring-error'
 import { Output, type OutputShape } from '../internal/effect/services'
-import { messageOf } from '../internal/error-message'
-import { asRecord } from '../internal/record'
 import { describeInvalidRecord } from '../materialize/generation-record'
 import type { MaterializeResult } from '../materialize/program'
-import { AmbiguousProfile, describeProfileSelection, UnknownProfile } from '../selection'
+import { describeProfileSelection } from '../selection'
+import type { EedshError } from './errors'
 
 export const EXPLAIN_HINT = 'eedsh: add --explain to attribute each warning to its source layer'
 
@@ -65,64 +67,55 @@ export function cliConsole(
   }
 }
 
-export function describeError(error: unknown): string[] {
-  if (Schema.isSchemaError(error)) return error.message.split('\n')
-  if (error instanceof UnknownProfile || error instanceof AmbiguousProfile) {
-    return [describeProfileSelection(error)]
-  }
-  const tagged = asRecord(error)
-  if (tagged !== undefined && '_tag' in tagged) {
-    switch (tagged._tag) {
-      case 'ConfigError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'CheckFailure':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'SpawnFailure':
-        return [`cannot launch dsh: ${String(tagged.cause)}`]
-      case 'PackageInstallFailure':
-        return [
-          `package installation failed in ${String(tagged.profileDir)}: ${String(tagged.cause)}`,
-        ]
-      case 'PreflightFailure': {
-        const warnings = Array.isArray(tagged.warnings) ? tagged.warnings.map(String) : []
-        return [String(tagged.message), ...warnings]
-      }
-      case 'SyncLocked':
-        return [`another sync is running for this profile; lock: ${String(tagged.lockPath)}`]
-      case 'OwnershipRecordInvalid':
-        return [
-          describeInvalidRecord({
-            path: String(tagged.path),
-            detail: String(tagged.detail),
-            adoptable: tagged.adoptable === true,
-          }),
-        ]
-      case 'DshResolveFailure':
-        return [`cannot resolve DSH package ${String(tagged.packageName)}: ${String(tagged.cause)}`]
-      case 'DshFailure':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'InitError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'ReplSessionError':
-        return Array.isArray(tagged.lines) ? tagged.lines.map(String) : [String(tagged.message)]
-      case 'ResolutionError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'PresetDefinitionError':
-        return presetDefinitionErrorLines(tagged)
-      case 'SourceDeclarationError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'ProvisionFailure':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'PreviewError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      default:
-        break
-    }
-  }
-  return [messageOf(error)]
+/**
+ * Render one failure as diagnostic lines, without the `eedsh: ` prefix. The
+ * match is exhaustive over the CLI's failure union, so every failure has a
+ * diagnostic and adding a tagged failure without an arm fails the type check.
+ * @param error - the failure to render.
+ * @returns the printed lines.
+ */
+export function describeError(error: EedshError): string[] {
+  return Match.value(error).pipe(
+    Match.when(Schema.isSchemaError, (schemaError) => schemaError.message.split('\n')),
+    Match.when(PlatformError.isPlatformError, (platformError) => [platformError.message]),
+    Match.tagsExhaustive({
+      InvalidConfigValue: (failure) => [`${failure.code}: ${failure.message}`],
+      ConfigError: (failure) => [`${failure.code}: ${failure.message}`],
+      CheckFailure: (failure) => [`${failure.code}: ${failure.message}`],
+      PackageInstallFailure: (failure) => [
+        `package installation failed in ${failure.profileDir}: ${String(failure.cause)}`,
+      ],
+      PreflightFailure: (failure) => [failure.message, ...failure.warnings],
+      SpawnFailure: (failure) => [`cannot launch dsh: ${String(failure.cause)}`],
+      SyncLocked: (failure) => [
+        `another sync is running for this profile; lock: ${failure.lockPath}`,
+      ],
+      OwnershipRecordInvalid: (failure) => [
+        describeInvalidRecord({
+          path: failure.path,
+          detail: failure.detail,
+          adoptable: failure.adoptable,
+        }),
+      ],
+      DshResolveFailure: (failure) => [
+        `cannot resolve DSH package ${failure.packageName}: ${String(failure.cause)}`,
+      ],
+      DshFailure: (failure) => [`${failure.code}: ${failure.message}`],
+      InitError: (failure) => [`${failure.code}: ${failure.message}`],
+      ReplSessionError: (failure) => [...failure.lines],
+      ResolutionError: (failure) => [`${failure.code}: ${failure.message}`],
+      PresetDefinitionError: (failure) => presetDefinitionErrorLines(failure),
+      SourceDeclarationError: (failure) => [`${failure.code}: ${failure.message}`],
+      ProvisionFailure: (failure) => [`${failure.code}: ${failure.message}`],
+      PreviewError: (failure) => [`${failure.code}: ${failure.message}`],
+      UnknownProfile: (failure) => [describeProfileSelection(failure)],
+      AmbiguousProfile: (failure) => [describeProfileSelection(failure)],
+      UnexpectedFailure: (failure) => [failure.message],
+    }),
+  )
 }
 
-export function report(stderr: (line: string) => void, error: unknown): void {
+export function report(stderr: (line: string) => void, error: EedshError): void {
   for (const line of describeError(error)) stderr(`eedsh: ${line}`)
 }
 
@@ -135,7 +128,7 @@ export function report(stderr: (line: string) => void, error: unknown): void {
  * @returns the failure exit code.
  */
 export function failWith(
-  error: unknown,
+  error: EedshError,
   options: { sync?: boolean; explain?: boolean } = {},
 ): Effect.Effect<number, never, OutputShape> {
   return Effect.map(Output, (output) => {
@@ -145,15 +138,19 @@ export function failWith(
   })
 }
 
-export function rawPreflightWarnings(error: unknown): string[] {
-  const tagged = asRecord(error)
-  if (tagged === undefined || tagged._tag !== 'PreflightFailure') return []
-  return Array.isArray(tagged.warnings) ? tagged.warnings.map(String) : []
+/**
+ * The warnings a preflight failure carries, for the explain hint and for a
+ * profile-labelled report.
+ * @param error - the reported failure.
+ * @returns its warnings, or an empty list for any other failure.
+ */
+export function rawPreflightWarnings(error: EedshError): string[] {
+  return error._tag === 'PreflightFailure' ? [...error.warnings] : []
 }
 
 export function reportSyncError(
   stderr: (line: string) => void,
-  error: unknown,
+  error: EedshError,
   explain: boolean,
 ): void {
   report(stderr, error)

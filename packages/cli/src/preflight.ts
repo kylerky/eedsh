@@ -416,6 +416,7 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, BundleResolverSh
     const check: PreflightShape['check'] = (input) =>
       Effect.gen(function* () {
         const groups = input.provenance?.profiles[input.plan.profile.name] ?? []
+        // Kept pure-computation seam: the generated files are already read.
         const generatedLayers = yield* Effect.fromResult(
           parseGeneratedLayers(input.generated, { groups }),
         )

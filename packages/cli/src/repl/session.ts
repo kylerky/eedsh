@@ -16,6 +16,8 @@ import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
 import * as Result from 'effect/Result'
+import { asEedshError } from '../command/errors'
+import { describeError } from '../command/report'
 import {
   type ConfigLoadFailure,
   loadConfig as defaultLoadConfig,
@@ -23,7 +25,6 @@ import {
 } from '../config'
 import { type DoctorResult, doctor } from '../doctor'
 import { resolveBundleLayers } from '../dsh'
-import { presetDefinitionErrorLines } from '../internal/authoring-error'
 import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
@@ -233,39 +234,9 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Render a caught value with the CLI's one diagnostic vocabulary. */
 function errorLines(error: unknown): string[] {
-  const tagged =
-    error !== null && typeof error === 'object' ? (error as Record<string, unknown>) : {}
-  if (typeof tagged._tag === 'string') {
-    switch (tagged._tag) {
-      case 'ConfigError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'ResolutionError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'PresetDefinitionError':
-        return presetDefinitionErrorLines(tagged)
-      case 'PreviewError':
-        return [`${String(tagged.code)}: ${String(tagged.message)}`]
-      case 'ReplSessionError':
-        return Array.isArray(tagged.lines) ? tagged.lines.map(String) : [messageOf(error)]
-      case 'SyncLocked':
-        return [`another sync is running for this profile; lock: ${String(tagged.lockPath)}`]
-      case 'PreflightFailure': {
-        const warnings = Array.isArray(tagged.warnings) ? tagged.warnings.map(String) : []
-        return [String(tagged.message), ...warnings]
-      }
-      case 'PackageInstallFailure':
-        return [
-          `package installation failed in ${String(tagged.profileDir)}: ${String(tagged.cause)}`,
-        ]
-      case 'OwnershipRecordInvalid':
-        return [`cannot reconcile ${String(tagged.path)}: ${String(tagged.detail)}`]
-      default:
-        break
-    }
-  }
-  if (typeof tagged.message === 'string') return tagged.message.split('\n')
-  return [messageOf(error)]
+  return describeError(asEedshError(error))
 }
 
 function planMap(config: EedshConfig): PlanMap {

@@ -6,6 +6,7 @@
 export * from './canonical-json'
 export * from './constants'
 export * from './envelope'
+export * from './errors'
 export * from './plain-object'
 export * from './schema'
 export * from './types'

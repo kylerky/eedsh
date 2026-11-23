@@ -1,3 +1,8 @@
+import type { PlanFailure } from '@eedsh/plan'
+import type { PresetDefinitionError } from './preset'
+import type { ResolutionError } from './resolve'
+import type { SourceDeclarationError } from './source'
+
 export type {
   EedshConfig,
   ExpressionNode,
@@ -40,3 +45,13 @@ export {
   takeResolutionTrace,
 } from './resolve'
 export * from './source'
+
+/**
+ * Every failure the authoring package reports: its own tagged authoring
+ * failures plus the native plan failure its terminal build can return.
+ */
+export type ConfigFailure =
+  | ResolutionError
+  | PresetDefinitionError
+  | SourceDeclarationError
+  | PlanFailure

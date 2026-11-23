@@ -17,6 +17,7 @@ import {
 } from '../../installation-anchor'
 import { type CliServices, Environment, Output } from '../../internal/effect/services'
 import { dshFlag, noInstallFlag } from '../../surface'
+import { asEedshError } from '../errors'
 import type { Parsed } from '../options'
 import { failWith } from '../report'
 
@@ -79,5 +80,5 @@ export function runInitCommand(input: InitInput): Effect.Effect<number, never, C
     output.stdout('eedsh: next: eedsh sync')
     output.stdout('eedsh: next: eedsh run')
     return EXIT_OK
-  }).pipe(Effect.catch((error) => failWith(error)))
+  }).pipe(Effect.catch((error) => failWith(asEedshError(error))))
 }

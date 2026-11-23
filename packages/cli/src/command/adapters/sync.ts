@@ -21,6 +21,7 @@ import {
   watchFlag,
 } from '../../surface'
 import type { CommandContext } from '../context'
+import { asEedshError } from '../errors'
 import { type ProvisioningMode, syncOnce } from '../materialize'
 import type { Parsed } from '../options'
 import {
@@ -101,7 +102,7 @@ function syncSelection(input: SyncInput, provisioning: ProvisioningMode) {
         reportProfileSyncFailure(
           output.stderr,
           entry.name,
-          Cause.squash(runExit.cause),
+          asEedshError(Cause.squash(runExit.cause)),
           input.explain,
         )
         continue
@@ -124,5 +125,7 @@ export function runSyncCommand(input: SyncInput): Effect.Effect<number, never, C
       noBuild: input.noBuild,
     }
     return yield* syncSelection(input, provisioning)
-  }).pipe(Effect.catch((error) => failWith(error, { sync: true, explain: input.explain })))
+  }).pipe(
+    Effect.catch((error) => failWith(asEedshError(error), { sync: true, explain: input.explain })),
+  )
 }

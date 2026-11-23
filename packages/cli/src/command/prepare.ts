@@ -36,6 +36,7 @@ import {
   type OutputShape,
 } from '../internal/effect/services'
 import type { ProfileSelectionError } from '../selection'
+import type { EedshError } from './errors'
 import { describeError, EXPLAIN_HINT, rawPreflightWarnings } from './report'
 
 export function profileDirForName(name: string, env: Record<string, string | undefined>): string {
@@ -177,7 +178,7 @@ export function selectionFailure(
 export function reportProfileFailure(
   stderr: (line: string) => void,
   name: string,
-  error: unknown,
+  error: EedshError,
 ): void {
   stderr(`eedsh: profile "${name}":`)
   for (const line of describeError(error)) stderr(`eedsh: ${line}`)
@@ -187,7 +188,7 @@ export function reportProfileFailure(
 export function reportProfileSyncFailure(
   stderr: (line: string) => void,
   name: string,
-  error: unknown,
+  error: EedshError,
   explain: boolean,
 ): void {
   reportProfileFailure(stderr, name, error)

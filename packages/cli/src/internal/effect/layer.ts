@@ -182,6 +182,25 @@ export const configLoaderLayer: Layer.Layer<ConfigLoaderShape> = Layer.succeed(C
   load: (configPath, evaluationNonce) => loadConfig(configPath, evaluationNonce),
 })
 
+/**
+ * The kept `Result` → Effect seams. `Result` is the return type of pure
+ * computation only; where such a value must enter a program it is converted
+ * exactly once, and the complete inventory is:
+ *
+ * - `resolveBundleLayers` (../../dsh) — DSH's bridge API is synchronous and
+ *   Result-returning, so its value enters through this layer. The resolver
+ *   service owns the conversion until the resolution phase replaces it.
+ * - `loadDshBridge` (../../dsh-bridge) — resolves to a `Result`, converted the
+ *   same way by the resolver service.
+ * - `parseGeneratedLayers` (../../preflight) — pure decode of generated files
+ *   that were already read; preflight converts it.
+ * - `runtimeLinkSpec` (../../command/version) — resolves the CLI's own runtime
+ *   dependency; materialization converts it before provisioning.
+ *
+ * No other `Result` crosses into an Effect: a command branches on a pure
+ * `Result` and reports it, or converts it to the error channel immediately.
+ */
+
 /** The DSH bridge and profile-bundle patch resolution. */
 export const bundleResolverLayer: Layer.Layer<BundleResolverShape> = Layer.succeed(BundleResolver, {
   loadBridge: (installation) =>

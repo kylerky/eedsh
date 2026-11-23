@@ -19,6 +19,7 @@ import {
 import { runReplLoop } from '../../repl/prompt'
 import { ReplSession } from '../../repl/session'
 import { configFlag, dshFlag, evalFlag, profileFlag, replSyncFlag } from '../../surface'
+import { asEedshError } from '../errors'
 import { NO_PROVISIONING_MODE, syncProgram } from '../materialize'
 import type { Parsed } from '../options'
 import { requireDsh, resolveConfigPath } from '../prepare'
@@ -95,7 +96,7 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
           watchConfig: Option.isNone(input.eval),
           oneShot: Option.isSome(input.eval),
         }),
-      catch: (cause) => cause,
+      catch: (cause) => asEedshError(cause),
     })
 
     const evalExpression = Option.getOrUndefined(input.eval)
@@ -109,7 +110,7 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
       yield* Effect.promise(() => session.close())
       if (Exit.isFailure(evaluated)) {
         if (Cause.hasInterruptsOnly(evaluated.cause)) return EXIT_FAILURE
-        report(output.stderr, Cause.squash(evaluated.cause))
+        report(output.stderr, asEedshError(Cause.squash(evaluated.cause)))
         return EXIT_FAILURE
       }
       session.printValue(evaluated.value)
@@ -125,9 +126,9 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
     yield* Effect.promise(() => session.close())
     if (Exit.isFailure(loop)) {
       if (Cause.hasInterruptsOnly(loop.cause)) return EXIT_FAILURE
-      report(output.stderr, Cause.squash(loop.cause))
+      report(output.stderr, asEedshError(Cause.squash(loop.cause)))
       return EXIT_FAILURE
     }
     return EXIT_OK
-  }).pipe(Effect.catch((error) => failWith(error)))
+  }).pipe(Effect.catch((error) => failWith(asEedshError(error))))
 }

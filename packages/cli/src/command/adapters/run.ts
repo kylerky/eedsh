@@ -12,6 +12,7 @@ import { selectProfile } from '../../selection'
 import { configFlag, dshFlag, noSyncFlag, runProfileFlag } from '../../surface'
 import { runBoot } from '../boot'
 import type { CommandContext } from '../context'
+import { asEedshError } from '../errors'
 import { NO_PROVISIONING_MODE, syncOnce } from '../materialize'
 import type { Parsed } from '../options'
 import {
@@ -62,5 +63,7 @@ export function runRunCommand(input: RunInput): Effect.Effect<number, never, Cli
       printResult(output.stdout, output.stderr, plan, result, false)
     }
     return yield* runBoot(context, installation, input.dshArgs)
-  }).pipe(Effect.catch((error) => failWith(error, { sync: !input.noSync, explain: false })))
+  }).pipe(
+    Effect.catch((error) => failWith(asEedshError(error), { sync: !input.noSync, explain: false })),
+  )
 }
