@@ -1,4 +1,4 @@
-import { bundle, defineConfig, definePreset, LayerBuilder, ResolutionError } from '@eedsh/config'
+import { AuthoringDefect, bundle, defineConfig, definePreset, LayerBuilder } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -326,6 +326,6 @@ describe('rooted query rejection', () => {
         // @ts-expect-error a rooted query is query-only and not a plan selection
         profile.bundle(rooted)
       }),
-    ).toThrowError(ResolutionError)
+    ).toThrowError(AuthoringDefect)
   })
 })

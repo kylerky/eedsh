@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ReplSession } from '../../src/repl/session'
 import { defaultSpawn } from '../../src/spawn'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
-import { realFileSystemValue } from '../support/cli'
+import { devDshInstallation } from '../support/bridge'
+import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -34,13 +34,11 @@ async function installPreview(dir: string): Promise<void> {
 }
 
 beforeEach(async () => {
-  await installTestBridge()
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'repl-int-'))
 })
 
 afterEach(async () => {
-  clearTestBridge()
   await Promise.all(sessions.splice(0).map((session) => session.close()))
   await rm(work, { recursive: true, force: true })
 })
@@ -68,9 +66,8 @@ describe('preview and authoring integration', () => {
     const configPath = join(configDir, 'config.ts')
     const initial = `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => profile.generated())
-  .build()
 `
     await writeFile(configPath, initial)
     const out: string[] = []
@@ -83,6 +80,8 @@ export default defineConfig()
       stderr: (line) => err.push(line),
       fileSystem: await realFileSystemValue(),
       spawner: defaultSpawn,
+      installation: devDshInstallation(),
+      resolver: await realBundleResolverValue(),
       installPreview,
       cacheRoot: join(work, 'cache'),
       watchConfig: false,
@@ -94,15 +93,14 @@ export default defineConfig()
 
 const custom = bundle('@acme/plugin-bundle').fromProfile('work').rows()
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .generated()
       .layer('custom', (layer) => {
-        layer.insert([...custom])
+        layer.insert(custom)
       })
   })
-  .build()
 `
     await writeFile(configPath, querySource)
     await session.reload()

@@ -53,10 +53,11 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 /**
  * The only production exception sites the architecture check permits. The
  * malformed-expression branch is unreachable after plan validation, and the
- * Effect-free runtime is outside this scan. Author-time resolution, the typed
- * query handles, the preset-definition child editor, and the source-declaration
- * builder throw structured failures at a synchronous API boundary so fluent
- * config composition stays direct;
+ * Effect-free runtime is outside this scan. The typed query handles and the
+ * preset-definition child editor report authoring misuse at the synchronous
+ * authoring boundary, and the source-declaration builder reports its tagged
+ * failure there so fluent config composition stays direct; author-time bundle
+ * resolution is gone from this package and Io lives in the CLI resolver;
  * the REPL owns Node's exception-shaped I/O (dynamic imports, REPL evaluation,
  * preview installs), the exploration views report an invalid plan lookup as a
  * tagged session failure, and completion contains failing catalog or evaluator
@@ -77,8 +78,6 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/materialize/yaml.ts',
   'packages/config/src/preset.ts',
   'packages/config/src/query.ts',
-  'packages/config/src/resolve.ts',
-  'packages/config/src/bridge.ts',
   'packages/config/src/builders.ts',
   'packages/config/src/source.ts',
   'packages/config/src/provenance.ts',
@@ -91,7 +90,6 @@ const EXCEPTION_ALLOWLIST = new Set([
   'packages/cli/src/dsh-discovery.ts',
   'packages/cli/src/preflight.ts',
   'packages/cli/src/dsh-bridge.ts',
-  'packages/cli/src/dsh.ts',
   'packages/cli/src/installation-anchor.ts',
   'packages/cli/src/dsh-bootstrap.ts',
 ])
@@ -237,6 +235,42 @@ describe('package boundaries', () => {
     }
     for (const symbol of ['defineConfig', 'bundle', 'js', 'group']) {
       expect(typeof config[symbol], `@eedsh/config must export ${symbol}`).toBe('function')
+    }
+  })
+
+  it('keeps IO and module loading out of @eedsh/config', () => {
+    const forbidden = [
+      'node:fs',
+      'node:fs/promises',
+      'node:module',
+      'node:child_process',
+      'tsx',
+      'typescript',
+    ]
+    const offenders = offendingImports(
+      'config',
+      (specifier) =>
+        forbidden.includes(specifier) || forbidden.some((name) => specifier.startsWith(`${name}/`)),
+    )
+    expect(offenders, '@eedsh/config must stay pure and must not load modules or touch IO').toEqual(
+      [],
+    )
+  })
+
+  it('exports no ambient bridge or version state', async () => {
+    const config = (await import('@eedsh/config')) as Record<string, unknown>
+    for (const symbol of [
+      'activeDshBridge',
+      'installDshBridge',
+      'clearDshBridge',
+      'DSH_BRIDGE_KEY',
+      'bridgeCapability',
+      'dshVersion',
+      'resolutionTrace',
+      'takeResolutionTrace',
+      'clearResolutionTrace',
+    ]) {
+      expect(symbol in config, `@eedsh/config must not export ${symbol}`).toBe(false)
     }
   })
 

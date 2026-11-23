@@ -48,7 +48,7 @@ export function runWatchSelection(
   return Effect.gen(function* () {
     const output = yield* Output
     const { env } = yield* Environment
-    const loaded = yield* Effect.exit(loadConfigValue(context.configPath))
+    const loaded = yield* Effect.exit(loadConfigValue(context.configPath, context.installation))
     if (Exit.isFailure(loaded)) {
       if (Cause.hasInterruptsOnly(loaded.cause)) return yield* Effect.interrupt
       const failure = asEedshError(Cause.squash(loaded.cause))

@@ -10,6 +10,7 @@ import { doctor, doctorExitCode, formatDoctorReport } from '../../doctor'
 import type { DiscoveredDshInstallation } from '../../dsh'
 import { EXIT_FAILURE, EXIT_USAGE } from '../../exit'
 import { resolveDshHome } from '../../internal/dsh-home'
+import { DshFailure } from '../../internal/effect/errors'
 import {
   BundleResolver,
   type CliServices,
@@ -54,9 +55,13 @@ export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, neve
     if (Result.isSuccess(discovered)) {
       doctorDsh = discovered.success
       const resolver = yield* BundleResolver
-      // The bridge makes config evaluation see the selected installation; a
-      // failure here is reported by the profile inspection, not by discovery.
+      // Config evaluation needs the selected installation; a bridge failure is
+      // reported when the config path needs resolution.
       yield* Effect.exit(resolver.loadBridge(discovered.success))
+    } else if (Option.isSome(input.config)) {
+      // Evaluation reads the selected version, so there is no config load
+      // without an installation.
+      return yield* Effect.fail(discovered.failure)
     }
 
     let profileName: string
@@ -71,7 +76,16 @@ export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, neve
     } else {
       const configPath = yield* resolveConfigPath(input.config)
       if (Option.isNone(configPath)) return EXIT_FAILURE
-      const loaded = yield* loadConfigValue(configPath.value)
+      if (doctorDsh === undefined) {
+        return yield* Effect.fail(
+          new DshFailure({
+            code: 'dsh.not_found',
+            message:
+              'config evaluation needs a DSH installation; install dsh or select one with --dsh',
+          }),
+        )
+      }
+      const loaded = yield* loadConfigValue(configPath.value, doctorDsh)
       const selection = selectProfile(loaded.config, Option.none())
       if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
       profileName = selection.success.name

@@ -1,16 +1,21 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit, Layer } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadConfig as loadConfigUnprovided } from '../../src/config'
+import { bundleResolverLayer } from '../../src/internal/effect/layer'
 import { buildGeneratedBundle } from '../../src/materialize/generated-bundle'
 import { composePreflightLayers, parseGeneratedLayers } from '../../src/preflight'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
+import { devDshInstallation, loadTestBridge } from '../support/bridge'
 
+const testResolver = bundleResolverLayer.pipe(Layer.provide(NodeServices.layer))
 const loadConfig = (configPath: string) =>
-  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+  loadConfigUnprovided(configPath, {
+    installation: devDshInstallation(),
+    env: process.env,
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, testResolver)))
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -35,14 +40,12 @@ async function writeBundle(base: string, name: string, patch: string): Promise<s
 let workdir = ''
 
 beforeEach(async () => {
-  await installTestBridge()
   process.env = { ...originalEnv }
   await mkdir(tempRoot, { recursive: true })
   workdir = await mkdtemp(join(tempRoot, 'authoring-resolution-'))
 })
 
 afterEach(() => {
-  clearTestBridge()
   process.env = { ...originalEnv }
 })
 
@@ -85,7 +88,7 @@ const fromDirectory = bundle('@fixture/vendored')
   .fromPackageDir('../node_modules/@fixture/vendored')
   .row('vendored-row')
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .generated()
@@ -93,7 +96,6 @@ export default defineConfig()
         layer.insert([pinned, fromProfile, fromDirectory])
       })
   })
-  .build()
 `,
     )
 
@@ -112,7 +114,7 @@ export default defineConfig()
         sites: [] as [],
       },
     }))
-    const composition = composePreflightLayers(layers)
+    const composition = composePreflightLayers(layers, (await loadTestBridge()).composeEntries)
     expect(composition.entries.map((entry) => entry.id)).toEqual([
       'timer',
       'profile-row',
@@ -152,11 +154,10 @@ const expressive = bundle('@fixture/expressive')
   .fromPackageDir('../node_modules/@fixture/expressive')
   .preset('expressive')
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile.generated().layer('preset', (layer) => layer.insert(expressive))
   })
-  .build()
 `,
     )
 
@@ -183,7 +184,10 @@ export default defineConfig()
     const parsed = parseGeneratedLayers(generated)
     expect(Result.isSuccess(parsed)).toBe(true)
     if (Result.isFailure(parsed)) return
-    const composition = composePreflightLayers(parsed.success)
+    const composition = composePreflightLayers(
+      parsed.success,
+      (await loadTestBridge()).composeEntries,
+    )
     expect(composition.warnings).toEqual([])
     const inserted = composition.entries.find((entry) => entry.id === 'preset-expressive')
     expect(inserted).toMatchObject({
@@ -197,5 +201,60 @@ export default defineConfig()
         ],
       },
     })
+  })
+
+  it('resolves one query pair once for two layers and reports one trace', async () => {
+    const configDir = join(workdir, 'config')
+    await mkdir(configDir, { recursive: true })
+    const configPath = join(configDir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { bundle, defineConfig } from '@eedsh/config'
+
+export default () => defineConfig()
+  .profile('work', (profile) => {
+    profile
+      .generated()
+      .layer('first', (layer) => layer.insert(bundle('@deepseek-ai/dsh-base').row('timer')))
+      .layer('second', (layer) => layer.insert(bundle('@deepseek-ai/dsh-base').rows()))
+  })
+`,
+    )
+    const loaded = await Effect.runPromise(loadConfig(configPath))
+    expect(loaded.queries).toHaveLength(2)
+    expect(loaded.traces).toHaveLength(1)
+    expect(loaded.resolution.bundles).toHaveLength(1)
+    const plan = loaded.config.profiles.work
+    expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
+  })
+
+  it('stops before the terminal build when a requested row is missing', async () => {
+    const configDir = join(workdir, 'config')
+    await mkdir(configDir, { recursive: true })
+    const configPath = join(configDir, 'config.ts')
+    await writeFile(
+      configPath,
+      `import { bundle, defineConfig } from '@eedsh/config'
+
+export default () => {
+  const builder = defineConfig().profile('work', (profile) => {
+    profile
+      .generated()
+      .layer('missing', (layer) => layer.insert(bundle('@deepseek-ai/dsh-base').row('no-such-row')))
+  })
+  builder.build = () => {
+    throw new Error('the terminal build must not run')
+  }
+  return builder
+}
+`,
+    )
+    const exit = await Effect.runPromiseExit(loadConfig(configPath))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (!Exit.isFailure(exit)) return
+    const failure = Cause.squash(exit.cause) as { _tag?: string; code?: string; message?: string }
+    expect(failure._tag).toBe('ResolutionError')
+    expect(failure.code).toBe('resolution.row_not_found')
+    expect(String(failure.message)).not.toContain('terminal build')
   })
 })

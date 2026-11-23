@@ -3,24 +3,17 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { Effect } from 'effect'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { liveCliServicesLayer } from '../../src/internal/effect/layer'
+import { BundleResolver } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
-import { clearTestBridge, devDshInstallation, installTestBridge } from '../support/bridge'
+import { devDshInstallation } from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, layer, override } from '../support/plan-parts'
 
 const execFileAsync = promisify(execFile)
 const root = process.cwd()
 const installation = devDshInstallation()
-
-beforeAll(async () => {
-  await installTestBridge(installation.version)
-})
-
-afterAll(() => {
-  clearTestBridge()
-})
 
 describe('bootable profile integration', () => {
   it('composes generated rows and keeps the profile override on top', async () => {
@@ -48,15 +41,19 @@ describe('bootable profile integration', () => {
     })
 
     const result = await Effect.runPromise(
-      materialize({
-        plan,
-        profileDir,
-        eedshVersion: '0.0.0',
-        dsh: installation,
-        runtimeSpec: `link:${join(root, 'packages/runtime')}`,
-        generatedSpec: 'link:./.eedsh/generated',
-        strict: true,
-        explain: false,
+      Effect.gen(function* () {
+        const resolver = yield* BundleResolver
+        yield* resolver.loadBridge(installation)
+        return yield* materialize({
+          plan,
+          profileDir,
+          eedshVersion: '0.0.0',
+          dsh: installation,
+          runtimeSpec: `link:${join(root, 'packages/runtime')}`,
+          generatedSpec: 'link:./.eedsh/generated',
+          strict: true,
+          explain: false,
+        })
       }).pipe(Effect.provide(liveCliServicesLayer)),
     )
     expect(result.changed).toBe(true)

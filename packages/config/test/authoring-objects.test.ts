@@ -1,45 +1,39 @@
-import { writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import {
+  AuthoringDefect,
   Bundle,
   BundleQuery,
   bundle,
   defineConfig,
-  dshVersion,
   group,
   js,
   LayerBuilder,
   normalizeAuthoring,
   Preset,
-  ResolutionError,
+  PresetCollection,
   Row,
+  RowCollection,
 } from '@eedsh/config'
 import { PLAN_FORMAT, PLAN_VERSION, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
-  type AuthoringFixture,
-  clearFixtureBridge,
-  createAuthoringFixture,
-  originalEnv,
-  useFixtureBridge,
-  useFixtureEnv,
-} from './support/fixture'
+  BASE_ROWS,
+  CUSTOM_ROWS,
+  EXPRESSIVE_ROWS,
+  resolutionTable,
+  resolvedBundle,
+} from './support/table'
 
-const tempRoot = join(process.cwd(), 'packages/config/.tmp')
-let fixture: AuthoringFixture
-
-beforeEach(async () => {
-  fixture = await createAuthoringFixture(tempRoot)
-  process.env = { ...originalEnv }
-  useFixtureEnv(fixture)
-  await useFixtureBridge(fixture)
-})
-
-afterEach(() => {
-  process.env = { ...originalEnv }
-  clearFixtureBridge()
-})
+const baseTable = resolutionTable(resolvedBundle('@fixture/base', BASE_ROWS))
+const customProfileTable = resolutionTable(
+  resolvedBundle('@fixture/custom', CUSTOM_ROWS, {
+    root: { profile: 'work' },
+    origin: 'profile',
+    profile: 'work',
+    version: '2.0.0',
+  }),
+)
+const expressiveTable = resolutionTable(resolvedBundle('@fixture/expressive', EXPRESSIVE_ROWS))
 
 function planValue(bundleValue: unknown): unknown {
   return {
@@ -52,14 +46,6 @@ function planValue(bundleValue: unknown): unknown {
   }
 }
 
-describe('active DSH version', () => {
-  it('reports the fixture installation version synchronously', () => {
-    const value = dshVersion()
-    expect(value).toBe('0.2.1-rc.2')
-    expect(value).not.toBeInstanceOf(Promise)
-  })
-})
-
 describe('authoring brand', () => {
   it('exposes a bundle selection as plain plan JSON without a source', () => {
     // @ts-expect-error bundle source options are removed from the authoring API
@@ -68,22 +54,6 @@ describe('authoring brand', () => {
     expect(handle.toJSON()).toEqual({ kind: 'bundle', name: '@fixture/base' })
     expect(normalizeAuthoring({ bundles: [handle] })).toEqual({
       bundles: [{ kind: 'bundle', name: '@fixture/base' }],
-    })
-  })
-
-  it('normalizes typed rows and presets inside patch data', () => {
-    const rows = bundle('@fixture/base').rows()
-    const preset = bundle('@fixture/base').presets()[0]
-    expect(preset).toBeDefined()
-    const normalized = normalizeAuthoring({
-      insert: rows,
-      target: preset,
-    }) as { insert: { id?: string }[]; target: { rowId: string; id: string } }
-    expect(normalized.insert.map((entry) => entry.id)).toEqual(['preset-standard', 'timer'])
-    expect(normalized.target).toMatchObject({
-      id: 'preset-standard',
-      name: '@deepseek-ai/dsh-agent-preset',
-      config: { id: 'standard' },
     })
   })
 
@@ -99,54 +69,70 @@ describe('authoring brand', () => {
   })
 })
 
-describe('typed resolution data', () => {
-  it('resolves rows from the active installation by default', () => {
-    const handle = bundle('@fixture/base')
-    expect(handle.origin()).toBe('active')
-    expect(handle.version()).toBe('1.0.0')
-    expect(handle.packageDir()).toBe(fixture.baseDir)
-    expect(handle.rows().map((row) => row.id)).toEqual(['preset-standard', 'timer'])
-    expect(handle.presets().map((preset) => preset.id)).toEqual(['standard'])
-    expect(handle.row('timer')).toBeInstanceOf(Row)
+describe('query descriptors', () => {
+  it('records the bundle, root, and requested row or preset', () => {
+    const pinned = bundle('@fixture/base').row('timer')
+    const fromProfile = bundle('@fixture/custom').fromProfile('work').preset('standard')
+    const rows = bundle('@fixture/base').rows()
+    const builder = defineConfig().profile('work', (profile) => {
+      profile
+        .generated()
+        .layer((layer) => layer.insert([pinned]))
+        .layer((layer) => layer.disable(fromProfile))
+        .layer((layer) => layer.insert(rows))
+    })
+    expect(builder.queries()).toEqual([
+      { bundle: '@fixture/base', root: {}, row: 'timer' },
+      {
+        bundle: '@fixture/custom',
+        root: { profile: 'work' },
+        preset: 'standard',
+      },
+      { bundle: '@fixture/base', root: {}, rows: true },
+    ])
   })
 
-  it('resolves a profile root from a name or a handle carrying a name', () => {
-    const fromName = bundle('@fixture/custom').fromProfile('work')
-    const fromHandle = bundle('@fixture/custom').fromProfile({ name: 'work' })
-    expect(fromName.origin()).toBe('profile')
-    expect(fromName.version()).toBe('2.0.0')
-    expect(fromName.rows().map((row) => row.id)).toEqual(['custom-row'])
-    expect(fromHandle.rows().map((row) => row.id)).toEqual(['custom-row'])
-    expect(
-      bundle('@fixture/base')
-        .fromProfile('work')
-        .rows()
-        .map((row) => row.id),
-    ).toEqual(['profile-copy'])
+  it('resolves every declared row from its table entry', () => {
+    const collection = bundle('@fixture/base').rows()
+    expect(collection).toBeInstanceOf(RowCollection)
+    expect(collection.resolve(baseTable).map((row) => row.id)).toEqual(['preset-standard', 'timer'])
+    const presets = bundle('@fixture/base').presets()
+    expect(presets).toBeInstanceOf(PresetCollection)
+    expect(presets.resolve(baseTable).map((row) => row.id)).toEqual(['preset-standard'])
   })
 
-  it('resolves an absolute and relative package directory', () => {
-    expect(
-      bundle('@fixture/vendored')
-        .fromPackageDir(fixture.packageDir)
-        .rows()
-        .map((row) => row.id),
-    ).toEqual(['vendored-row'])
-    expect(
-      bundle('@fixture/vendored')
-        .fromPackageDir('../node_modules/@fixture/vendored')
-        .rows()
-        .map((row) => row.id),
-    ).toEqual(['vendored-row'])
-    expect(bundle('@fixture/vendored').fromPackageDir(fixture.packageDir).origin()).toBe(
-      'packageDir',
+  it('resolves a row and a preset descriptor from a rooted table entry', () => {
+    const row = bundle('@fixture/custom').fromProfile('work').row('custom-row')
+    expect(row).toBeInstanceOf(Row)
+    expect(row.resolve(customProfileTable)).toMatchObject({ id: 'custom-row' })
+    const preset = bundle('@fixture/base').preset('standard')
+    expect(preset).toBeInstanceOf(Preset)
+    expect(preset.resolve(baseTable)).toMatchObject({
+      id: 'preset-standard',
+      name: '@deepseek-ai/dsh-agent-preset',
+      config: { id: 'standard' },
+    })
+  })
+
+  it('reports a missing row or preset as an authoring defect at build', () => {
+    expect(() => bundle('@fixture/base').row('missing').resolve(baseTable)).toThrowError(
+      AuthoringDefect,
+    )
+    expect(() => bundle('@fixture/base').preset('missing').resolve(baseTable)).toThrowError(
+      AuthoringDefect,
     )
   })
 
-  it('rejects a second root on a rooted query', () => {
-    const rooted = bundle('@fixture/base').fromProfile('work')
-    expect('fromProfile' in rooted).toBe(false)
-    expect('fromPackageDir' in rooted).toBe(false)
+  it('reports a missing table entry as an authoring defect naming the descriptor', () => {
+    try {
+      bundle('@fixture/absent').rows().resolve(baseTable)
+    } catch (error) {
+      expect(error).toBeInstanceOf(AuthoringDefect)
+      const defect = error as AuthoringDefect
+      expect(defect.code).toBe('authoring.missing_resolution')
+      expect(defect.bundle).toBe('@fixture/absent')
+      expect(defect.message).toContain('@fixture/absent')
+    }
   })
 })
 
@@ -160,7 +146,7 @@ describe('resolved expressions', () => {
           .generated()
           .layer('preset', (layer) => layer.insert(preset))
       })
-      .build()
+      .build(expressiveTable)
     expect(Result.isSuccess(built)).toBe(true)
     if (Result.isFailure(built)) throw built.failure
     const plan = built.success.profiles.work
@@ -184,113 +170,67 @@ describe('resolved expressions', () => {
 })
 
 describe('rows and presets', () => {
-  it('exposes ids, data, and plain patch data', () => {
+  it('exposes ids and plain patch data for an explicit row', () => {
     const row = bundle('@fixture/base').row('timer')
     expect(row.id).toBe('timer')
-    expect(row.data).toMatchObject({ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' })
-    expect(row.toJSON()).toEqual(row.data)
     expect(row.disable()).toEqual({ id: 'timer', disabled: true })
     expect(row.enable()).toEqual({ id: 'timer', disabled: false })
     expect(row.override({ interval: 2 })).toEqual({ id: 'timer', config: { interval: 2 } })
   })
 
-  it('targets a preset row when a preset handle builds a patch', () => {
+  it('targets a preset row through the resolved table', () => {
     const preset = bundle('@fixture/base').preset('standard')
-    expect(preset).toBeInstanceOf(Preset)
-    expect(preset).toMatchObject({
-      rowId: 'preset-standard',
-      id: 'standard',
-      order: 1,
-      name: 'Standard',
-    })
-    expect(preset.disable()).toEqual({ id: 'preset-standard', disabled: true })
-    expect(preset.override({ enabled: false })).toEqual({
-      id: 'preset-standard',
-      config: { enabled: false },
-    })
-    expect(preset.toJSON()).toMatchObject({ id: 'preset-standard' })
+    const built = defineConfig()
+      .profile('work', (profile) => {
+        profile.generated().layer((layer) => layer.disable(preset))
+      })
+      .build(baseTable)
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    expect(plan.success.layers[0]?.patches).toEqual([{ id: 'preset-standard', disabled: true }])
+    expect(preset.override({ enabled: false })).toMatchObject({ target: preset })
+  })
+
+  it('inserts a row collection and a preset collection as ordinary rows', () => {
+    const built = defineConfig()
+      .profile('work', (profile) => {
+        profile
+          .generated()
+          .layer((layer) =>
+            layer.insert([bundle('@fixture/base').rows(), bundle('@fixture/base').presets()]),
+          )
+      })
+      .build(baseTable)
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    const inserted = plan.success.layers[0]?.patches[0]?.insert as
+      | readonly Record<string, unknown>[]
+      | undefined
+    expect(inserted?.map((row) => row.id)).toEqual(['preset-standard', 'timer', 'preset-standard'])
   })
 })
 
-describe('structured failures', () => {
-  it('reports a missing row naming the bundle and the id', () => {
-    try {
-      bundle('@fixture/base').row('missing')
-    } catch (error) {
-      expect(error).toBeInstanceOf(ResolutionError)
-      const failure = error as ResolutionError
-      expect(failure.code).toBe('resolution.row_not_found')
-      expect(failure.bundle).toBe('@fixture/base')
-      expect(failure.message).toContain('"missing"')
-    }
-  })
-
-  it('reports a missing preset naming the bundle and the id', () => {
-    try {
-      bundle('@fixture/base').preset('missing')
-    } catch (error) {
-      expect(error).toBeInstanceOf(ResolutionError)
-      expect((error as ResolutionError).code).toBe('resolution.preset_not_found')
-      expect((error as ResolutionError).message).toContain('"missing"')
-    }
-  })
-
-  it('reports a missing bridge instead of falling back', () => {
-    clearFixtureBridge()
-    try {
-      bundle('@fixture/base').rows()
-    } catch (error) {
-      expect(error).toBeInstanceOf(ResolutionError)
-      expect((error as ResolutionError).code).toBe('resolution.bridge_missing')
-      expect((error as ResolutionError).message).toContain('eedsh sync')
-    }
-  })
-
-  it('reports malformed patch files instead of partial rows', async () => {
-    await writeFile(join(fixture.baseDir, 'cordis.patch.yml'), '- insert: not-a-list\n')
-    try {
-      bundle('@fixture/base').rows()
-    } catch (error) {
-      expect(error).toBeInstanceOf(ResolutionError)
-      expect((error as ResolutionError).code).toBe('resolution.patch_invalid')
-      expect((error as ResolutionError).message).toContain('@fixture/base')
-    }
-  })
-
-  it('reports both roots as a conflict', () => {
-    const rooted = new BundleQuery('@fixture/custom', {
-      profile: 'work',
-      packageDir: fixture.packageDir,
-    })
-    try {
-      rooted.rows()
-    } catch (error) {
-      expect(error).toBeInstanceOf(ResolutionError)
-      expect((error as ResolutionError).code).toBe('resolution.root_conflict')
-    }
-  })
-})
 describe('layer patches', () => {
   it('appends patches in call order and returns the layer', () => {
     const row = bundle('@fixture/base').row('timer')
-    const preset = bundle('@fixture/base').preset('standard')
     const layer = new LayerBuilder('order')
     const chained = layer
       .insert([{ id: 'inserted', name: '@scope/inserted' }])
       .disable(row)
-      .enable(preset)
       .override(row, { interval: 5 })
       .raw({ id: 'raw-row', extra: { a: 1 } })
     expect(chained).toBe(layer)
     expect(layer.label).toBe('order')
-    expect(layer.patches).toEqual([
-      { insert: [{ id: 'inserted', name: '@scope/inserted' }] },
-      { id: 'timer', disabled: true },
-      { id: 'preset-standard', disabled: false },
-      { id: 'timer', config: { interval: 5 } },
-      { id: 'raw-row', extra: { a: 1 } },
-    ])
-    expect(layer.toJSON()).toEqual({ patches: layer.patches })
+    expect(layer.toJSON()).toEqual({
+      patches: [
+        { insert: [{ id: 'inserted', name: '@scope/inserted' }] },
+        { id: 'timer', disabled: true },
+        { id: 'timer', config: { interval: 5 } },
+        { id: 'raw-row', extra: { a: 1 } },
+      ],
+    })
   })
 
   it('keeps js and group as plain value constructors', () => {
@@ -307,7 +247,55 @@ describe('layer patches', () => {
     })
   })
 
-  it('rejects an invalid patch target', () => {
-    expect(() => new LayerBuilder('bad').disable({} as never)).toThrowError(ResolutionError)
+  it('expands a row collection as a patch target', () => {
+    const built = defineConfig()
+      .profile('work', (profile) => {
+        profile.generated().layer((layer) => layer.disable(bundle('@fixture/base').rows()))
+      })
+      .build(baseTable)
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    expect(plan.success.layers[0]?.patches).toEqual([
+      { id: 'preset-standard', disabled: true },
+      { id: 'timer', disabled: true },
+    ])
+  })
+
+  it('expands a preset collection as a patch target', () => {
+    const built = defineConfig()
+      .profile('work', (profile) => {
+        profile
+          .generated()
+          .layer((layer) => layer.override(bundle('@fixture/base').presets(), { enabled: false }))
+      })
+      .build(baseTable)
+    if (Result.isFailure(built)) throw built.failure
+    const plan = built.success.profiles.work
+    if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
+    expect(plan.success.layers[0]?.patches).toEqual([
+      { id: 'preset-standard', config: { enabled: false } },
+    ])
+  })
+
+  it('rejects an invalid patch target as an authoring defect', () => {
+    expect(() => new LayerBuilder('bad').disable({} as never)).toThrowError(AuthoringDefect)
+  })
+
+  it('rejects a rooted query as a bundle selection', () => {
+    const rooted = bundle('@deepseek-ai/dsh-base').fromProfile('work')
+    const builder = defineConfig()
+    expect(() =>
+      builder.profile('work', (profile) => {
+        // @ts-expect-error a rooted query is query-only and not a plan selection
+        profile.bundle(rooted)
+      }),
+    ).toThrowError(AuthoringDefect)
+  })
+
+  it('rejects a preset definition as a patch target', () => {
+    expect(() => new LayerBuilder('bad').disable({ id: 'x' } as never)).toThrowError(
+      AuthoringDefect,
+    )
   })
 })

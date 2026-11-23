@@ -25,24 +25,22 @@ const version = '0.2.1-rc.2'
 function sourceConfig(url: string): string {
   return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .generated()
       .source(${JSON.stringify(SOURCE_NAME)}, { from: ${JSON.stringify(url)}, prepare: [] })
   })
-  .build()
 `
 }
 
 function plainConfig(): string {
   return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile.generated()
   })
-  .build()
 `
 }
 

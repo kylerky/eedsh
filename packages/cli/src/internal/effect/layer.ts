@@ -5,24 +5,27 @@
  * can replace any single capability without rebuilding the graph.
  * @module @eedsh/cli/internal/effect/layer
  */
+
+import type { DshBridge } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Layer, Stream } from 'effect'
+import { Effect, Layer, Ref, Stream } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import * as Result from 'effect/Result'
 import { boundedCommandRunner, pnpmInvocation, versionProbe } from '../../command-runner'
 import { loadConfig } from '../../config'
-import { resolveBundleLayers } from '../../dsh'
 import { bootstrapDshInstallation } from '../../dsh-bootstrap'
 import { loadDshBridge } from '../../dsh-bridge'
 import { discoverDshInstallation, validateDshVersion } from '../../dsh-discovery'
 import { defaultInstallationAnchorStore } from '../../installation-anchor'
 import { preflightLayer } from '../../preflight'
+import { bundlePatchLayers, resolveDescriptors, resolveOne } from '../../resolve'
 import { defaultSpawn, type SpawnLike } from '../../spawn'
 import { watchConfigDirectory } from '../../watch'
 import { posixSyncLock } from '../lock-posix'
 import { win32SyncLock } from '../lock-win32'
-import { PackageInstallFailure } from './errors'
+import { DshFailure, DshResolveFailure, PackageInstallFailure } from './errors'
 import {
   BundleResolver,
   type BundleResolverShape,
@@ -195,20 +198,25 @@ export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape, never, CommandRun
     }),
   )
 
-/** Evaluation of the config module through tsx. */
-export const configLoaderLayer: Layer.Layer<ConfigLoaderShape, never, FileSystem.FileSystem> =
-  Layer.effect(
-    ConfigLoader,
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      return {
-        load: (configPath, evaluationNonce) =>
-          loadConfig(configPath, evaluationNonce).pipe(
-            Effect.provideService(FileSystem.FileSystem, fs),
-          ),
-      }
-    }),
-  )
+/** Evaluation of the config module through tsx, over the invocation resolver. */
+export const configLoaderLayer: Layer.Layer<
+  ConfigLoaderShape,
+  never,
+  FileSystem.FileSystem | BundleResolverShape
+> = Layer.effect(
+  ConfigLoader,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const resolver = yield* BundleResolver
+    return {
+      load: (configPath, options) =>
+        loadConfig(configPath, options).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(BundleResolver, resolver),
+        ),
+    }
+  }),
+)
 
 /**
  * The kept `Result` → Effect seams. `Result` is the return type of pure
@@ -229,13 +237,80 @@ export const configLoaderLayer: Layer.Layer<ConfigLoaderShape, never, FileSystem
  * `Result` and reports it, or converts it to the error channel immediately.
  */
 
-/** The DSH bridge and profile-bundle patch resolution. */
-export const bundleResolverLayer: Layer.Layer<BundleResolverShape> = Layer.succeed(BundleResolver, {
-  loadBridge: (installation) =>
-    Effect.promise(() => loadDshBridge(installation)).pipe(Effect.flatMap(Effect.fromResult)),
-  resolveBundlePatches: (packageName, profileDir, installAnchor) =>
-    Effect.fromResult(resolveBundleLayers(packageName, profileDir, installAnchor)),
-})
+/**
+ * The selected installation's bridge cache and bundle resolution. The layer
+ * captures the file-system service once; each installation path loads its
+ * bridge at most once per invocation, and no global state is installed.
+ */
+export const bundleResolverLayer: Layer.Layer<BundleResolverShape, never, FileSystem.FileSystem> =
+  Layer.effect(
+    BundleResolver,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const cache = yield* Ref.make(new Map<string, DshBridge>())
+      const load = (installation: Parameters<BundleResolverShape['loadBridge']>[0]) =>
+        Effect.gen(function* () {
+          const known = (yield* Ref.get(cache)).get(installation.installAnchor)
+          if (known !== undefined) return known
+          const loaded = yield* Effect.promise(() => loadDshBridge(installation)).pipe(
+            Effect.flatMap(Effect.fromResult),
+          )
+          yield* Ref.update(cache, (entries) =>
+            new Map(entries).set(installation.installAnchor, loaded),
+          )
+          return loaded
+        })
+      const installed = (installAnchor: string) =>
+        Effect.gen(function* () {
+          const found = (yield* Ref.get(cache)).get(installAnchor)
+          if (found !== undefined) return found
+          return yield* Effect.fail(
+            new DshFailure({
+              code: 'dsh.bridge_unavailable',
+              path: installAnchor,
+              message: `no composition bridge is loaded for the selected DSH installation at ${installAnchor}`,
+            }),
+          )
+        })
+      const shape: BundleResolverShape = {
+        loadBridge: load,
+        resolve: (input) =>
+          Effect.gen(function* () {
+            const bridge = yield* load(input.installation)
+            return yield* resolveDescriptors(fs, bridge, input.queries, {
+              installation: input.installation,
+              configDir: input.configDir,
+              env: input.env,
+            })
+          }),
+        resolveQuery: (input) =>
+          Effect.gen(function* () {
+            const bridge = yield* load(input.installation)
+            return yield* resolveOne(fs, bridge, input.bundle, input.root, {
+              installation: input.installation,
+              configDir: input.configDir,
+              env: input.env,
+            })
+          }),
+        resolveBundlePatches: (packageName, profileDir, installAnchor) =>
+          Effect.gen(function* () {
+            const bridge = yield* installed(installAnchor).pipe(
+              Effect.mapError((cause) => new DshResolveFailure({ packageName, cause })),
+            )
+            const result = bundlePatchLayers(bridge, packageName, profileDir, installAnchor)
+            if (Result.isFailure(result)) {
+              return yield* Effect.fail(
+                new DshResolveFailure({ packageName, cause: result.failure }),
+              )
+            }
+            return result.success
+          }),
+        composeEntries: (installAnchor) =>
+          Effect.map(installed(installAnchor), (bridge) => bridge.composeEntries),
+      }
+      return shape
+    }),
+  )
 
 /** The chokidar-backed config-directory watcher. */
 export const watcherLayer: Layer.Layer<WatcherShape> = Layer.succeed(Watcher, {
@@ -273,12 +348,22 @@ export const commandRunnerLayer: Layer.Layer<
 /** The streaming launcher spawn. */
 export const spawnerLayer: Layer.Layer<SpawnLike> = Layer.succeed(Spawner, defaultSpawn)
 
-/** The live preflight composition over the bundle resolver. */
-export const livePreflightLayer: Layer.Layer<PreflightShape> = preflightLayer.pipe(
-  Layer.provide(bundleResolverLayer),
+const platformLayer = NodeServices.layer
+
+/** The live bundle resolver over the invocation filesystem. */
+export const liveBundleResolverLayer: Layer.Layer<BundleResolverShape> = bundleResolverLayer.pipe(
+  Layer.provide(platformLayer),
 )
 
-const platformLayer = NodeServices.layer
+/** The live config loader over the invocation resolver. */
+const liveConfigLoaderLayer: Layer.Layer<ConfigLoaderShape> = configLoaderLayer.pipe(
+  Layer.provide(Layer.merge(platformLayer, liveBundleResolverLayer)),
+)
+
+/** The live preflight composition over the bundle resolver. */
+export const livePreflightLayer: Layer.Layer<PreflightShape> = preflightLayer.pipe(
+  Layer.provide(liveBundleResolverLayer),
+)
 
 /** The production command runner, bound to the platform's child-process spawner. */
 const processCommandRunnerLayer = commandRunnerLayer.pipe(Layer.provide(platformLayer))
@@ -290,8 +375,8 @@ const domainLayer = Layer.mergeAll(
   outputLayer,
   environmentLayer,
   processDshDiscoveryLayer,
-  configLoaderLayer.pipe(Layer.provide(platformLayer)),
-  bundleResolverLayer,
+  liveConfigLoaderLayer,
+  liveBundleResolverLayer,
   watcherLayer,
   installationAnchorLayer,
   processCommandRunnerLayer,

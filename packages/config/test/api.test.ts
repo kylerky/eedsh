@@ -1,17 +1,9 @@
-import {
-  clearDshBridge,
-  defineConfig,
-  dshVersion,
-  group,
-  installDshBridge,
-  js,
-  LayerBuilder,
-} from '@eedsh/config'
+import { defineConfig, group, js, LayerBuilder } from '@eedsh/config'
 import { PLAN_FORMAT, validatePlan } from '@eedsh/plan'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SchemaIssue from 'effect/SchemaIssue'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 describe('layer builder patches', () => {
   it('insert accepts one entry or many', () => {
@@ -165,30 +157,5 @@ describe('defineConfig profile boundary', () => {
     const module = await import('@eedsh/config')
     expect('assertPlan' in module).toBe(false)
     expect('validatePlan' in module).toBe(false)
-  })
-})
-afterEach(() => {
-  clearDshBridge()
-})
-
-describe('dshVersion authoring export', () => {
-  it('returns the active installation version synchronously', () => {
-    installDshBridge({
-      version: '0.2.1-rc.5',
-      installation: {
-        installAnchor: '/dsh/package.json',
-        packageDir: '/dsh',
-        binPath: '/dsh/lib/bin.js',
-      },
-      resolveProfileDir: () => '/profile',
-      resolveBundleDir: () => '/bundle',
-      readProfileManifest: () => ({}),
-      bundlePatchFiles: () => [],
-      loadOverlayPatches: () => [],
-      composeEntries: () => [],
-    })
-    const value = dshVersion()
-    expect(value).toBe('0.2.1-rc.5')
-    expect(value).not.toBeInstanceOf(Promise)
   })
 })

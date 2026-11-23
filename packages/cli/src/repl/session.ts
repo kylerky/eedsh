@@ -11,23 +11,34 @@ import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
 import vm from 'node:vm'
-import { activeDshBridge, type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
+import {
+  type BundleQueryDescriptor,
+  type ConfigProvenance,
+  isPresetEntry,
+  type QueryRoot,
+  queryKey,
+  type ResolutionTrace,
+  type ResolvedBundle,
+} from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Fiber, Option, Stream } from 'effect'
-import type * as FileSystem from 'effect/FileSystem'
+import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Scope from 'effect/Scope'
 import { asEedshError } from '../command/errors'
 import { describeError } from '../command/report'
 import {
   type ConfigLoadFailure,
+  type ConfigLoadOptions,
   loadConfig as defaultLoadConfig,
   type LoadedConfig,
 } from '../config'
 import { type DoctorResult, doctor } from '../doctor'
-import { resolveBundleLayers } from '../dsh'
+import type { DiscoveredDshInstallation } from '../dsh'
 import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
+import type { BundleResolverShape } from '../internal/effect/services'
+import { BundleResolver } from '../internal/effect/services'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
@@ -110,14 +121,6 @@ export interface AuthoringPackage {
   readonly version: string
 }
 
-/** The structural query handle completion needs from either authoring copy. */
-interface QueryHandleLike {
-  rows(): readonly { readonly id: string }[]
-  presets(): readonly { readonly id: string }[]
-  fromProfile(profile: string): QueryHandleLike
-  fromPackageDir(dir: string): QueryHandleLike
-}
-
 /** Environment and stream seams for one session. */
 export interface ReplSessionOptions {
   readonly configPath: string
@@ -131,9 +134,13 @@ export interface ReplSessionOptions {
   readonly fileSystem: FileSystem.FileSystem
   /** The child-process spawn seam the preview installer uses. */
   readonly spawner: SpawnLike
+  /** The installation selected for the invocation. */
+  readonly installation: DiscoveredDshInstallation
+  /** The bundle resolver value, passed like the filesystem and spawner. */
+  readonly resolver: BundleResolverShape
   readonly loadConfig?: (
     path: string,
-    evaluationNonce?: string,
+    options: ConfigLoadOptions,
   ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
   /** The config-directory watcher; the command supplies the invocation's service. */
   readonly watch?: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>, unknown, Scope.Scope>
@@ -168,36 +175,8 @@ export class ReplSessionError extends Error {
   }
 }
 
-interface ResolutionTrace {
-  readonly bundle: string
-  readonly packageDir: string
-  readonly version: string
-  readonly origin: 'active' | 'profile' | 'packageDir' | 'preview'
-  readonly profile?: string
-}
-
-const TRACE_KEY = Symbol.for('@eedsh/config.resolution-trace')
-/** The bridge the CLI installs for the selected DSH installation. */
-const DSH_BRIDGE_KEY = Symbol.for('@eedsh/config.dsh-bridge')
-
-/** The selected installation's version, when a bridge has been installed. */
-function activeDshVersion(): string {
-  const bridge = (globalThis as { [key: symbol]: unknown })[DSH_BRIDGE_KEY]
-  if (bridge !== null && typeof bridge === 'object') {
-    const version = (bridge as { version?: unknown }).version
-    if (typeof version === 'string') return version
-  }
-  return 'unknown'
-}
 /** The curated authoring factories bound into the prompt. */
-const AUTHORING_BINDINGS = [
-  'bundle',
-  'defineConfig',
-  'definePreset',
-  'dshVersion',
-  'group',
-  'js',
-] as const
+const AUTHORING_BINDINGS = ['bundle', 'defineConfig', 'definePreset', 'group', 'js'] as const
 
 /** The typed view names the prompt owns; an authoring export must not shadow one. */
 const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
@@ -205,7 +184,6 @@ const VIEW_BINDINGS = ['config', 'plan', 'selectedProfile'] as const
 const HELP_LINES = [
   'bindings:',
   '  config                the loaded config view: defaultProfile, profiles()',
-  '  dshVersion()          the exact version of the selected DSH installation',
   '  selectedProfile       the selected profile view: name, plan(), bundles(), layers()',
   '  plan                  selectedProfile.plan()',
   'Tab completes commands, chain methods, and profile, bundle, row, and preset names;',
@@ -220,24 +198,6 @@ const HELP_LINES = [
   '  .exit                 end the session',
   'expressions accept erasable TypeScript (annotations) and top-level await; bindings persist',
 ]
-
-function traceStore(): ResolutionTrace[] {
-  const global = globalThis as typeof globalThis & { [key: symbol]: unknown }
-  const existing = global[TRACE_KEY]
-  if (Array.isArray(existing)) return existing as ResolutionTrace[]
-  const created: ResolutionTrace[] = []
-  global[TRACE_KEY] = created
-  return created
-}
-
-function takeTrace(): ResolutionTrace[] {
-  const store = traceStore()
-  return store.splice(0, store.length)
-}
-
-function clearTrace(): void {
-  traceStore().splice(0, traceStore().length)
-}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -618,10 +578,16 @@ function sourceOf(layer: PreflightLayer, offset: number, configDir: string): str
 async function defaultCompose(
   plan: ProfilePlan,
   profileDir: string,
-  installAnchor: string,
+  installation: DiscoveredDshInstallation,
   provenance: ConfigProvenance | undefined,
   configDir: string,
+  resolver: BundleResolverShape,
 ): Promise<CompositionResult> {
+  const loaded = await Effect.runPromise(Effect.result(resolver.loadBridge(installation)))
+  if (loaded._tag === 'Failure') {
+    return { rowCount: 0, warnings: [], error: loaded.failure.message }
+  }
+  const installAnchor = installation.installAnchor
   const layers: PreflightLayer[] = []
   let generatedPlaced = false
   for (const item of plan.bundles) {
@@ -630,17 +596,23 @@ async function defaultCompose(
       generatedPlaced = true
       continue
     }
-    const result = resolveBundleLayers(item.name, profileDir, installAnchor)
-    if (Result.isFailure(result)) {
+    const resolved = await Effect.runPromise(
+      Effect.result(resolver.resolveBundlePatches(item.name, profileDir, installAnchor)),
+    )
+    if (resolved._tag === 'Failure') {
       return {
         rowCount: 0,
         warnings: [],
-        error: `cannot resolve bundle ${JSON.stringify(item.name)}: ${messageOf(result.failure)} `,
+        error: `cannot resolve bundle ${JSON.stringify(item.name)}: ${messageOf(resolved.failure)} `,
       }
     }
-    layers.push({ label: `bundle:${item.name}`, patches: result.success })
+    layers.push({ label: `bundle:${item.name}`, patches: [...resolved.success] })
   }
   if (!generatedPlaced) layers.push(...generatedPreflightLayers(plan, provenance))
+  const compose = await Effect.runPromise(Effect.result(resolver.composeEntries(installAnchor)))
+  if (compose._tag === 'Failure') {
+    return { rowCount: 0, warnings: [], error: compose.failure.message }
+  }
   const sources: Record<string, string> = {}
   for (const layer of layers) {
     for (const [offset, patch] of layer.patches.entries()) {
@@ -648,7 +620,7 @@ async function defaultCompose(
       for (const id of touchedRowIds([patch])) sources[id] = source
     }
   }
-  const composition = composePreflightLayers(layers)
+  const composition = composePreflightLayers(layers, compose.success)
   const warnings = [...composition.warnings]
   if (composition.duplicateInsertIds.length > 0) {
     warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)
@@ -672,16 +644,13 @@ export class ReplSession {
   private readonly options: ReplSessionOptions
   private readonly fileSystem: FileSystem.FileSystem
   private readonly spawner: SpawnLike
+  private readonly installation: DiscoveredDshInstallation
+  private readonly resolver: BundleResolverShape
   private readonly env: Record<string, string | undefined>
-  private readonly previousEnv: {
-    anchor: string | undefined
-    configDir: string | undefined
-    override: string | undefined
-    dshHome: string | undefined
-  }
+  private readonly previousOverride: string | undefined
   private readonly loadConfig: (
     path: string,
-    evaluationNonce?: string,
+    options: ConfigLoadOptions,
   ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
   private readonly compose: ComposePlan
   private readonly runDoctor: (profileDir: string) => Promise<DoctorResult>
@@ -694,6 +663,9 @@ export class ReplSession {
   private config!: EedshConfig
   private plan!: ProfilePlan
   private provenance: ConfigProvenance | undefined
+  private resolutionBundles: readonly ResolvedBundle[] = []
+  private queries: readonly BundleQueryDescriptor[] = []
+  private completionBundles = new Map<string, ResolvedBundle>()
   private profileName!: string
   private configView!: ConfigView
   private selectedProfileView!: ProfileView
@@ -720,11 +692,16 @@ export class ReplSession {
     this.env = options.env ?? process.env
     this.fileSystem = options.fileSystem
     this.spawner = options.spawner
+    this.installation = options.installation
+    this.resolver = options.resolver
     this.authoring = authoring
     this.loadConfig =
       options.loadConfig ??
-      ((path, evaluationNonce) =>
-        defaultLoadConfig(path, evaluationNonce).pipe(Effect.provide(NodeServices.layer)))
+      ((path, loadOptions) =>
+        defaultLoadConfig(path, loadOptions).pipe(
+          Effect.provideService(FileSystem.FileSystem, this.fileSystem),
+          Effect.provideService(BundleResolver, this.resolver),
+        ))
     this.runDoctor = options.doctor ?? ((profileDir) => defaultDoctor(profileDir, this.env))
     this.syncPlan = options.syncPlan
     this.installPreview = options.installPreview
@@ -733,30 +710,9 @@ export class ReplSession {
     this.syncEnabled = options.sync === true
     this.compose =
       options.compose ??
-      ((plan, profileDir, provenance, configDir) => {
-        const bridge = activeDshBridge()
-        if (bridge === undefined) {
-          return Promise.resolve({
-            rowCount: 0,
-            warnings: [],
-            error:
-              'the REPL needs the active DSH installation; run "eedsh repl" or select one with --dsh',
-          })
-        }
-        return defaultCompose(
-          plan,
-          profileDir,
-          bridge.installation.installAnchor,
-          provenance,
-          configDir,
-        )
-      })
-    this.previousEnv = {
-      anchor: process.env.EEDSH_DSH_ANCHOR,
-      configDir: process.env.EEDSH_CONFIG_DIR,
-      override: process.env.EEDSH_PROFILE_ROOT_OVERRIDE,
-      dshHome: process.env.DSH_HOME,
-    }
+      ((plan, profileDir, provenance, configDir) =>
+        defaultCompose(plan, profileDir, this.installation, provenance, configDir, this.resolver))
+    this.previousOverride = process.env.EEDSH_PROFILE_ROOT_OVERRIDE
   }
 
   /**
@@ -796,23 +752,7 @@ export class ReplSession {
   }
 
   private async initialize(): Promise<void> {
-    const bridge = activeDshBridge()
-    if (bridge === undefined) {
-      throw new ReplSessionError({
-        code: 'repl.bridge_missing',
-        message:
-          'the REPL needs the active DSH installation; run through "eedsh repl" or select one with --dsh',
-      })
-    }
-    const installation = { installAnchor: bridge.installation.installAnchor }
     try {
-      this.env.EEDSH_DSH_ANCHOR = installation.installAnchor
-      this.env.EEDSH_CONFIG_DIR = this.configDir
-      process.env.EEDSH_DSH_ANCHOR = installation.installAnchor
-      process.env.EEDSH_CONFIG_DIR = this.configDir
-      const dshHome = this.env.DSH_HOME
-      if (dshHome === undefined) delete process.env.DSH_HOME
-      else process.env.DSH_HOME = dshHome
       this.evaluator = createEvaluator({ cwd: this.configDir })
       this.evaluateRaw = this.evaluator.evaluate
       if (this.options.oneShot !== true) {
@@ -821,7 +761,7 @@ export class ReplSession {
         )
         this.stdout(`config: ${this.configPath}`)
         this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
-        this.stdout('bindings: config, selectedProfile, plan, dshVersion()')
+        this.stdout('bindings: config, selectedProfile, plan')
         this.stdout(
           'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names (a second Tab lists ambiguous matches)',
         )
@@ -865,16 +805,32 @@ export class ReplSession {
     plan: ProfilePlan,
     name: string,
     provenance: ConfigProvenance | undefined,
+    resolutionBundles: readonly ResolvedBundle[] = [],
+    queries: readonly BundleQueryDescriptor[] = [],
   ): Promise<void> {
     this.config = config
     this.plan = plan
     this.profileName = name
     this.provenance = provenance
+    this.resolutionBundles = resolutionBundles
+    this.queries = queries
+    this.completionBundles = new Map(
+      queries.flatMap((descriptor) => {
+        const resolved = resolutionBundles.find(
+          (item) =>
+            item.bundle === descriptor.bundle &&
+            queryKey(item.bundle, item.root) === queryKey(descriptor.bundle, descriptor.root),
+        )
+        return resolved === undefined
+          ? []
+          : ([[queryKey(descriptor.bundle, descriptor.root), resolved]] as const)
+      }),
+    )
     await this.refreshViews()
   }
 
   private async refreshViews(): Promise<void> {
-    const snapshots = await this.buildSnapshots(this.config)
+    const snapshots = await this.buildSnapshots(this.config, this.resolutionBundles, this.queries)
     this.configView = new ConfigView(this.config, snapshots)
     const selected = this.configView.profile(this.profileName)
     if (selected === undefined) {
@@ -887,7 +843,11 @@ export class ReplSession {
     this.invalidateCatalogs()
   }
 
-  private async buildSnapshots(config: EedshConfig): Promise<ReadonlyMap<string, ProfileSnapshot>> {
+  private async buildSnapshots(
+    config: EedshConfig,
+    resolutionBundles: readonly ResolvedBundle[],
+    queries: readonly BundleQueryDescriptor[],
+  ): Promise<ReadonlyMap<string, ProfileSnapshot>> {
     const snapshots = new Map<string, ProfileSnapshot>()
     for (const [name, result] of Object.entries(config.profiles)) {
       const profileDir =
@@ -914,11 +874,53 @@ export class ReplSession {
           }
         }
       }
+      const resolvedBundles = await this.resolveProfileBundles(
+        name,
+        plan,
+        resolutionBundles,
+        queries,
+      )
       const published = await this.publishedSnapshot(profileDir)
       const packages = await PackageView.read(plan, profileDir, published.manifest, this.fileSystem)
-      snapshots.set(name, { profileDir, composition, published, packages })
+      snapshots.set(name, { profileDir, composition, published, packages, resolvedBundles })
     }
     return snapshots
+  }
+
+  /** Resolve every bundle selection one profile view exposes. */
+  private async resolveProfileBundles(
+    profile: string,
+    plan: ProfilePlan | undefined,
+    resolutionBundles: readonly ResolvedBundle[],
+    queries: readonly BundleQueryDescriptor[],
+  ): Promise<ReadonlyMap<string, ResolvedBundle>> {
+    const resolved = new Map<string, ResolvedBundle>()
+    for (const descriptor of queries) {
+      if (descriptor.root.profile !== profile) continue
+      const item = resolutionBundles.find(
+        (candidate) =>
+          candidate.bundle === descriptor.bundle &&
+          queryKey(candidate.bundle, candidate.root) ===
+            queryKey(descriptor.bundle, descriptor.root),
+      )
+      if (item !== undefined && !resolved.has(item.bundle)) resolved.set(item.bundle, item)
+    }
+    for (const selection of plan?.bundles ?? []) {
+      if (selection.kind !== 'bundle' || resolved.has(selection.name)) continue
+      const item = await Effect.runPromise(
+        Effect.result(
+          this.resolver.resolveQuery({
+            bundle: selection.name,
+            root: { profile },
+            installation: this.installation,
+            configDir: this.configDir,
+            env: this.env,
+          }),
+        ),
+      )
+      if (item._tag === 'Success') resolved.set(selection.name, item.success)
+    }
+    return resolved
   }
 
   private async publishedSnapshot(profileDir: string): Promise<PublishedSnapshot> {
@@ -1007,48 +1009,61 @@ export class ReplSession {
     return catalogs
   }
 
-  private queryFactory(): (name: string) => QueryHandleLike {
-    const candidate = this.authoring.module.bundle
-    return typeof candidate === 'function'
-      ? (candidate as unknown as (name: string) => QueryHandleLike)
-      : (defaultBundle as unknown as (name: string) => QueryHandleLike)
-  }
-
-  private queryHandle(bundle: string, root: CompletionRoot): QueryHandleLike {
-    let handle = this.queryFactory()(bundle)
-    if (root.profile !== undefined) handle = handle.fromProfile(root.profile)
-    else if (root.packageDir !== undefined) handle = handle.fromPackageDir(root.packageDir)
-    return handle
-  }
-
   private catalogRows(bundle: string, root: CompletionRoot): readonly string[] {
-    try {
-      const ids: string[] = []
-      const seen = new Set<string>()
-      for (const row of this.queryHandle(bundle, root).rows()) {
-        if (row.id === '' || seen.has(row.id)) continue
-        seen.add(row.id)
-        ids.push(row.id)
-      }
-      return ids
-    } catch {
-      return []
+    const resolved = this.completionBundles.get(queryKey(bundle, root))
+    if (resolved === undefined) return []
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const row of resolved.rows) {
+      const id = typeof row.id === 'string' ? row.id : ''
+      if (id === '' || seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
     }
+    return ids
   }
 
   private catalogPresets(bundle: string, root: CompletionRoot): readonly string[] {
-    try {
-      const ids: string[] = []
-      const seen = new Set<string>()
-      for (const preset of this.queryHandle(bundle, root).presets()) {
-        if (preset.id === '' || seen.has(preset.id)) continue
-        seen.add(preset.id)
-        ids.push(preset.id)
-      }
-      return ids
-    } catch {
-      return []
+    const resolved = this.completionBundles.get(queryKey(bundle, root))
+    if (resolved === undefined) return []
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const row of resolved.rows) {
+      if (!isPresetEntry(row)) continue
+      const config = row.config
+      const id =
+        config !== null && typeof config === 'object' && !Array.isArray(config)
+          ? (config as Record<string, unknown>).id
+          : undefined
+      if (typeof id !== 'string' || id === '' || seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
     }
+    return ids
+  }
+
+  /** Resolve the bundle a completion line names, so its row and preset catalogs are available. */
+  private async prefetchCompletion(line: string): Promise<void> {
+    const bundle = /bundle\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+    if (bundle === undefined) return
+    const profile = /\.fromProfile\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+    const packageDir = /\.fromPackageDir\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+    const root: QueryRoot =
+      profile !== undefined ? { profile } : packageDir !== undefined ? { packageDir } : {}
+    const key = queryKey(bundle, root)
+    if (this.completionBundles.has(key)) return
+    const resolved = await Effect.runPromise(
+      Effect.result(
+        this.resolver.resolveQuery({
+          bundle,
+          root,
+          installation: this.installation,
+          configDir: this.configDir,
+          env: this.env,
+        }),
+      ),
+    )
+    if (resolved._tag === 'Success') this.completionBundles.set(key, resolved.success)
   }
 
   private async catalogBundles(): Promise<readonly string[]> {
@@ -1094,9 +1109,7 @@ export class ReplSession {
   }
 
   private async activeBundles(): Promise<readonly string[]> {
-    const bridge = activeDshBridge()
-    if (bridge === undefined) return []
-    const anchor = bridge.installation.installAnchor
+    const anchor = this.installation.installAnchor
     try {
       const manifest = JSON.parse(
         await Effect.runPromise(this.fileSystem.readFileString(anchor)),
@@ -1135,18 +1148,14 @@ export class ReplSession {
   }
 
   /**
-   * Complete one line against the current evaluation's catalogs. Resolution
-   * traces produced by completion are drained so completion never prints provenance.
+   * Complete one line against the current evaluation's catalogs. A descriptor
+   * the line names is resolved read-only first; a failure contributes no hits.
    * @param line - the text before the cursor.
    * @returns the token start and hits.
    */
   async complete(line: string): Promise<CompletionResult> {
-    takeTrace()
-    try {
-      return completeLine({ line, cursor: line.length, catalogs: await this.completionCatalogs() })
-    } finally {
-      takeTrace()
-    }
+    await this.prefetchCompletion(line).catch(() => undefined)
+    return completeLine({ line, cursor: line.length, catalogs: await this.completionCatalogs() })
   }
 
   /**
@@ -1166,15 +1175,19 @@ export class ReplSession {
     config: EedshConfig
     plan: ProfilePlan
     name: string
-    traces: ResolutionTrace[]
+    traces: readonly ResolutionTrace[]
     provenance: ConfigProvenance | undefined
+    resolutionBundles: readonly ResolvedBundle[]
+    queries: readonly BundleQueryDescriptor[]
   }> {
-    clearTrace()
     this.evaluationNonce += 1
     const exit = await Effect.runPromiseExit(
-      this.loadConfig(this.configPath, String(this.evaluationNonce)),
+      this.loadConfig(this.configPath, {
+        installation: this.installation,
+        env: this.env,
+        evaluationNonce: String(this.evaluationNonce),
+      }),
     )
-    const traces = takeTrace()
     if (Exit.isFailure(exit)) {
       if (Cause.hasInterruptsOnly(exit.cause)) throw new Error('interrupted')
       throw Cause.squash(exit.cause)
@@ -1184,14 +1197,23 @@ export class ReplSession {
       config: exit.value.config,
       plan: selected.plan,
       name: selected.name,
-      traces,
+      traces: exit.value.traces,
       provenance: exit.value.provenance,
+      resolutionBundles: exit.value.resolution.bundles,
+      queries: exit.value.queries,
     }
   }
 
   private async loadAndSelect(): Promise<void> {
     const loaded = await this.loadCandidate()
-    await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
+    await this.applySelection(
+      loaded.config,
+      loaded.plan,
+      loaded.name,
+      loaded.provenance,
+      loaded.resolutionBundles,
+      loaded.queries,
+    )
     this.bind()
     this.printTraces(loaded.traces)
     this.printComposition()
@@ -1234,14 +1256,18 @@ export class ReplSession {
 
   private applyPreviewEnv(): void {
     const override =
-      this.preview === undefined ? this.previousEnv.override : JSON.stringify(this.preview.override)
+      this.preview === undefined ? this.previousOverride : JSON.stringify(this.preview.override)
     if (override === undefined) delete process.env.EEDSH_PROFILE_ROOT_OVERRIDE
     else process.env.EEDSH_PROFILE_ROOT_OVERRIDE = override
+    if (override === undefined) delete this.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    else this.env.EEDSH_PROFILE_ROOT_OVERRIDE = override
   }
 
   private clearPreviewEnv(): void {
-    if (this.previousEnv.override === undefined) delete process.env.EEDSH_PROFILE_ROOT_OVERRIDE
-    else process.env.EEDSH_PROFILE_ROOT_OVERRIDE = this.previousEnv.override
+    if (this.previousOverride === undefined) delete process.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    else process.env.EEDSH_PROFILE_ROOT_OVERRIDE = this.previousOverride
+    if (this.previousOverride === undefined) delete this.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    else this.env.EEDSH_PROFILE_ROOT_OVERRIDE = this.previousOverride
   }
 
   private fingerprint(): string {
@@ -1263,7 +1289,14 @@ export class ReplSession {
     const diff = diffPlans(previous, next)
     if (diff.length === 0) this.stdout('reload: no changes')
     else for (const line of diff) this.stdout(line)
-    await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
+    await this.applySelection(
+      loaded.config,
+      loaded.plan,
+      loaded.name,
+      loaded.provenance,
+      loaded.resolutionBundles,
+      loaded.queries,
+    )
     this.bind()
     this.printTraces(loaded.traces)
     this.printComposition()
@@ -1326,15 +1359,7 @@ export class ReplSession {
 
   /** Evaluate one TypeScript expression. */
   async evaluate(code: string): Promise<unknown> {
-    clearTrace()
-    try {
-      const value = await this.evaluateRaw(code)
-      this.printTraces(takeTrace())
-      return value
-    } catch (error) {
-      this.printTraces(takeTrace())
-      throw error
-    }
+    return await this.evaluateRaw(code)
   }
 
   /** Evaluate without throwing, for prompt loops that must stay alive. */
@@ -1484,7 +1509,7 @@ export class ReplSession {
         {
           profileName: this.profileName,
           profileDir,
-          dshVersion: activeDshVersion(),
+          dshVersion: this.installation.version,
           specs,
           env: this.env,
           ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),
@@ -1504,6 +1529,8 @@ export class ReplSession {
       plan: this.plan,
       profileName: this.profileName,
       provenance: this.provenance,
+      resolutionBundles: this.resolutionBundles,
+      queries: this.queries,
     }
     this.preview = prepared
     this.previewSpecs = [...specs]
@@ -1511,7 +1538,14 @@ export class ReplSession {
     let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
     try {
       loaded = await this.loadCandidate()
-      await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
+      await this.applySelection(
+        loaded.config,
+        loaded.plan,
+        loaded.name,
+        loaded.provenance,
+        loaded.resolutionBundles,
+        loaded.queries,
+      )
       this.bind()
     } catch (error) {
       this.preview = previous.preview
@@ -1521,6 +1555,8 @@ export class ReplSession {
         previous.plan,
         previous.profileName,
         previous.provenance,
+        previous.resolutionBundles,
+        previous.queries,
       )
       this.applyPreviewEnv()
       this.reportFailure('preview not ready', error)
@@ -1578,7 +1614,14 @@ export class ReplSession {
         this.preview = undefined
         this.previewSpecs = []
         this.retainedPreviewDir = undefined
-        await this.applySelection(loaded.config, loaded.plan, loaded.name, loaded.provenance)
+        await this.applySelection(
+          loaded.config,
+          loaded.plan,
+          loaded.name,
+          loaded.provenance,
+          loaded.resolutionBundles,
+          loaded.queries,
+        )
         this.bind()
         this.stdout(
           'bootstrap complete: the real install reproduces the published plan; preview deleted',
@@ -1592,6 +1635,8 @@ export class ReplSession {
       this.plan = loaded.plan
       this.profileName = loaded.name
       this.provenance = loaded.provenance
+      this.resolutionBundles = loaded.resolutionBundles
+      this.queries = loaded.queries
       this.bind()
       this.stdout('preview divergence: the real install does not reproduce the published plan')
       this.stdout(
@@ -1617,12 +1662,6 @@ export class ReplSession {
       await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined))).catch(() => undefined)
     }
     this.clearPreviewEnv()
-    if (this.previousEnv.anchor === undefined) delete process.env.EEDSH_DSH_ANCHOR
-    else process.env.EEDSH_DSH_ANCHOR = this.previousEnv.anchor
-    if (this.previousEnv.configDir === undefined) delete process.env.EEDSH_CONFIG_DIR
-    else process.env.EEDSH_CONFIG_DIR = this.previousEnv.configDir
-    if (this.previousEnv.dshHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = this.previousEnv.dshHome
     if (this.retainedPreviewDir !== undefined) {
       this.stdout(`preview retained at ${this.retainedPreviewDir}`)
     }

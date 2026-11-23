@@ -102,11 +102,17 @@ describe('config directory watcher', () => {
         config: { profiles: {} },
         provenance: undefined,
         configDir: dir,
+        queries: [],
+        resolution: { bundles: [] },
+        traces: [],
       })
     })
     const bundleResolver: BundleResolverShape = {
       loadBridge: () => Effect.succeed({} as DshBridge),
+      resolve: () => Effect.succeed({ table: { bundles: [] }, bundles: [], traces: [] }),
+      resolveQuery: () => Effect.die(new Error('query resolution is unused')),
       resolveBundlePatches: () => Effect.succeed([]),
+      composeEntries: () => Effect.die(new Error('composition is unused')),
     }
     const anchor: InstallationAnchorShape = {
       read: () => Effect.succeed(undefined),

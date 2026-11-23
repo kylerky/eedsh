@@ -2,13 +2,14 @@
  * Preset-definition authoring. A definition is mutable authoring sugar that
  * normalizes to an ordinary `@deepseek-ai/dsh-agent-preset` Loader row. Its
  * child list is edited through a callback-scoped editor: every operation names
- * one child or one anchor, and lookups fail with a tagged
- * {@link PresetDefinitionError} before any mutation.
+ * one child or one anchor. A definition copied from an installed preset
+ * resolves that preset's children from the invocation resolution at build time.
  * @module @eedsh/config/preset
  */
 import type { JsonObject } from '@eedsh/plan'
 import { AUTHORING_KIND, authoringKind } from './authoring'
-import type { Preset } from './query'
+import type { BundleQueryDescriptor, Preset } from './query'
+import type { ResolutionTable } from './resolution'
 
 /** The Loader row name every preset definition normalizes to. */
 export const PRESET_ROW_NAME = '@deepseek-ai/dsh-agent-preset'
@@ -50,8 +51,20 @@ export interface PresetDefinitionOptions {
   readonly rowId?: string
 }
 
+type PresetOperation =
+  | { readonly kind: 'check'; readonly id: string }
+  | { readonly kind: 'append'; readonly entry: JsonObject }
+  | { readonly kind: 'prepend'; readonly entry: JsonObject }
+  | { readonly kind: 'insertBefore'; readonly anchor: string; readonly entry: JsonObject }
+  | { readonly kind: 'insertAfter'; readonly anchor: string; readonly entry: JsonObject }
+  | { readonly kind: 'remove'; readonly id: string }
+  | { readonly kind: 'replace'; readonly id: string; readonly entry: JsonObject }
+  | { readonly kind: 'setDisabled'; readonly id: string; readonly disabled: boolean }
+
 interface PresetState {
   entries: JsonObject[]
+  source?: Preset
+  operations: PresetOperation[]
   name?: string
   description?: string
   order?: number
@@ -78,9 +91,13 @@ function childIdOf(entry: JsonObject): string | undefined {
 }
 
 /** Look up one top-level child, rejecting a missing or ambiguous id. */
-function childIndex(definition: PresetDefinition, id: string): number {
+function childIndex(
+  entries: readonly JsonObject[],
+  definition: PresetDefinition,
+  id: string,
+): number {
   const matches: number[] = []
-  stateOf(definition).entries.forEach((entry, index) => {
+  entries.forEach((entry, index) => {
     if (childIdOf(entry) === id) matches.push(index)
   })
   if (matches.length === 0) {
@@ -104,10 +121,54 @@ function childIndex(definition: PresetDefinition, id: string): number {
   return matches[0] as number
 }
 
+/** Apply one recorded child operation to a materialized child list. */
+function applyOperation(
+  definition: PresetDefinition,
+  entries: JsonObject[],
+  operation: PresetOperation,
+): void {
+  switch (operation.kind) {
+    case 'check': {
+      childIndex(entries, definition, operation.id)
+      return
+    }
+    case 'append':
+      entries.push(cloneJson(operation.entry))
+      return
+    case 'prepend':
+      entries.unshift(cloneJson(operation.entry))
+      return
+    case 'insertBefore': {
+      const index = childIndex(entries, definition, operation.anchor)
+      entries.splice(index, 0, cloneJson(operation.entry))
+      return
+    }
+    case 'insertAfter': {
+      const index = childIndex(entries, definition, operation.anchor)
+      entries.splice(index + 1, 0, cloneJson(operation.entry))
+      return
+    }
+    case 'remove': {
+      const index = childIndex(entries, definition, operation.id)
+      entries.splice(index, 1)
+      return
+    }
+    case 'replace': {
+      const index = childIndex(entries, definition, operation.id)
+      entries[index] = cloneJson(operation.entry)
+      return
+    }
+    case 'setDisabled': {
+      const index = childIndex(entries, definition, operation.id)
+      entries[index] = { ...(entries[index] as JsonObject), disabled: operation.disabled }
+    }
+  }
+}
+
 /**
- * One transient child handle. Operations look the child up again before
- * mutating, so a failed lookup never changes the child list. A handle is
- * scoped to the `.children()` callback and returns nothing.
+ * One transient child handle. With no copied source, operations are validated
+ * against the authored child list before mutating it. A copied source is
+ * resolved at build time, so its operations are recorded and replayed then.
  */
 export class PresetChild {
   constructor(
@@ -127,8 +188,9 @@ export class PresetChild {
 
   /** Remove this child from the list. */
   remove(): void {
-    const index = childIndex(this.definition, this.childId)
-    stateOf(this.definition).entries.splice(index, 1)
+    const state = stateOf(this.definition)
+    if (state.source === undefined) childIndex(state.entries, this.definition, this.childId)
+    this.record({ kind: 'remove', id: this.childId })
   }
 
   /**
@@ -136,14 +198,21 @@ export class PresetChild {
    * @param entry - the one replacement entry.
    */
   replaceWith(entry: JsonObject): void {
-    const index = childIndex(this.definition, this.childId)
-    stateOf(this.definition).entries[index] = cloneJson(entry)
+    const state = stateOf(this.definition)
+    if (state.source === undefined) childIndex(state.entries, this.definition, this.childId)
+    this.record({ kind: 'replace', id: this.childId, entry })
   }
 
   private setDisabled(disabled: boolean): void {
-    const index = childIndex(this.definition, this.childId)
     const state = stateOf(this.definition)
-    state.entries[index] = { ...(state.entries[index] as JsonObject), disabled }
+    if (state.source === undefined) childIndex(state.entries, this.definition, this.childId)
+    this.record({ kind: 'setDisabled', id: this.childId, disabled })
+  }
+
+  private record(operation: PresetOperation): void {
+    const state = stateOf(this.definition)
+    if (state.source === undefined) applyOperation(this.definition, state.entries, operation)
+    else state.operations.push(operation)
   }
 }
 
@@ -160,7 +229,9 @@ export class PresetChildren {
    * @returns a transient child handle.
    */
   child(id: string): PresetChild {
-    childIndex(this.definition, id)
+    const state = stateOf(this.definition)
+    if (state.source === undefined) childIndex(state.entries, this.definition, id)
+    else state.operations.push({ kind: 'check', id })
     return new PresetChild(this.definition, id)
   }
 
@@ -169,7 +240,7 @@ export class PresetChildren {
    * @param entry - the entry to append.
    */
   append(entry: JsonObject): void {
-    stateOf(this.definition).entries.push(cloneJson(entry))
+    this.record({ kind: 'append', entry })
   }
 
   /**
@@ -177,7 +248,7 @@ export class PresetChildren {
    * @param entry - the entry to prepend.
    */
   prepend(entry: JsonObject): void {
-    stateOf(this.definition).entries.unshift(cloneJson(entry))
+    this.record({ kind: 'prepend', entry })
   }
 
   /**
@@ -186,8 +257,7 @@ export class PresetChildren {
    * @param entry - the entry to insert.
    */
   insertBefore(anchor: string, entry: JsonObject): void {
-    const index = childIndex(this.definition, anchor)
-    stateOf(this.definition).entries.splice(index, 0, cloneJson(entry))
+    this.record({ kind: 'insertBefore', anchor, entry })
   }
 
   /**
@@ -196,8 +266,13 @@ export class PresetChildren {
    * @param entry - the entry to insert.
    */
   insertAfter(anchor: string, entry: JsonObject): void {
-    const index = childIndex(this.definition, anchor)
-    stateOf(this.definition).entries.splice(index + 1, 0, cloneJson(entry))
+    this.record({ kind: 'insertAfter', anchor, entry })
+  }
+
+  private record(operation: PresetOperation): void {
+    const state = stateOf(this.definition)
+    if (state.source === undefined) applyOperation(this.definition, state.entries, operation)
+    else state.operations.push(operation)
   }
 }
 
@@ -223,20 +298,21 @@ export class PresetDefinition {
     }
     this.id = id
     this.rowId = options.rowId ?? `preset-${id}`
-    STATES.set(this, { entries: [] })
+    STATES.set(this, { entries: [], operations: [] })
   }
 
   /**
    * Copy one installed preset's child list. Identity and metadata stay with
-   * this definition, and the source handle is never mutated or aliased.
+   * this definition; the source descriptor is resolved during build, and the
+   * source handle is never mutated or aliased.
    * @param source - the queried preset to adapt.
    * @returns this definition.
    */
   from(source: Preset): this {
-    const config = source.toJSON().config
-    const plugins =
-      isRecord(config) && Array.isArray(config.plugins) ? (config.plugins as JsonObject[]) : []
-    stateOf(this).entries = cloneJson(plugins)
+    const state = stateOf(this)
+    state.source = source
+    state.entries = []
+    state.operations = []
     return this
   }
 
@@ -281,17 +357,43 @@ export class PresetDefinition {
     return this
   }
 
-  /** The preset definition as an ordinary inserted Loader row. */
-  toJSON(): JsonObject {
+  /**
+   * The preset definition as an ordinary inserted Loader row.
+   * @param table - the invocation resolution, required for a copied source.
+   * @returns the plain Loader row.
+   */
+  toJSON(table: ResolutionTable = { bundles: [] }): JsonObject {
     const state = stateOf(this)
+    const entries = this.materializedEntries(table)
     const config: JsonObject = {
       id: this.id,
-      plugins: cloneJson(state.entries) as JsonObject[],
+      plugins: cloneJson(entries) as JsonObject[],
     }
     if (state.name !== undefined) config.name = state.name
     if (state.description !== undefined) config.description = state.description
     if (state.order !== undefined) config.order = state.order
     return { id: this.rowId, name: PRESET_ROW_NAME, config }
+  }
+
+  /** The row as plain plan data, resolved by the invocation. */
+  resolve(table: ResolutionTable): JsonObject {
+    return this.toJSON(table)
+  }
+
+  /** The source preset query this definition needs, when it copies one. */
+  queries(): readonly BundleQueryDescriptor[] {
+    return stateOf(this).source?.queries() ?? []
+  }
+
+  private materializedEntries(table: ResolutionTable): JsonObject[] {
+    const state = stateOf(this)
+    if (state.source === undefined) return state.entries
+    const source = state.source.resolve(table)
+    const config = isRecord(source.config) ? source.config : {}
+    const plugins = Array.isArray(config.plugins) ? (config.plugins as JsonObject[]) : []
+    const entries = cloneJson(plugins)
+    for (const operation of state.operations) applyOperation(this, entries, operation)
+    return entries
   }
 }
 

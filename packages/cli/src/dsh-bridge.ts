@@ -1,12 +1,12 @@
 /**
- * Load the composition capabilities from the selected DSH installation and
- * install the global bridge the authoring package reads. The bridge carries
- * the exact selected version, so dshVersion() and every query agree.
+ * Load the composition capabilities from the selected DSH installation. The
+ * value carries the exact selected version; the caller caches it for the
+ * invocation and resolves recorded descriptors against it.
  * @module @eedsh/cli/dsh-bridge
  */
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-import { type DshBridge, installDshBridge, REQUIRED_DSH_CAPABILITIES } from '@eedsh/config'
+import { type DshBridge, REQUIRED_DSH_CAPABILITIES } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import type { DiscoveredDshInstallation } from './dsh-discovery'
 import { DshFailure } from './internal/effect/errors'
@@ -32,9 +32,10 @@ function failure(input: {
 }
 
 /**
- * Resolve, import, validate, and install the bridge for one installation.
+ * Resolve, import, and validate the bridge for one installation. The value is
+ * returned to the caller's resolver cache; nothing global is installed.
  * @param installation - the selected DSH installation.
- * @returns the installed bridge, or a tagged failure.
+ * @returns the bridge value, or a tagged failure.
  */
 export async function loadDshBridge(
   installation: DiscoveredDshInstallation,
@@ -98,6 +99,5 @@ export async function loadDshBridge(
     loadOverlayPatches: module.loadOverlayPatches as DshBridge['loadOverlayPatches'],
     composeEntries: module.composeEntries as DshBridge['composeEntries'],
   }
-  installDshBridge(bridge)
   return Result.succeed(bridge)
 }

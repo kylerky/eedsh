@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
@@ -15,11 +15,16 @@ import {
   resolveInitDependencySpecs,
   TYPESCRIPT_SPEC,
 } from '../src/init'
+import { bundleResolverLayer } from '../src/internal/effect/layer'
+import { devDshInstallation } from './support/bridge'
 import { type CliOverrides, captureOutput, runCli } from './support/cli'
 import { fakePackageManager, memoryFileSystem } from './support/fakes'
 
+const testResolver = bundleResolverLayer.pipe(Layer.provide(NodeServices.layer))
 const loadConfig = (configPath: string) =>
-  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+  loadConfigUnprovided(configPath, { installation: devDshInstallation(), env: {} }).pipe(
+    Effect.provide(Layer.merge(NodeServices.layer, testResolver)),
+  )
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 const configDir = join('/xdg', 'eedsh')
@@ -112,7 +117,7 @@ describe('init templates', () => {
     expect(config).toContain('defineConfig')
     expect(config).toContain(".profile('default'")
     expect(config).toContain('.generated()')
-    expect(config).toContain('.build()')
+    expect(config).toContain('export default () => defineConfig()')
     expect(config).not.toContain('defineProfile')
 
     const manifest = json(h.fs.files.get(packagePath))

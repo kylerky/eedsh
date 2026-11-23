@@ -10,16 +10,11 @@ import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { type DiscoveredDshInstallation, discoverDshInstallation } from '../../src/dsh'
-import { loadDshBridge } from '../../src/dsh-bridge'
 import { liveCliServicesLayer } from '../../src/internal/effect/layer'
+import { BundleResolver } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
 import { delay, waitFor } from '../support/async'
-import {
-  clearDshBridge,
-  clearTestBridge,
-  devDshInstallation,
-  installTestBridge,
-} from '../support/bridge'
+import { devDshInstallation } from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, disable, generated, layer } from '../support/plan-parts'
 
@@ -77,17 +72,11 @@ describe('slow Web HMR integration', () => {
       )
       if (Result.isFailure(discovered)) throw discovered.failure
       installation = discovered.success
-      clearDshBridge()
-      const loaded = await loadDshBridge(installation)
-      if (Result.isFailure(loaded)) throw loaded.failure
     } else {
-      await installTestBridge(installation.version)
     }
   }, 120_000)
 
-  afterAll(() => {
-    clearTestBridge()
-  })
+  afterAll(() => {})
 
   it('reloads a published generation in a running web profile', async () => {
     await mkdir(join(root, '.tmp'), { recursive: true })
@@ -99,15 +88,19 @@ describe('slow Web HMR integration', () => {
 
     const publish = (plan: ProfilePlan) =>
       Effect.runPromise(
-        materialize({
-          plan,
-          profileDir,
-          eedshVersion: '0.0.0',
-          dsh: installation,
-          runtimeSpec,
-          generatedSpec: 'link:./.eedsh/generated',
-          strict: false,
-          explain: false,
+        Effect.gen(function* () {
+          const resolver = yield* BundleResolver
+          yield* resolver.loadBridge(installation)
+          return yield* materialize({
+            plan,
+            profileDir,
+            eedshVersion: '0.0.0',
+            dsh: installation,
+            runtimeSpec,
+            generatedSpec: 'link:./.eedsh/generated',
+            strict: false,
+            explain: false,
+          })
         }).pipe(Effect.provide(liveCliServicesLayer)),
       )
 

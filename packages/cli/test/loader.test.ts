@@ -1,12 +1,17 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect } from 'effect'
+import { Effect, Layer } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { loadConfig as loadConfigUnprovided } from '../src/config'
+import { bundleResolverLayer } from '../src/internal/effect/layer'
+import { devDshInstallation } from './support/bridge'
 
+const testResolver = bundleResolverLayer.pipe(Layer.provide(NodeServices.layer))
 const loadConfig = (configPath: string) =>
-  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+  loadConfigUnprovided(configPath, { installation: devDshInstallation(), env: {} }).pipe(
+    Effect.provide(Layer.merge(NodeServices.layer, testResolver)),
+  )
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -39,9 +44,9 @@ async function writeMappedProject(prefix: string, profileName: string): Promise<
     `import { defineConfig } from '@eedsh/config'
 import { profileName } from '@project/helper'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile(profileName, () => undefined)
-  .build()
+
 `,
   )
   return configPath
@@ -54,11 +59,11 @@ async function writeProvenanceProject(prefix: string): Promise<string> {
     configPath,
     `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('provenance-profile', (profile) => {
     profile.layer((layer) => layer.insert({ id: 'row', name: '@scope/row' }))
   })
-  .build()
+
 `,
   )
   return configPath
@@ -91,9 +96,9 @@ describe('config loader resolution', () => {
       `import { defineConfig } from '@eedsh/config'
 import { profileName } from '@shared/helper'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile(profileName, () => undefined)
-  .build()
+
 `,
     )
 
@@ -131,9 +136,9 @@ export default defineConfig()
       configPath,
       `import { defineConfig } from '@eedsh/config'
 import { profileName } from './helper'
-export default defineConfig()
+export default () => defineConfig()
   .profile(profileName, () => undefined)
-  .build()
+
 `,
     )
 

@@ -131,14 +131,13 @@ export function resolveInitDependencySpecs(): Effect.Effect<
 export function initConfigTemplate(): string {
   return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('${INIT_PROFILE_NAME}', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .bundle('@deepseek-ai/dsh-web-app')
       .generated()
   })
-  .build()
 `
 }
 

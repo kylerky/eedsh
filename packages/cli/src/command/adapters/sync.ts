@@ -70,7 +70,7 @@ function syncSelection(input: SyncInput, provisioning: ProvisioningMode) {
       return EXIT_OK
     }
 
-    const loaded = yield* loadConfigValue(path)
+    const loaded = yield* loadConfigValue(path, installation)
     const selection = selectSyncProfiles(loaded.config, input.profile)
     if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
     const entries = selection.success

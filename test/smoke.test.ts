@@ -13,7 +13,6 @@ describe('workspace', () => {
     expect(typeof config.bundle).toBe('function')
     expect(typeof config.js).toBe('function')
     expect(typeof config.group).toBe('function')
-    expect(typeof config.dshVersion).toBe('function')
     expect('dsh' in config.defineConfig()).toBe(false)
     for (const symbol of [
       'defineProfile',

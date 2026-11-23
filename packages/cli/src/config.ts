@@ -1,26 +1,34 @@
 /**
  * Config evaluation. A config is a single TypeScript module at the XDG path or
- * an explicit `--config` path; its default export is an eedsh config. The
- * module is imported in-process through tsx's ESM and CJS hooks, with no build
- * step or temporary file, and resolves imports against its own project's
- * nearest tsconfig.
+ * an explicit `--config` path; its default export is a synchronous factory
+ * `(input) => ConfigBuilder`. The module is imported in-process through tsx's
+ * ESM and CJS hooks, with no build step or temporary file, and resolves imports
+ * against its own project's nearest tsconfig. Evaluation records query
+ * descriptors; the invocation resolves them in one phase, then the terminal
+ * build consumes the resulting table.
  * @module @eedsh/cli/config
  */
 import { dirname, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
-  activeDshBridge,
+  type BundleQueryDescriptor,
   type ConfigProvenance,
   clearProvenance,
   configProvenance,
+  isAuthoringDefect,
+  type ResolutionTable,
+  type ResolutionTrace,
 } from '@eedsh/config'
-import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
+import type { EedshConfig } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { CONFIG_FILENAME } from './config-path'
+import type { DiscoveredDshInstallation } from './dsh-discovery'
 import { type AuthoringError, isAuthoringError } from './internal/authoring-error'
+import type { DshFailure } from './internal/effect/errors'
+import { BundleResolver, type BundleResolverShape } from './internal/effect/services'
 import { findTsconfigPath } from './internal/tsconfig'
 
 /** A config path, evaluation, or export failure. */
@@ -31,6 +39,16 @@ export class ConfigError extends Data.TaggedError('ConfigError')<{
   constructor(code: string, message: string) {
     super({ code, message })
   }
+}
+
+/** The invocation inputs config evaluation needs. */
+export interface ConfigLoadOptions {
+  /** The installation selected for this invocation. */
+  readonly installation: DiscoveredDshInstallation
+  /** The invocation environment, for the preview profile-root override. */
+  readonly env: Record<string, string | undefined>
+  /** A nonce that makes a watch rerun re-evaluate an edited config. */
+  readonly evaluationNonce?: string
 }
 
 function errorMessage(error: unknown): string {
@@ -46,10 +64,18 @@ function errorMessage(error: unknown): string {
   return String(error)
 }
 
-/** Every failure config evaluation can report. */
-export type ConfigLoadFailure = ConfigError | Schema.SchemaError | AuthoringError
+/** Every expected failure config evaluation can report. */
+export type ConfigLoadFailure =
+  | ConfigError
+  | Schema.SchemaError
+  | AuthoringError
+  | ResolutionTableFailure
+  | DshFailure
 
-/** One successful config evaluation, with the provenance it recorded. */
+/** Resolution failures produced by the CLI keep the config package's identity. */
+type ResolutionTableFailure = import('@eedsh/config').ResolutionError
+
+/** One successful config evaluation, with everything the REPL observes. */
 export interface LoadedConfig {
   /** The validated multi-profile config. */
   readonly config: EedshConfig
@@ -57,19 +83,24 @@ export interface LoadedConfig {
   readonly provenance: ConfigProvenance | undefined
   /** Absolute directory of the evaluated config file. */
   readonly configDir: string
+  /** The distinct query descriptors the evaluated builder recorded. */
+  readonly queries: readonly BundleQueryDescriptor[]
+  /** The complete resolution table the build consumed. */
+  readonly resolution: ResolutionTable
+  /** One trace per resolved bundle and root pair. */
+  readonly traces: readonly ResolutionTrace[]
 }
 
-/** Read a config's default export as a validated multi-profile config. */
-function exportedConfig(
-  exported: unknown,
-): Result.Result<EedshConfig, ConfigError | Schema.SchemaError> {
-  const result = validateConfigValue(exported)
-  if (Result.isFailure(result)) {
-    return Schema.isSchemaError(result.failure)
-      ? Result.fail(result.failure)
-      : Result.fail(new ConfigError(result.failure.code, result.failure.message))
-  }
-  return Result.succeed(result.success)
+/** A builder shape check that works across two copies of `@eedsh/config`. */
+interface ConfigBuilderLike {
+  queries(): readonly BundleQueryDescriptor[]
+  build(table: ResolutionTable): Result.Result<EedshConfig, Schema.SchemaError>
+}
+
+function isConfigBuilder(value: unknown): value is ConfigBuilderLike {
+  if (value === null || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return typeof record.queries === 'function' && typeof record.build === 'function'
 }
 
 /**
@@ -165,48 +196,37 @@ export function validateConfigPath(configPath: string): Result.Result<void, Conf
     : Result.fail(unsupportedConfigExtensionError(configPath))
 }
 
-function restoreEnv(name: string, previous: string | undefined): void {
-  if (previous === undefined) delete process.env[name]
-  else process.env[name] = previous
+/** Map one thrown evaluation value onto its expected channel or a defect. */
+function failureOfEvaluation(
+  cause: unknown,
+  configPath: string,
+  action: string,
+): ConfigLoadFailure | { readonly defect: unknown } {
+  if (isAuthoringDefect(cause)) return { defect: cause }
+  if (Schema.isSchemaError(cause)) return cause
+  if (isAuthoringError(cause)) return cause
+  return new ConfigError(
+    'config.import_failed',
+    `cannot ${action} ${configPath}: ${errorMessage(cause)}`,
+  )
 }
 
 /**
- * Set the authoring environment for one config import and return its restore
- * function. The selected installation's manifest keeps `EEDSH_DSH_ANCHOR` as
- * the explicit discovery override and compatibility signal; the bridge stays the
- * query-time source of truth. The config directory lets a relative package root
- * resolve against the file rather than the CLI's cwd.
- */
-function importEnvironment(configPath: string): () => void {
-  const previousAnchor = process.env.EEDSH_DSH_ANCHOR
-  const previousConfigDir = process.env.EEDSH_CONFIG_DIR
-  const bridge = activeDshBridge()
-  if (bridge !== undefined) {
-    process.env.EEDSH_DSH_ANCHOR = bridge.installation.installAnchor
-  }
-  process.env.EEDSH_CONFIG_DIR = dirname(configPath)
-  return () => {
-    restoreEnv('EEDSH_DSH_ANCHOR', previousAnchor)
-    restoreEnv('EEDSH_CONFIG_DIR', previousConfigDir)
-  }
-}
-
-/**
- * Import a config module and validate its default export as an eedsh config.
- * Imports resolve against the nearest tsconfig at or above the config file (or
- * the loader's ordinary rules when there is none), never the caller's working
- * directory. The module URL carries the file's modification time so a watch
- * rerun re-evaluates an edited config instead of reusing the module cache.
+ * Import a config module, invoke its default-exported factory once with the
+ * invocation inputs, resolve every query descriptor it recorded, and build the
+ * validated config from the resolution table.
  * @param configPath - absolute config path.
- * @returns an Effect carrying the validated config and its recorded provenance,
- * a config failure, or the native schema error for an invalid envelope or export.
+ * @param options - the selected installation, environment, and evaluation nonce.
+ * @returns an Effect carrying the validated config and its resolution, or a
+ * config failure. Authoring defects are defects, not expected failures.
  */
 export function loadConfig(
   configPath: string,
-  evaluationNonce?: string,
-): Effect.Effect<LoadedConfig, ConfigLoadFailure, FileSystem.FileSystem> {
+  options: ConfigLoadOptions,
+): Effect.Effect<LoadedConfig, ConfigLoadFailure, FileSystem.FileSystem | BundleResolverShape> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
+    const resolver = yield* BundleResolver
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
 
@@ -233,7 +253,7 @@ export function loadConfig(
     )
 
     const url = pathToFileURL(configPath)
-    let evaluation = evaluationNonce
+    let evaluation = options.evaluationNonce
     if (evaluation === undefined) {
       evaluationSequence += 1
       evaluation = String(evaluationSequence)
@@ -241,23 +261,19 @@ export function loadConfig(
     url.search = `?eedsh=${stamp}&evaluation=${encodeURIComponent(evaluation)}`
     process.setSourceMapsEnabled(true)
     clearProvenance()
-    const imported = yield* Effect.tryPromise({
-      try: async () => {
-        const restore = importEnvironment(configPath)
-        return await nativeImport(url.href).finally(restore)
-      },
-      catch: (cause) =>
-        Schema.isSchemaError(cause)
-          ? cause
-          : isAuthoringError(cause)
-            ? cause
-            : new ConfigError(
-                'config.import_failed',
-                `cannot import ${configPath}: ${errorMessage(cause)}`,
-              ),
-    })
+    const attempt = yield* Effect.result(
+      Effect.tryPromise({
+        try: async () => ({ module: await nativeImport(url.href) }),
+        catch: (cause) => ({ cause }),
+      }),
+    )
+    if (Result.isFailure(attempt)) {
+      const mapped = failureOfEvaluation(attempt.failure.cause, configPath, 'import')
+      if ('defect' in mapped) return yield* Effect.die(mapped.defect)
+      return yield* Effect.fail(mapped)
+    }
 
-    const exported = imported.default
+    const exported = attempt.success.module.default
     if (exported === undefined) {
       return yield* Effect.fail(
         new ConfigError(
@@ -266,12 +282,65 @@ export function loadConfig(
         ),
       )
     }
-    const result = exportedConfig(exported)
-    if (Result.isFailure(result)) return yield* Effect.fail(result.failure)
-    return {
-      config: result.success,
-      provenance: configProvenance(),
-      configDir: dirname(configPath),
+    if (typeof exported !== 'function') {
+      return yield* Effect.fail(
+        new ConfigError(
+          'config.invalid_default_export',
+          `${configPath} must default-export a (input) => ConfigBuilder function; received ${typeof exported}`,
+        ),
+      )
     }
+
+    const configDir = dirname(configPath)
+    const input = {
+      dshVersion: options.installation.version,
+      configDir,
+    }
+    const built = Result.try(() => (exported as (value: typeof input) => unknown)(input))
+    if (Result.isFailure(built)) {
+      const mapped = failureOfEvaluation(built.failure, configPath, 'evaluate')
+      if ('defect' in mapped) return yield* Effect.die(mapped.defect)
+      return yield* Effect.fail(mapped)
+    }
+    if (!isConfigBuilder(built.success)) {
+      return yield* Effect.fail(
+        new ConfigError(
+          'config.invalid_default_export',
+          `${configPath} must default-export a function that returns a ConfigBuilder`,
+        ),
+      )
+    }
+    const builder = built.success
+
+    const queries = Result.try(() => builder.queries())
+    if (Result.isFailure(queries)) {
+      const mapped = failureOfEvaluation(queries.failure, configPath, 'evaluate')
+      if ('defect' in mapped) return yield* Effect.die(mapped.defect)
+      return yield* Effect.fail(mapped)
+    }
+
+    const outcome = yield* resolver.resolve({
+      queries: queries.success,
+      installation: options.installation,
+      configDir,
+      env: options.env,
+    })
+
+    const result = Result.try(() => builder.build(outcome.table))
+    if (Result.isFailure(result)) {
+      const mapped = failureOfEvaluation(result.failure, configPath, 'build')
+      if ('defect' in mapped) return yield* Effect.die(mapped.defect)
+      return yield* Effect.fail(mapped)
+    }
+    if (Result.isFailure(result.success)) return yield* Effect.fail(result.success.failure)
+    const loadedConfig: LoadedConfig = {
+      config: result.success.success,
+      provenance: configProvenance(),
+      configDir,
+      queries: queries.success,
+      resolution: outcome.table,
+      traces: outcome.traces,
+    }
+    return loadedConfig
   })
 }

@@ -7,7 +7,14 @@
  * layer and never by an option bag.
  * @module @eedsh/cli/internal/effect/services
  */
-import type { ConfigProvenance, DshBridge } from '@eedsh/config'
+import type {
+  BundleQueryDescriptor,
+  ConfigProvenance,
+  DshBridge,
+  QueryRoot,
+  ResolutionError,
+  ResolvedBundle,
+} from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import type { InstallationAnchor as InstallationAnchorRecord } from '@eedsh/runtime/installation-anchor'
 import { Context, type Effect } from 'effect'
@@ -25,6 +32,7 @@ import type { ConfigLoadFailure, LoadedConfig } from '../../config'
 import type { BootstrapInput, BootstrappedDsh } from '../../dsh-bootstrap'
 import type { DiscoverDshOptions, DiscoveredDshInstallation } from '../../dsh-discovery'
 import type { GeneratedBundle } from '../../materialize/generated-bundle'
+import type { ResolutionOutcome } from '../../resolve'
 import type { SpawnLike } from '../../spawn'
 import type {
   DshFailure,
@@ -83,25 +91,74 @@ export interface DshDiscoveryShape {
 /** DSH discovery service tag. */
 export const DshDiscovery = Context.Service<DshDiscoveryShape>('eedsh/DshDiscovery')
 
+/** The invocation inputs config evaluation needs. */
+export interface ConfigLoadOptions {
+  /** The installation selected for this invocation. */
+  readonly installation: DiscoveredDshInstallation
+  /** The invocation environment, for the preview profile-root override. */
+  readonly env: Record<string, string | undefined>
+  /** A nonce that makes a watch rerun re-evaluate an edited config. */
+  readonly evaluationNonce?: string
+}
+
 /** Evaluation of the config module. */
 export interface ConfigLoaderShape {
-  /** Import and validate the config at an absolute path. */
-  load(configPath: string, evaluationNonce?: string): Effect.Effect<LoadedConfig, ConfigLoadFailure>
+  /** Import, resolve, and build the config at an absolute path. */
+  load(
+    configPath: string,
+    options: ConfigLoadOptions,
+  ): Effect.Effect<LoadedConfig, ConfigLoadFailure>
 }
 
 /** Config loader service tag. */
 export const ConfigLoader = Context.Service<ConfigLoaderShape>('eedsh/ConfigLoader')
 
+/** Inputs for resolving the descriptors one evaluated builder reports. */
+export interface ResolveQueriesInput {
+  /** The descriptors `builder.queries()` reported. */
+  readonly queries: readonly BundleQueryDescriptor[]
+  /** The installation selected for the invocation. */
+  readonly installation: DiscoveredDshInstallation
+  /** The absolute directory of the evaluated config file. */
+  readonly configDir: string
+  /** The invocation environment, for the preview root override. */
+  readonly env: Record<string, string | undefined>
+}
+
+/** Inputs for resolving one ad-hoc query, as the REPL views and completion need. */
+export interface ResolveQueryInput {
+  /** The bundle package name. */
+  readonly bundle: string
+  /** The recorded root. */
+  readonly root: QueryRoot
+  /** The installation selected for the invocation. */
+  readonly installation: DiscoveredDshInstallation
+  /** The absolute directory of the evaluated config file. */
+  readonly configDir: string
+  /** The invocation environment, for the preview root override. */
+  readonly env: Record<string, string | undefined>
+}
+
 /** Resolution of a selected installation's bundles. */
 export interface BundleResolverShape {
-  /** Load the composition bridge from the installation and install it. */
+  /** Load and cache the composition bridge for the installation. */
   loadBridge(installation: DiscoveredDshInstallation): Effect.Effect<DshBridge, DshFailure>
+  /** Resolve every recorded query descriptor in one phase. */
+  resolve(
+    input: ResolveQueriesInput,
+  ): Effect.Effect<ResolutionOutcome, ResolutionError | DshFailure>
+  /** Resolve one ad-hoc query for a read-only view or completion. */
+  resolveQuery(
+    input: ResolveQueryInput,
+  ): Effect.Effect<ResolvedBundle, ResolutionError | DshFailure>
   /** Read the ordered patch layers one profile bundle contributes. */
   resolveBundlePatches(
     packageName: string,
     profileDir: string,
     installAnchor: string,
   ): Effect.Effect<readonly Record<string, unknown>[], DshResolveFailure>
+  /** The selected installation's entry composer, after `loadBridge`. */
+  composeEntries(installAnchor: string): Effect.Effect<DshBridge['composeEntries'], DshFailure>
 }
 
 /** Bundle resolver service tag. */

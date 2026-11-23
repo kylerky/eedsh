@@ -155,7 +155,7 @@ describe('built CLI integration', () => {
       configPath,
       `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
@@ -163,7 +163,6 @@ export default defineConfig()
   .profile('home', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated()
   })
-  .build()
 `,
     )
 

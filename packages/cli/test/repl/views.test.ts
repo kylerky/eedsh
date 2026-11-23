@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { type ConfigProvenance, defineConfig, takeResolutionTrace } from '@eedsh/config'
+import { type ConfigProvenance, defineConfig } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
@@ -20,8 +20,8 @@ import {
   ViewError,
 } from '../../src/repl/views'
 import { defaultSpawn } from '../../src/spawn'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
-import { realFileSystemValue } from '../support/cli'
+import { devDshInstallation } from '../support/bridge'
+import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 let work = ''
@@ -159,8 +159,17 @@ async function makeSession(
     stderr: (line) => err.push(line),
     fileSystem: await realFileSystemValue(),
     spawner: defaultSpawn,
+    installation: devDshInstallation(),
+    resolver: await realBundleResolverValue(),
     loadConfig: () =>
-      Effect.succeed({ config: current, provenance: options.provenance, configDir: work }),
+      Effect.succeed({
+        config: current,
+        provenance: options.provenance,
+        configDir: work,
+        queries: [],
+        resolution: { bundles: [] },
+        traces: [],
+      }),
     ...(options.useDefaultCompose === true
       ? {}
       : {
@@ -205,7 +214,6 @@ async function makeSession(
 }
 
 beforeEach(async () => {
-  await installTestBridge()
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'views-'))
   await mkdir(join(work, 'home', 'profiles', 'work'), { recursive: true })
@@ -216,8 +224,6 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  clearTestBridge()
-  clearTestBridge()
   await Promise.all(sessions.splice(0).map((session) => session.close()))
   await rm(work, { recursive: true, force: true })
 })
@@ -618,7 +624,6 @@ describe('read-only exploration', () => {
         sources: { 'row-a': 'generated #1' },
       }),
     })
-    takeResolutionTrace()
     const script = `
       config.defaultProfile
       config.profiles().map((profile) => [profile.name, profile.valid])
@@ -634,7 +639,6 @@ describe('read-only exploration', () => {
     `
     const value = await h.session.evaluate(script)
     expect(Array.isArray(value)).toBe(true)
-    expect(takeResolutionTrace()).toEqual([])
     expect(await directoryFiles(profileDir)).toEqual(before)
     expect(existsSync(join(profileDir, '.eedsh'))).toBe(false)
   })

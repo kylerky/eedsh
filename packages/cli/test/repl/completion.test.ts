@@ -40,17 +40,7 @@ describe('chain method completion', () => {
   it('offers the bundle methods at a chain step', () => {
     const result = at("bundle('@deepseek-ai/dsh-base').")
     expect(result.start).toBe("bundle('@deepseek-ai/dsh-base').".length)
-    for (const method of [
-      'rows',
-      'presets',
-      'row',
-      'preset',
-      'version',
-      'packageDir',
-      'origin',
-      'fromProfile',
-      'fromPackageDir',
-    ]) {
+    for (const method of ['rows', 'presets', 'row', 'preset', 'fromProfile', 'fromPackageDir']) {
       expect(result.hits).toContain(method)
     }
   })
@@ -95,9 +85,9 @@ describe('chain method completion', () => {
     const row = at("bundle('@deepseek-ai/dsh-base').row('timer').")
     expect(row.hits).toContain('disable')
     expect(row.hits).toContain('override')
-    expect(row.hits).toContain('toJSON')
+    expect(row.hits).not.toContain('toJSON')
     const preset = at("bundle('@deepseek-ai/dsh-base').preset('standard').")
-    expect(preset.hits).toContain('rowId')
+    expect(preset.hits).toContain('id')
     expect(preset.hits).toContain('disable')
     expect(at('config.').hits).toEqual(['defaultProfile', 'profile', 'profiles'])
     expect(at('selectedProfile.').hits).toContain('plan')

@@ -7,8 +7,8 @@ enum Mode {
 
 const mode: Mode = Mode.Basic
 
-export default defineConfig()
-  .profile(`enum-${mode}`, (profile) => {
+export default () =>
+  defineConfig().profile(`enum-${mode}`, (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .generated()
@@ -16,4 +16,3 @@ export default defineConfig()
         layer.insert({ id: 'enum-row', name: '@scope/enum-row' })
       })
   })
-  .build()

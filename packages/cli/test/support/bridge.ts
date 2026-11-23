@@ -2,22 +2,22 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { clearDshBridge, type DshBridge, installDshBridge } from '@eedsh/config'
+import type { DshBridge } from '@eedsh/config'
 import type { DiscoveredDshInstallation } from '../../src/dsh'
 
 /**
- * Install a real capability bridge from the workspace's dev-only DSH copy.
- * Tests that exercise composition or authoring queries call this once.
+ * Load a real capability bridge from the workspace's dev-only DSH copy. The
+ * value is returned to the caller; nothing global is installed.
  * @param version - the selected installation version.
- * @returns the installed bridge.
+ * @returns the loaded bridge.
  */
-export async function installTestBridge(version = '0.2.1-rc.2'): Promise<DshBridge> {
+export async function loadTestBridge(version = '0.2.1-rc.2'): Promise<DshBridge> {
   const require = createRequire(import.meta.url)
   const anchor = require.resolve('@deepseek-ai/dsh/package.json')
   const boot = (await import(
     pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href
   )) as Record<string, (...args: never[]) => unknown>
-  const bridge: DshBridge = {
+  return {
     version,
     installation: {
       installAnchor: anchor,
@@ -31,8 +31,6 @@ export async function installTestBridge(version = '0.2.1-rc.2'): Promise<DshBrid
     loadOverlayPatches: boot.loadOverlayPatches as DshBridge['loadOverlayPatches'],
     composeEntries: boot.composeEntries as DshBridge['composeEntries'],
   }
-  installDshBridge(bridge)
-  return bridge
 }
 
 /**
@@ -53,5 +51,3 @@ export function devDshInstallation(): DiscoveredDshInstallation {
     source: 'project',
   }
 }
-
-export { clearDshBridge, clearDshBridge as clearTestBridge }

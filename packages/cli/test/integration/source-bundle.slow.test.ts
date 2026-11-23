@@ -11,10 +11,10 @@ import { join } from 'node:path'
 import type { DshBridge } from '@eedsh/config'
 import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { composePreflightLayers, type PreflightLayer } from '../../src/preflight'
 import { sourceCheckoutDir, sourceKey } from '../../src/provision/source'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
+import { loadTestBridge } from '../support/bridge'
 import { type CliOverrides, captureOutput, fakeBundleResolver, runCli } from '../support/cli'
 import { fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 import { createSourceRepository, SOURCE_BUNDLE_NAME } from '../support/source-fixture'
@@ -26,7 +26,7 @@ const version = '0.2.1-rc.2'
 function sourceBundleConfig(url: string): string {
   return `import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .bundle(${JSON.stringify(SOURCE_BUNDLE_NAME)})
@@ -36,7 +36,6 @@ export default defineConfig()
         layer.override('source-bundle-panel', { label: 'configured' })
       })
   })
-  .build()
 `
 }
 
@@ -51,14 +50,6 @@ async function writeDsh(parent: string): Promise<string> {
   await writeFile(join(dir, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
   return dir
 }
-
-beforeAll(async () => {
-  await installTestBridge()
-})
-
-afterAll(() => {
-  clearTestBridge()
-})
 
 describe('source bundle slow integration', () => {
   it('provisions, builds, links, and composes a real source bundle', async () => {
@@ -144,7 +135,7 @@ describe('source bundle slow integration', () => {
         generated: { position: 1, label: 'configured', sites: [] },
       },
     ]
-    const composition = composePreflightLayers(layers)
+    const composition = composePreflightLayers(layers, (await loadTestBridge()).composeEntries)
     expect(composition.warnings).toEqual([])
     expect(composition.entries.find((entry) => entry.id === 'source-bundle-panel')).toMatchObject({
       id: 'source-bundle-panel',

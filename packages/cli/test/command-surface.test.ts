@@ -11,7 +11,7 @@ import { promisify } from 'node:util'
 import { Cause, Effect, Exit } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { waitFor } from './support/async'
-import { devDshInstallation, installTestBridge } from './support/bridge'
+import { devDshInstallation } from './support/bridge'
 import {
   type CliOverrides,
   captureOutput,
@@ -93,7 +93,6 @@ beforeAll(async () => {
       shell: process.platform === 'win32',
     })
   }
-  await installTestBridge()
 }, 120_000)
 
 describe('command surface characterization', () => {

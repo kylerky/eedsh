@@ -25,7 +25,7 @@ The config lives at `$XDG_CONFIG_HOME/eedsh/config.ts`; eedsh never discovers on
 // $XDG_CONFIG_HOME/eedsh/config.ts
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -40,7 +40,6 @@ export default defineConfig()
           .disable('repeat-tool-reminder')
       })
   })
-  .build()
 ```
 
 ```sh
@@ -81,7 +80,7 @@ This is the canonical reference plan; the test suite pins its canonical JSON and
 // $XDG_CONFIG_HOME/eedsh/config.ts
 import { defineConfig, js } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .package('@scope/my-plugin', 'link:../packages/my-plugin')
@@ -111,16 +110,15 @@ export default defineConfig()
           })
       })
   })
-  .build()
 ```
 
 The builders map one-to-one onto Loader patch concepts. `override` replaces a row's whole config; `raw` preserves a raw Loader patch entry, including fields the builders do not name. Inserting a resolved `Row` or `Preset` normalizes it to its plain Loader row; methods never reach the persisted plan.
 
 | API | Purpose |
 |---|---|
-| `defineConfig()` | Start the synchronous config builder. `.defaultProfile(name)` and `.profile(name, build)` chain; `.build()` validates. There is no DSH declaration. |
-| `dshVersion()` | Return the exact selected DSH version; throws a tagged `resolution.bridge_missing` outside eedsh. |
-| `ConfigBuilder.build()` | Normalize typed objects, validate the envelope and every profile, and return `Result<EedshConfig, Schema.SchemaError>`. |
+| `defineConfig()` | Start the synchronous config builder. `.defaultProfile(name)` and `.profile(name, build)` chain; `.build(table)` validates over the invocation resolution. There is no DSH declaration. |
+| `ConfigBuilder.queries()` | Return the distinct query descriptors the config recorded. |
+| `ConfigBuilder.build(table)` | Normalize typed objects and descriptors using the invocation resolution, validate the envelope and every profile, and return `Result<EedshConfig, Schema.SchemaError>`. |
 | `ProfileBuilder.bundle(name \| Bundle)` | Add an ordered bundle selection. A rooted query is rejected. Bundle selection never declares a dependency; a local bundle that is both calls `.bundle(name)` and `.package(name, spec)`. |
 | `ProfileBuilder.generated()` | Position the generated bundle among the managed bundles. |
 | `ProfileBuilder.layer(build)` | Declare an ordered, anonymous patch group scoped to its callback; identity is position. `.layer(label, build)` attaches an optional non-unique display label. |
@@ -132,59 +130,58 @@ The builders map one-to-one onto Loader patch concepts. `override` replaces a ro
 | `LayerBuilder.raw(entry)` | Preserve a raw Loader patch entry, including unnamed fields. |
 | `group(id, fields, children)` | Build a group entry for `insert`, with fields, an optional isolate map, and ordered children. |
 | `js(source)` | Emit a `!!js` runtime expression evaluated at activation. |
-| `bundle(name)` | Select a bundle and query handle; `.fromProfile()` and `.fromPackageDir()` root it. |
+| `bundle(name)` | Select a bundle and record queries; `.fromProfile()` and `.fromPackageDir()` root it. |
 | `definePreset(id, options?)` | Author a mutable agent-preset definition; `.from()`, `.name()`, `.description()`, `.order()`, and `.children()` chain and `.toJSON()` is an ordinary agent-preset row. |
 | `LayerBuilder.selectPreset(selected, { default })` | Write the complete `agent-preset-registry` config from two installed or authored preset references. |
 
 ## Authoring queries and the config REPL
 
-`@eedsh/config` resolves bundle rows synchronously while `config.ts` is evaluated. Queries are methods on typed, immutable handles; rows and presets are typed values whose `.toJSON()` is the plain Loader row.
+`@eedsh/config` records every query while `config.ts` is evaluated. The invocation resolves the recorded descriptors once, after evaluation and before the terminal build, so authoring reads no files and reaches no ambient installation state.
 
 ```ts
 import { bundle, defineConfig } from '@eedsh/config'
 
-const web = bundle('@deepseek-ai/dsh-web-app')
-const standard = web.presets()[0]
+export default () => {
+  const standard = bundle('@deepseek-ai/dsh-web-app').preset('standard')
 
-// No root: the active DSH installation the CLI selected for this run.
-const active = bundle('@deepseek-ai/dsh-base').row('timer')
+  // No root: the installation the invocation selected.
+  const active = bundle('@deepseek-ai/dsh-base').row('timer')
 
-// One explicit root: an installed profile copy, or a package directory.
-const installed = bundle('@acme/plugin-bundle').fromProfile('work').rows()
-const vendored = bundle('@acme/plugin-bundle')
-  .fromPackageDir('../vendor/plugin-bundle')
-  .row('acme-row')
+  // One explicit root: an installed profile copy, or a package directory.
+  const installed = bundle('@acme/plugin-bundle').fromProfile('work').rows()
+  const vendored = bundle('@acme/plugin-bundle')
+    .fromPackageDir('../vendor/plugin-bundle')
+    .row('acme-row')
 
-export default defineConfig()
-  .profile('work', (profile) => {
-    profile
-      .bundle('@deepseek-ai/dsh-base')
-      .bundle('@deepseek-ai/dsh-web-app')
-      .generated()
-      .layer((layer) => {
-        // standard is a Preset: disable() targets its Loader row id.
-        layer.disable(standard ?? 'preset-minimal')
-      })
-      .layer((layer) => {
-        layer.insert([...installed, vendored, active])
-      })
-  })
-  .build()
+  return defineConfig()
+    .profile('work', (profile) => {
+      profile
+        .bundle('@deepseek-ai/dsh-base')
+        .bundle('@deepseek-ai/dsh-web-app')
+        .generated()
+        .layer((layer) => {
+          // A Preset descriptor targets its row when the build resolves it.
+          layer.disable(standard)
+        })
+        .layer((layer) => {
+          layer.insert([installed, vendored, active])
+        })
+    })
+}
 ```
 
-`bundle(name)` is both a plan selection and a query handle. With no root it resolves the active installation and never a profile copy; a custom bundle needs an explicit root. Queries run only under `eedsh sync`, `eedsh run`, or `eedsh repl`, which install the capability bridge before the config import. A rooted `BundleQuery` is query-only and rejected as a plan selection.
+`bundle(name)` is both a plan selection and a query handle. With no root it resolves from the installation the invocation selected, never a profile copy; a custom bundle needs an explicit root. The CLI resolves every recorded descriptor in one phase, before the terminal build; a resolution failure stops the invocation before anything is published. A rooted `BundleQuery` is query-only and rejected as a plan selection.
 
-| Query | Returns |
+| Query | Builds |
 |---|---|
-| `.rows()` | Every declared row as a `Row`. |
-| `.presets()` | Every declared preset as a `Preset`: row id, preset id, order, name, disabled flag, and row data. |
-| `.row(id)` | One `Row` by Loader id; a missing id fails. |
-| `.preset(id)` | One `Preset` by preset id; a missing id fails. |
-| `.version()`, `.packageDir()`, `.origin()` | The resolved package facts and source. |
+| `.rows()` | An insert of every declared row. |
+| `.presets()` | An insert of every declared preset row. |
+| `.row(id)` | One row as an insertion input or patch target. |
+| `.preset(id)` | One preset as an insertion input or patch target. |
 | `.fromProfile(name \| { name })` | A query-only handle rooted at that profile's installed copy. |
-| `.fromPackageDir(dir)` | A query-only handle rooted at a package directory; a relative path resolves against `config.ts`. |
+| `.fromPackageDir(dir)` | A query-only handle rooted at a package directory; a relative path resolves against the config file's directory. |
 
-`Row.disable()`, `.enable()`, and `.override(config)` return plain patch data; `Preset` does the same but targets its Loader row id. Pass a handle to a layer builder, or call `.toJSON()` for plain plan data. Failures are structured `ResolutionError` values with a stable `code`, the queried `bundle`, and a message. Missing anchors, uninstalled profile bundles, missing manifests, non-bundle packages, unreadable patches, and unknown ids fail instead of returning partial data.
+`Row.disable()`, `.enable()`, and `.override(config)` target the explicit Loader row id. A `Preset` or a collection targets its row ids during the build, so a handle is usable before it is resolved. Resolution failures are structured `ResolutionError` values with a stable `code`, the queried `bundle`, and a message. Missing anchors, uninstalled profile bundles, missing manifests, non-bundle packages, unreadable patches, and unknown ids fail instead of returning partial data; authoring misuse the types cannot exclude is a defect instead.
 
 ### Authoring a preset from an installed one
 
@@ -207,7 +204,7 @@ const adapted = definePreset('ptc-fresh') // Loader row id: preset-ptc-fresh
     children.append({ id: 'tool-lsp', name: '@deepseek-ai/dsh-tool-lsp' })
   })
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-web-app')
@@ -219,7 +216,6 @@ export default defineConfig()
         layer.selectPreset(adapted, { default: standard })
       })
   })
-  .build()
 ```
 
 Each child operation addresses one child or anchor. `child(id)` returns a short-lived handle with `.disable()`, `.enable()`, `.remove()`, and `.replaceWith(entry)`; the scope offers `.append()`, `.prepend()`, `.insertBefore(anchor, entry)`, and `.insertAfter(anchor, entry)`. Only top-level children are addressable; a group is edited or replaced as one entry. A missing or duplicate id throws `PresetDefinitionError` with `presetId`, `rowId`, and `childId` before anything mutates. Query rows already carry plan expression nodes, so a copied `!!js` child is directly insertable and the emitted patch keeps the `!!js` scalar.
@@ -234,7 +230,7 @@ eedsh repl --profile work --sync
 eedsh repl --eval 'selectedProfile.name'
 ```
 
-The prompt evaluates TypeScript, including type annotations and top-level `await`, and keeps bindings across entries. `config` is the config view, `selectedProfile` is the selected profile view, and `plan` is `selectedProfile.plan()`. The curated factories `bundle`, `defineConfig`, `definePreset`, `dshVersion`, `group`, and `js` are bound; the legacy `profile` string and raw `profiles` map are not. `.profile <name>` switches the selected profile without re-importing.
+The prompt evaluates TypeScript, including type annotations and top-level `await`, and keeps bindings across entries. `config` is the config view, `selectedProfile` is the selected profile view, and `plan` is `selectedProfile.plan()`. The curated factories `bundle`, `defineConfig`, `definePreset`, `group`, and `js` are bound; the legacy `profile` string and raw `profiles` map are not. `.profile <name>` switches the selected profile without re-importing.
 
 Tab completion follows the domain grammar: commands and arguments, chain methods valid at the current step, and profile, bundle, row, preset, and package names. The first Tab inserts a unique or common prefix; a second lists ambiguous matches. A rooted chain does not offer a second root, completion never writes, and a failing resolution produces no hits.
 
@@ -257,13 +253,29 @@ Publishing is explicit: `.sync` publishes the current evaluation, while `--sync`
 
 ## Configuration reference
 
-`eedsh init` creates one XDG config project. The config must default-export the `Result` from `defineConfig().build()` (or a plain config value); a plain profile plan and the old single-plan export are not configs. eedsh evaluates the module with `tsx` at runtime, so full TypeScript syntax works without a build, but loading never typechecks. Type correctness comes from your editor, `tsc --noEmit`, or `eedsh check`. Imports resolve against the nearest `tsconfig.json` at or above `config.ts`; the caller's working-directory tsconfig is never used.
+`eedsh init` creates one XDG config project. The config must default-export a synchronous factory `(input) => ConfigBuilder`; a plain config value, a `Result`, a plain profile plan, and the old single-plan export are not configs. The factory receives `{ dshVersion, configDir }` as plain values and may branch on them. eedsh evaluates the module with `tsx` at runtime, so full TypeScript syntax works without a build, but loading never typechecks. Type correctness comes from your editor, `tsc --noEmit`, or `eedsh check`. Imports resolve against the nearest `tsconfig.json` at or above `config.ts`; the caller's working-directory tsconfig is never used.
 
-`defineConfig()` is synchronous. `.defaultProfile(name)` may name a default, `.profile(name, build)` declares each profile, and profiles may be added dynamically (loops, computed keys, environment values). `.build()` normalizes typed objects, validates the envelope with the strict config contract, then validates each profile plan independently. It returns `Result<EedshConfig, Schema.SchemaError>` and never throws. Config-level defects — a legacy `dsh` field, an empty profile record, an unsafe key, or an unknown default — fail the whole config; each profile's failure stays local and does not block a valid sibling.
+`defineConfig()` is synchronous. `.defaultProfile(name)` may name a default, `.profile(name, build)` declares each profile, and profiles may be added dynamically (loops, computed keys, environment values). The CLI calls the factory once, asks the builder for its query descriptors, resolves them in one phase, and calls `.build(table)`. It normalizes typed objects and descriptors, validates the envelope with the strict config contract, then validates each profile plan independently. It returns `Result<EedshConfig, Schema.SchemaError>` and never throws. Config-level defects — a legacy `dsh` field, an empty profile record, an unsafe key, or an unknown default — fail the whole config; each profile's failure stays local and does not block a valid sibling.
 
+### Migrating to the config factory
+
+The default export is now a synchronous factory, and `.build()` is no longer part of the config module:
+
+```ts
+// before
+export default defineConfig()
+  .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+  .build()
+
+// after
+export default ({ dshVersion }) => defineConfig()
+  .profile('work', (profile) => profile.bundle('@deepseek-ai/dsh-base'))
+```
+
+Replace a `dshVersion()` call with `input.dshVersion`. Query handles keep their `.row()`, `.preset()`, `.rows()`, `.presets()`, `.fromProfile()`, and `.fromPackageDir()` calls, but they now record descriptors: the CLI resolves every recorded descriptor once, after evaluation and before the build. Consequently a config module never calls `build()` directly, authoring reads no files, and `input.configDir` is the only directory a relative `.fromPackageDir()` resolves against.
 Bare `sync` selects every profile; `--profile` selects exactly the named profile. `run` and `doctor` select `--profile`, then `defaultProfile`, then the sole profile. Unknown or ambiguous one-profile selections are usage errors (exit `2`) listing the available names. `check` takes no profile. Removing a profile from `config.ts` stops syncing it but does not delete its published DSH profile.
 
-Plan validation accepts only version 2 and rejects a `dsh` field. `dshVersion()` is available for branching and logging, but the selected version is not written into the plan or generated manifest. Invalid configs and profiles print Effect's native multi-line schema message with location annotations, for example `profile key "a/b" is not usable as a profile directory` followed by `  at ["profiles"]["a/b"]`. There are no `plan.*` codes, no per-issue rewrite, and no truncation; a profile failure prints once with its name.
+Plan validation accepts only version 2 and rejects a `dsh` field. The factory reads `input.dshVersion` for branching and logging, but neither that value nor `input.configDir` is written into the plan, generated manifest, or generation record. Invalid configs and profiles print Effect's native multi-line schema message with location annotations, for example `profile key "a/b" is not usable as a profile directory` followed by `  at ["profiles"]["a/b"]`. There are no `plan.*` codes, no per-issue rewrite, and no truncation; a profile failure prints once with its name.
 
 For project typechecking with the config project's own compiler, see [`eedsh check`](#cli-reference).
 
@@ -282,7 +294,7 @@ import { defineConfig } from '@eedsh/config'
 const home = process.env.HOME?.trim() || homedir()
 const stateDir = join(home, '.dsh', 'state', 'superagent')
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('superagent', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
@@ -299,7 +311,6 @@ export default defineConfig()
           .override('dsh-superagent', { stateDir })
       })
   })
-  .build()
 ```
 
 The repository is `dsh-superagent-prototype`, but its package is `dsh-superagent`: `.source()` takes the package name and `from` names the repository. `.source()` provisions and builds the checkout; `.bundle('dsh-superagent')` selects the patch layer. `override` replaces a row's whole config, so `webserver` supplies both required fields and `dsh-superagent` supplies `stateDir`.
@@ -389,13 +400,13 @@ Restart-required outcomes are reported, never presented as a hot reload: a chang
 | Package | Role |
 |---|---|
 | `@eedsh/plan` | Shared plan contract: Effect Schema, derived plan types, `validatePlan`/`validateConfigValue`, the multi-profile envelope, and canonical JSON. Imports Effect only through `effect/Schema` and `effect/Result`, and no Node builtins. |
-| `@eedsh/config` | Public typed authoring API: the fluent builder, query handles, layer/value builders, `dshVersion()`, and plan normalization. Synchronous, no Effect runtime, re-exports plan types only, and reads bundles through the CLI-installed capability bridge. |
+| `@eedsh/config` | Public typed authoring API: the config factory, query descriptors, layer/value builders, and plan normalization. Pure and synchronous: no Effect runtime, no IO, no ambient installation state, and no bridge. |
 | `@eedsh/cli` | The `eedsh` command: discovery, config resolution, `init`, tsx evaluation, selection, `check`, materialization, preflight, atomic publication, watch, and `run`. It declares no production DSH/app-boot dependency; app-boot comes from the discovered installation. |
 | `@eedsh/runtime` | Static DSH bundle and plugin that watches the generation record and reloads through DSH HMR. Declares `engines.node` and no `engines.dsh`, probes the HMR capabilities it needs, and warns on version drift. |
 
 ### Effect boundaries
 
-Effect `4.0.6` is pinned in `@eedsh/plan`, `@eedsh/config`, and `@eedsh/cli`. The plan package owns the schema and validation; the config package composes authoring primitives and may import Effect only through `effect/Schema` and `effect/Result`. The CLI takes its command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`, and runs one Effect program per invocation with tagged failures plus the core `FileSystem` and `ChildProcessSpawner` services. `@eedsh/runtime` stays a plain Cordis plugin, and `defineConfig().build()` stays synchronous because a config module exports data.
+Effect `4.0.6` is pinned in `@eedsh/plan`, `@eedsh/config`, and `@eedsh/cli`. The plan package owns the schema and validation; the config package composes authoring primitives and may import Effect only through `effect/Schema` and `effect/Result`. The CLI takes its command surface from `effect/cli`, declares `@effect/platform-node@4.0.6`, and runs one Effect program per invocation with tagged failures plus the core `FileSystem` and `ChildProcessSpawner` services. `@eedsh/runtime` stays a plain Cordis plugin, and `ConfigBuilder.build(table)` stays synchronous because a config module exports data.
 
 Within the CLI, external contracts are decoded with `effect/Schema`, domain absence is `Option`, and expected failures are `Result` or Effect failures; only adapters and the Effect-free runtime use exceptions. `test/architecture.test.ts` enforces the boundaries: plan imports only `effect/Schema`/`effect/Result` and no Node builtins; plan accepts version 2 only; config re-exports plan types only; CLI/config declare no production DSH dependency and contain no static DSH import; generated/runtime manifests omit `engines.dsh`; the same exact Effect version is used; no separate `@effect/cli`, `@effect/platform`, or `@effect/printer*` packages exist; runtime does not import Effect or the TypeScript toolchain.
 

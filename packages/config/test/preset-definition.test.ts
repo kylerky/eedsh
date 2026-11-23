@@ -1,5 +1,5 @@
-import { join } from 'node:path'
 import {
+  AuthoringDefect,
   authoringKind,
   bundle,
   defineConfig,
@@ -10,33 +10,14 @@ import {
   PresetChildren,
   PresetDefinition,
   PresetDefinitionError,
-  ResolutionError,
 } from '@eedsh/config'
 import * as Result from 'effect/Result'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import {
-  type AuthoringFixture,
-  clearFixtureBridge,
-  createAuthoringFixture,
-  originalEnv,
-  useFixtureBridge,
-  useFixtureEnv,
-} from './support/fixture'
+import { describe, expect, it } from 'vitest'
+import { EXPRESSIVE_ROWS, resolutionTable, resolvedBundle } from './support/table'
 
-const tempRoot = join(process.cwd(), 'packages/config/.tmp')
-let fixture: AuthoringFixture
-
-beforeEach(async () => {
-  fixture = await createAuthoringFixture(tempRoot)
-  process.env = { ...originalEnv }
-  useFixtureEnv(fixture)
-  await useFixtureBridge(fixture)
-})
-
-afterEach(() => {
-  process.env = { ...originalEnv }
-  clearFixtureBridge()
-})
+const expressiveTable = resolutionTable(
+  resolvedBundle('@fixture/expressive', EXPRESSIVE_ROWS, { version: '1.1.0' }),
+)
 
 function installedPreset() {
   return bundle('@fixture/expressive').preset('expressive')
@@ -47,7 +28,7 @@ function planOfDefinition(definition: PresetDefinition) {
     .profile('work', (profile) => {
       profile.generated().layer('preset', (layer) => layer.insert(definition))
     })
-    .build()
+    .build(expressiveTable)
   if (Result.isFailure(built)) throw built.failure
   const plan = built.success.profiles.work
   if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
@@ -102,13 +83,17 @@ describe('preset definition identity', () => {
   })
 })
 
+function resolvedDefinition(definition: PresetDefinition) {
+  return definition.toJSON(expressiveTable)
+}
+
 function childIds(definition: PresetDefinition): unknown[] {
-  const config = definition.toJSON().config as Record<string, unknown>
+  const config = resolvedDefinition(definition).config as Record<string, unknown>
   return (config.plugins as Record<string, unknown>[]).map((entry) => entry.id)
 }
 
 function childAt(definition: PresetDefinition, index: number): Record<string, unknown> {
-  const config = definition.toJSON().config as Record<string, unknown>
+  const config = resolvedDefinition(definition).config as Record<string, unknown>
   return (config.plugins as Record<string, unknown>[])[index] as Record<string, unknown>
 }
 
@@ -218,7 +203,7 @@ describe('preset selection', () => {
       .profile('work', (profile) => {
         profile.generated().layer('registry', build)
       })
-      .build()
+      .build(expressiveTable)
     if (Result.isFailure(built)) throw built.failure
     const plan = built.success.profiles.work
     if (plan === undefined || Result.isFailure(plan)) throw plan?.failure
@@ -226,13 +211,13 @@ describe('preset selection', () => {
   }
 
   it('writes differing selected and deployment-default preset ids', () => {
-    const standard = bundle('@fixture/base').preset('standard')
+    const standard = bundle('@fixture/expressive').preset('expressive')
     const adapted = definePreset('ptc-fresh').from(installedPreset())
     const plan = planWithSelection((layer) => layer.selectPreset(adapted, { default: standard }))
     expect(plan.layers[0]?.patches).toEqual([
       {
         id: 'agent-preset-registry',
-        config: { default: 'standard', selectedDefault: 'ptc-fresh' },
+        config: { default: 'expressive', selectedDefault: 'ptc-fresh' },
       },
     ])
   })
@@ -247,7 +232,7 @@ describe('preset selection', () => {
   })
 
   it('writes the full registry config without merging or inferring', () => {
-    const standard = bundle('@fixture/base').preset('standard')
+    const standard = bundle('@fixture/expressive').preset('expressive')
     const adapted = definePreset('ptc-fresh')
     const plan = planWithSelection((layer) => {
       layer.raw({ id: 'agent-preset-registry', config: { default: 'inferred', extra: true } })
@@ -255,7 +240,7 @@ describe('preset selection', () => {
     })
     const patch = plan.layers[0]?.patches[1] as { config: Record<string, unknown> }
     expect(Object.keys(patch.config).sort()).toEqual(['default', 'selectedDefault'])
-    expect(patch.config).toEqual({ default: 'standard', selectedDefault: 'ptc-fresh' })
+    expect(patch.config).toEqual({ default: 'expressive', selectedDefault: 'ptc-fresh' })
   })
 
   it('rejects a non-preset reference with a tagged selection failure', () => {
@@ -288,20 +273,22 @@ describe('child lookup failures', () => {
 
   it('reports a missing child with the preset, row, and child ids', () => {
     const definition = definePreset('adapted', { rowId: 'adapted-row' }).from(installedPreset())
-    const failure = failureOf(() =>
-      definition.children((children) => {
-        children.child('missing')
-      }),
-    )
-    expect(failure._tag).toBe('PresetDefinitionError')
-    expect(failure.code).toBe('preset.child_not_found')
-    expect(failure.presetId).toBe('adapted')
-    expect(failure.rowId).toBe('adapted-row')
-    expect(failure.childId).toBe('missing')
-    expect(failure.message).toContain('"adapted"')
-    expect(failure.message).toContain('"adapted-row"')
-    expect(failure.message).toContain('"missing"')
-    expect(childIds(definition)).toEqual(['tool-web', 'tool-todo'])
+    // A copied source is resolved during build, so the lookup replays then.
+    definition.children((children) => {
+      children.child('missing')
+    })
+    const replay = failureOf(() => resolvedDefinition(definition))
+    expect(replay.code).toBe('preset.child_not_found')
+    expect(replay.presetId).toBe('adapted')
+    expect(replay.rowId).toBe('adapted-row')
+    expect(replay.childId).toBe('missing')
+    expect(replay.message).toContain('"adapted"')
+    expect(replay.message).toContain('"adapted-row"')
+    expect(replay.message).toContain('"missing"')
+    expect(childIds(definePreset('adapted').from(installedPreset()))).toEqual([
+      'tool-web',
+      'tool-todo',
+    ])
   })
 
   it('reports duplicate child ids as ambiguous without mutating', () => {
@@ -325,51 +312,52 @@ describe('child lookup failures', () => {
 
   it('reports missing and ambiguous insertion anchors without mutating', () => {
     const definition = definePreset('adapted').from(installedPreset())
-    const missingBefore = failureOf(() =>
-      definition.children((children) => {
-        children.insertBefore('missing', { id: 'new', name: '@fixture/new' })
-      }),
-    )
+    definition.children((children) => {
+      children.insertBefore('missing', { id: 'new', name: '@fixture/new' })
+    })
+    const missingBefore = failureOf(() => resolvedDefinition(definition))
     expect(missingBefore.code).toBe('preset.child_not_found')
     expect(missingBefore.childId).toBe('missing')
-    const missingAfter = failureOf(() =>
-      definition.children((children) => {
-        children.insertAfter('missing', { id: 'new', name: '@fixture/new' })
-      }),
-    )
-    expect(missingAfter.code).toBe('preset.child_not_found')
-    expect(childIds(definition)).toEqual(['tool-web', 'tool-todo'])
-
-    definition.children((children) => {
-      children.append({ id: 'tool-web', name: '@fixture/duplicate' })
+    const after = definePreset('adapted').from(installedPreset())
+    after.children((children) => {
+      children.insertAfter('missing', { id: 'new', name: '@fixture/new' })
     })
-    const ambiguous = failureOf(() =>
-      definition.children((children) => {
-        children.insertBefore('tool-web', { id: 'new', name: '@fixture/new' })
-      }),
-    )
-    expect(ambiguous.code).toBe('preset.child_ambiguous')
-    expect(childIds(definition)).toEqual(['tool-web', 'tool-todo', 'tool-web'])
+    const missingAfter = failureOf(() => resolvedDefinition(after))
+    expect(missingAfter.code).toBe('preset.child_not_found')
+    expect(childIds(definePreset('adapted').from(installedPreset()))).toEqual([
+      'tool-web',
+      'tool-todo',
+    ])
+
+    const ambiguous = definePreset('adapted').from(installedPreset())
+    ambiguous.children((children) => {
+      children.append({ id: 'tool-web', name: '@fixture/duplicate' })
+      children.insertBefore('tool-web', { id: 'new', name: '@fixture/new' })
+    })
+    const failure = failureOf(() => resolvedDefinition(ambiguous))
+    expect(failure.code).toBe('preset.child_ambiguous')
   })
 
   it('keeps a failed replacement from mutating the child list', () => {
     const definition = definePreset('adapted').from(installedPreset())
-    const failure = failureOf(() =>
-      definition.children((children) => {
-        children.child('missing').replaceWith({ id: 'new', name: '@fixture/new' })
-      }),
-    )
+    definition.children((children) => {
+      children.child('missing').replaceWith({ id: 'new', name: '@fixture/new' })
+    })
+    const failure = failureOf(() => resolvedDefinition(definition))
     expect(failure.code).toBe('preset.child_not_found')
-    expect(childIds(definition)).toEqual(['tool-web', 'tool-todo'])
+    expect(childIds(definePreset('adapted').from(installedPreset()))).toEqual([
+      'tool-web',
+      'tool-todo',
+    ])
   })
 })
 
 describe('copying an installed preset', () => {
   it('copies only the child list, not identity or metadata', () => {
     const installed = installedPreset()
-    const sourceConfig = installed.toJSON().config as Record<string, unknown>
+    const sourceConfig = installed.resolve(expressiveTable).config as Record<string, unknown>
     const definition = definePreset('adapted').from(installed).name('Adapted')
-    const config = definition.toJSON().config as Record<string, unknown>
+    const config = definition.toJSON(expressiveTable).config as Record<string, unknown>
     expect(config.plugins).toEqual(sourceConfig.plugins)
     expect(config.id).toBe('adapted')
     expect(config.name).toBe('Adapted')
@@ -381,11 +369,11 @@ describe('copying an installed preset', () => {
 
   it('leaves the installed preset unchanged and does not alias its data', () => {
     const installed = installedPreset()
-    const before = JSON.stringify(installed.toJSON())
-    const sourceConfig = installed.toJSON().config as Record<string, unknown>
+    const before = JSON.stringify(installed.resolve(expressiveTable))
     const definition = definePreset('adapted').from(installed)
-    const config = definition.toJSON().config as Record<string, unknown>
-    expect(JSON.stringify(installed.toJSON())).toBe(before)
+    const config = definition.toJSON(expressiveTable).config as Record<string, unknown>
+    expect(JSON.stringify(installed.resolve(expressiveTable))).toBe(before)
+    const sourceConfig = installed.resolve(expressiveTable).config as Record<string, unknown>
     expect(config.plugins).not.toBe(sourceConfig.plugins)
     expect((config.plugins as unknown[])[0]).not.toBe((sourceConfig.plugins as unknown[])[0])
     ;(config.plugins as Record<string, unknown>[]).push({ id: 'extra', name: '@fixture/extra' })
@@ -422,7 +410,10 @@ describe('normalization to an ordinary row', () => {
   it('keeps the query preset handle distinct from the definition as a patch target', () => {
     const installed = installedPreset()
     const definition = definePreset('ptc-fresh')
-    expect(installed.disable()).toEqual({ id: 'preset-expressive', disabled: true })
-    expect(() => new LayerBuilder('bad').disable(definition as never)).toThrowError(ResolutionError)
+    const layer = new LayerBuilder('adapted').disable(installed)
+    expect(layer.toJSON(expressiveTable).patches).toEqual([
+      { id: 'preset-expressive', disabled: true },
+    ])
+    expect(() => new LayerBuilder('bad').disable(definition as never)).toThrowError(AuthoringDefect)
   })
 })

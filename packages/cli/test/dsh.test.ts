@@ -11,12 +11,13 @@ import {
   type DiscoverDshOptions,
   type DiscoveredDshInstallation,
   discoverDshInstallation,
-  resolveBundleLayers,
   SUPPORTED_DSH_RANGE,
   supportsDshVersion,
   validateDshVersion,
 } from '../src/dsh'
 import type { DshFailure } from '../src/internal/effect/errors'
+import { bundlePatchLayers } from '../src/resolve'
+import { loadTestBridge } from './support/bridge'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -88,13 +89,18 @@ function discover(
 }
 
 describe('dsh resolution', () => {
-  it('returns a tagged failure for a missing bundle', () => {
+  it('returns a tagged failure for a missing bundle', async () => {
     const anchor = require.resolve('@deepseek-ai/dsh/package.json')
-    const result = resolveBundleLayers('@scope/definitely-missing-bundle', process.cwd(), anchor)
+    const bridge = await loadTestBridge()
+    const result = bundlePatchLayers(
+      bridge,
+      '@scope/definitely-missing-bundle',
+      process.cwd(),
+      anchor,
+    )
     expect(Result.isFailure(result)).toBe(true)
     if (Result.isFailure(result)) {
-      expect(result.failure._tag).toBe('DshResolveFailure')
-      expect(result.failure.packageName).toBe('@scope/definitely-missing-bundle')
+      expect(String(result.failure.message)).toContain('@scope/definitely-missing-bundle')
     }
   })
 })

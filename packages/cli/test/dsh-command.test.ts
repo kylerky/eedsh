@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { clearDshBridge, type DshBridge } from '@eedsh/config'
+import { type DshBridge, ResolutionError } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
@@ -257,22 +257,19 @@ describe('command DSH requirements', () => {
 })
 
 describe('command DSH reuse', () => {
-  it('evaluates a config that calls dshVersion()', async () => {
+  it('passes the selected version to the config factory as a plain input', async () => {
     await mkdir(join(root, 'packages/cli/.tmp'), { recursive: true })
     const dir = await mkdtemp(join(root, 'packages/cli/.tmp', 'dshversion-config-'))
     const configPath = join(dir, 'config.ts')
     await writeFile(
       configPath,
-      `import { defineConfig, dshVersion } from '@eedsh/config'
-const version = dshVersion()
-if (typeof version !== 'string' || version.length === 0) throw new Error('no version')
-export default defineConfig()
+      `import { defineConfig } from '@eedsh/config'
+export default (input) => defineConfig()
   .profile('cli-fixture', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base').generated().layer('cli', (layer) => {
-      layer.insert({ id: 'version-' + version, name: '@scope/version-row' })
+      layer.insert({ id: 'version-' + input.dshVersion, name: '@scope/version-row' })
     })
   })
-  .build()
 `,
     )
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
@@ -364,33 +361,40 @@ describe('command DSH failure reporting', () => {
     expect(errors).not.toContain('config.import_failed')
   })
 
-  it('preserves a resolution.bridge_missing failure through config import', async () => {
-    clearDshBridge()
+  it('preserves a resolution failure through config loading', async () => {
     await mkdir(join(root, 'packages/cli/.tmp'), { recursive: true })
-    const dir = await mkdtemp(join(root, 'packages/cli/.tmp', 'bridge-missing-config-'))
+    const dir = await mkdtemp(join(root, 'packages/cli/.tmp', 'resolution-config-'))
     const configPath = join(dir, 'config.ts')
     await writeFile(
       configPath,
-      `import { defineConfig, dshVersion } from '@eedsh/config'
-const version = dshVersion()
-export default defineConfig()
-  .profile('cli-fixture', (profile) => profile.bundle('@deepseek-ai/dsh-base').generated())
-  .build()
+      `import { bundle, defineConfig } from '@eedsh/config'
+export default () => defineConfig()
+  .profile('cli-fixture', (profile) =>
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer((layer) => layer.insert(bundle('@fixture/absent').row('timer'))),
+  )
 `,
     )
     const h = harness(
       { EEDSH_DSH_ANCHOR: installation.installAnchor },
       {
         bundleResolver: fakeBundleResolver({
-          loadBridge: async () => Result.succeed({} as DshBridge),
+          resolutionFailure: new ResolutionError({
+            code: 'resolution.bundle_not_found',
+            bundle: '@fixture/absent',
+            message:
+              'bundle "@fixture/absent" is not shipped by the active DSH installation at /dsh/package.json',
+          }),
         }),
       },
     )
     const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.text().err
-    expect(countOf(errors, 'eedsh: resolution.bridge_missing:')).toBe(1)
-    expect(errors).toContain('eedsh sync')
+    expect(countOf(errors, 'eedsh: resolution.bundle_not_found:')).toBe(1)
+    expect(errors).toContain('@fixture/absent')
     expect(errors).not.toContain('config.import_failed')
   })
 })

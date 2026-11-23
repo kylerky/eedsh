@@ -41,7 +41,7 @@ export function runRunCommand(input: RunInput): Effect.Effect<number, never, Cli
     const configPath = yield* resolveConfigPath(input.config)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const installation = yield* requireDsh(input.dsh, { bootstrap: !input.noSync })
-    const loaded = yield* loadConfigValue(configPath.value)
+    const loaded = yield* loadConfigValue(configPath.value, installation)
     const selection = selectProfile(loaded.config, input.profile)
     if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
     const entry = selection.success

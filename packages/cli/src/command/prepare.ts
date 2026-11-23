@@ -163,10 +163,21 @@ export function resolveConfigPath(
   })
 }
 
+/**
+ * Evaluate, resolve, and build one config for the selected installation.
+ * @param configPath - the absolute config path.
+ * @param installation - the installation selected for this invocation.
+ * @returns the loaded config, or a typed config failure.
+ */
 export function loadConfigValue(
   configPath: string,
-): Effect.Effect<LoadedConfig, ConfigLoadFailure, ConfigLoaderShape> {
-  return Effect.flatMap(ConfigLoader, (loader) => loader.load(configPath))
+  installation: DiscoveredDshInstallation,
+): Effect.Effect<LoadedConfig, ConfigLoadFailure, ConfigLoaderShape | EnvironmentShape> {
+  return Effect.gen(function* () {
+    const { env } = yield* Environment
+    const loader = yield* ConfigLoader
+    return yield* loader.load(configPath, { installation, env })
+  })
 }
 
 /** Report a profile-selection failure and return the usage exit code. */

@@ -5,7 +5,7 @@
  * option bag to the CLI.
  */
 
-import type { DshBridge } from '@eedsh/config'
+import { type DshBridge, ResolutionError } from '@eedsh/config'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, type Exit, Fiber, Layer } from 'effect'
@@ -63,6 +63,7 @@ import {
 import { preflightLayer } from '../../src/preflight'
 import type { SpawnLike } from '../../src/spawn'
 import { defaultSpawn } from '../../src/spawn'
+import { loadTestBridge } from './bridge'
 import type { fakeChildProcessSpawner } from './fakes'
 import { fakeWatcher } from './fakes'
 
@@ -201,11 +202,18 @@ export const liveTestInstallationAnchorStore: InstallationAnchorShape = {
     defaultInstallationAnchorStore.write(env, anchor).pipe(Effect.provide(processFileSystem)),
 }
 
-/** A bundle resolver that supplies fixed profile-bundle patches. */
+/**
+ * A bundle resolver for tests. Patches, resolution failures, and the query
+ * resolution can each be supplied; defaults are inert.
+ */
 export function fakeBundleResolver(
   options: {
     patches?: Record<string, unknown>[]
     resolveFailure?: DshResolveFailure
+    resolutionFailure?: ResolutionError
+    resolve?: BundleResolverShape['resolve']
+    resolveQuery?: BundleResolverShape['resolveQuery']
+    composeEntries?: BundleResolverShape['composeEntries']
     loadBridge?: (
       installation: DiscoveredDshInstallation,
     ) => Promise<Result.Result<DshBridge, DshFailure>>
@@ -222,11 +230,39 @@ export function fakeBundleResolver(
             Effect.promise(() => options.loadBridge!(installation)).pipe(
               Effect.flatMap(Effect.fromResult),
             ),
+    resolve:
+      options.resolve ??
+      (() =>
+        options.resolutionFailure === undefined
+          ? Effect.succeed({ table: { bundles: [] }, bundles: [], traces: [] })
+          : Effect.fail(options.resolutionFailure)),
+    resolveQuery:
+      options.resolveQuery ??
+      ((input) =>
+        Effect.fail(
+          new ResolutionError({
+            code: 'resolution.bundle_not_found',
+            bundle: input.bundle,
+            message: `bundle ${JSON.stringify(input.bundle)} is not resolved in this test`,
+          }),
+        )),
     resolveBundlePatches: () =>
       options.resolveFailure === undefined
         ? Effect.succeed(options.patches ?? [])
         : Effect.fail(options.resolveFailure),
+    composeEntries:
+      options.composeEntries ??
+      (() => Effect.promise(async () => (await loadTestBridge()).composeEntries)),
   }
+}
+
+/** The live resolver over the process filesystem, for session tests. */
+export async function realBundleResolverValue(): Promise<BundleResolverShape> {
+  return await Effect.runPromise(
+    Effect.service(BundleResolver).pipe(
+      Effect.provide(bundleResolverLayer.pipe(Layer.provide(NodeServices.layer))),
+    ),
+  )
 }
 
 /** A config loader built from a test's evaluation function. */
@@ -245,7 +281,7 @@ export function cliLayer(overrides: CliOverrides = {}): Layer.Layer<CliServices>
     layer as Layer.Layer<CliServices>
   const resolver: Layer.Layer<CliServices> = asCli(
     overrides.bundleResolver === undefined
-      ? bundleResolverLayer
+      ? bundleResolverLayer.pipe(Layer.provide(platform))
       : Layer.succeed(BundleResolver, overrides.bundleResolver),
   )
   const spawner: Layer.Layer<CliServices> = asCli(
@@ -274,7 +310,7 @@ export function cliLayer(overrides: CliOverrides = {}): Layer.Layer<CliServices>
     ),
     asCli(
       overrides.configLoader === undefined
-        ? configLoaderLayer.pipe(Layer.provide(platform))
+        ? configLoaderLayer.pipe(Layer.provide(Layer.merge(platform, resolver)))
         : Layer.succeed(ConfigLoader, overrides.configLoader),
     ),
     asCli(Layer.succeed(Watcher, overrides.watcher ?? fakeWatcher().shape)),

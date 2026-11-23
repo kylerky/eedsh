@@ -70,33 +70,10 @@ type MethodKind =
   | 'plan'
 
 const METHODS: Record<MethodKind, readonly string[]> = {
-  bundle: [
-    'fromPackageDir',
-    'fromProfile',
-    'origin',
-    'packageDir',
-    'preset',
-    'presets',
-    'row',
-    'rows',
-    'toJSON',
-    'version',
-  ],
-  'bundle-query': ['origin', 'packageDir', 'preset', 'presets', 'row', 'rows', 'version'],
-  row: ['bundle', 'data', 'disable', 'enable', 'id', 'override', 'toJSON'],
-  preset: [
-    'bundle',
-    'data',
-    'disable',
-    'disabled',
-    'enable',
-    'id',
-    'name',
-    'order',
-    'override',
-    'rowId',
-    'toJSON',
-  ],
+  bundle: ['fromPackageDir', 'fromProfile', 'preset', 'presets', 'row', 'rows', 'toJSON'],
+  'bundle-query': ['preset', 'presets', 'row', 'rows'],
+  row: ['bundle', 'disable', 'enable', 'id', 'override'],
+  preset: ['bundle', 'disable', 'disabled', 'enable', 'id', 'name', 'order', 'override'],
   'preset-definition': [
     'children',
     'description',

@@ -9,12 +9,11 @@
  */
 import { join } from 'node:path'
 import {
-  type BundleQuery,
-  bundle as bundleHandle,
+  isPresetEntry,
   type NamedBundle,
-  type Preset,
+  type PlanEntry,
   type ResolutionOrigin,
-  type Row,
+  type ResolvedBundle,
 } from '@eedsh/config'
 import type { EedshConfig, PlanLayer, ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
@@ -44,10 +43,106 @@ export class ViewError extends Error {
   }
 }
 
-/**
- * One bundle selection in a profile, querying that profile's installed copy.
- * A rooted bundle is query-only and never becomes a plan selection here.
- */
+/** One resolved row exposed by a bundle view. */
+export class BundleRowView {
+  /** The Loader row id. */
+  readonly id: string
+  /** The composed row data. */
+  readonly data: PlanEntry
+  /** The bundle package the row came from. */
+  readonly bundle: string
+
+  constructor(bundle: string, data: PlanEntry) {
+    this.bundle = bundle
+    this.data = data
+    this.id = typeof data.id === 'string' ? data.id : ''
+  }
+
+  /** The row as plain plan data. */
+  toJSON(): PlanEntry {
+    return this.data
+  }
+
+  /** Disable this row. */
+  disable(): { readonly id: string; readonly disabled: true } {
+    return { id: this.id, disabled: true }
+  }
+
+  /** Enable this row. */
+  enable(): { readonly id: string; readonly disabled: false } {
+    return { id: this.id, disabled: false }
+  }
+
+  /**
+   * Replace this row's whole config.
+   * @param config - the complete replacement config.
+   * @returns an id-targeted patch.
+   */
+  override(config: unknown): { readonly id: string; readonly config: unknown } {
+    return { id: this.id, config }
+  }
+}
+
+/** One resolved preset exposed by a bundle view. */
+export class BundlePresetView {
+  /** The preset's own id from its config. */
+  readonly id: string
+  /** The inserted Loader row id patches target. */
+  readonly rowId: string
+  /** The composed row data. */
+  readonly data: PlanEntry
+  /** The bundle package the preset came from. */
+  readonly bundle: string
+  /** The preset order, when declared. */
+  readonly order?: number
+  /** The preset display name, when declared. */
+  readonly name?: string
+  /** The row's disabled flag, when boolean. */
+  readonly disabled?: boolean
+
+  constructor(bundle: string, data: PlanEntry) {
+    this.bundle = bundle
+    this.data = data
+    this.rowId = typeof data.id === 'string' ? data.id : ''
+    const config = isRecord(data.config) ? data.config : {}
+    this.id = typeof config.id === 'string' ? config.id : this.rowId
+    if (typeof config.order === 'number') this.order = config.order
+    const name =
+      typeof config.name === 'string'
+        ? config.name
+        : typeof data.name === 'string'
+          ? data.name
+          : undefined
+    if (name !== undefined) this.name = name
+    if (typeof data.disabled === 'boolean') this.disabled = data.disabled
+  }
+
+  /** The preset row as plain plan data. */
+  toJSON(): PlanEntry {
+    return this.data
+  }
+
+  /** Disable this preset's row. */
+  disable(): { readonly id: string; readonly disabled: true } {
+    return { id: this.rowId, disabled: true }
+  }
+
+  /** Enable this preset's row. */
+  enable(): { readonly id: string; readonly disabled: false } {
+    return { id: this.rowId, disabled: false }
+  }
+
+  /**
+   * Replace this preset row's whole config.
+   * @param config - the complete replacement config.
+   * @returns an id-targeted patch.
+   */
+  override(config: unknown): { readonly id: string; readonly config: unknown } {
+    return { id: this.rowId, config }
+  }
+}
+
+/** One bundle selection in a profile, over the invocation resolution. */
 export class BundleView {
   /** The bundle package name. */
   readonly name: string
@@ -55,13 +150,13 @@ export class BundleView {
   readonly source: string | undefined
   /** The profile the queries resolve against. */
   readonly profile: string
-  private readonly query: BundleQuery
+  private readonly resolved: ResolvedBundle | undefined
 
-  constructor(selection: NamedBundle, profile: string) {
+  constructor(selection: NamedBundle, profile: string, resolved?: ResolvedBundle) {
     this.name = selection.name
     this.source = selection.source
     this.profile = profile
-    this.query = bundleHandle(selection.name).fromProfile(profile)
+    this.resolved = resolved
   }
 
   /** The bundle selection as plain plan data. */
@@ -71,48 +166,82 @@ export class BundleView {
       : { kind: 'bundle', name: this.name, source: this.source }
   }
 
-  /** Every declared row, as typed immutable handles. */
-  rows(): readonly Row[] {
-    return this.query.rows()
+  /** Every declared row, from the invocation resolution. */
+  rows(): readonly BundleRowView[] {
+    return this.bundle().rows.map((entry) => new BundleRowView(this.name, entry))
   }
 
-  /** Every declared preset, as typed immutable handles. */
-  presets(): readonly Preset[] {
-    return this.query.presets()
+  /** Every declared preset, from the invocation resolution. */
+  presets(): readonly BundlePresetView[] {
+    return this.bundle()
+      .rows.filter(isPresetEntry)
+      .map((entry) => new BundlePresetView(this.name, entry))
   }
 
   /**
    * One row by Loader id.
    * @param id - the Loader row id.
-   * @returns the typed row.
+   * @returns the typed row view.
    */
-  row(id: string): Row {
-    return this.query.row(id)
+  row(id: string): BundleRowView {
+    const found = this.rows().find((entry) => entry.id === id)
+    if (found === undefined) {
+      throw new ViewError({
+        code: 'repl.row_not_found',
+        message: `bundle ${JSON.stringify(this.name)} declares no row ${JSON.stringify(id)}; available rows: ${this.rows()
+          .map((entry) => entry.id)
+          .join(', ')}`,
+      })
+    }
+    return found
   }
 
   /**
    * One preset by preset id.
    * @param id - the preset's own config id.
-   * @returns the typed preset.
+   * @returns the typed preset view.
    */
-  preset(id: string): Preset {
-    return this.query.preset(id)
+  preset(id: string): BundlePresetView {
+    const found = this.presets().find((entry) => entry.id === id)
+    if (found === undefined) {
+      throw new ViewError({
+        code: 'repl.preset_not_found',
+        message: `bundle ${JSON.stringify(this.name)} declares no preset ${JSON.stringify(id)}; available presets: ${this.presets()
+          .map((entry) => entry.id)
+          .join(', ')}`,
+      })
+    }
+    return found
   }
 
   /** The resolved bundle package version. */
   version(): string {
-    return this.query.version()
+    return this.bundle().version
   }
 
   /** The resolved bundle package directory. */
   packageDir(): string {
-    return this.query.packageDir()
+    return this.bundle().packageDir
   }
 
   /** Where the bundle was resolved from. */
   origin(): ResolutionOrigin {
-    return this.query.origin()
+    return this.bundle().origin
   }
+
+  private bundle(): ResolvedBundle {
+    if (this.resolved === undefined) {
+      throw new ViewError({
+        code: 'repl.bundle_unresolved',
+        message: `bundle ${JSON.stringify(this.name)} is not resolved for profile ${JSON.stringify(this.profile)}; the invocation resolution has no entry for it`,
+      })
+    }
+    return this.resolved
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 /** One composed row with its last-touch provenance. */
@@ -370,6 +499,8 @@ export interface ProfileSnapshot {
   readonly published: PublishedSnapshot
   /** Package information read when the snapshot was taken, when available. */
   readonly packages?: PackageView
+  /** Resolved bundle selections, keyed by bundle name. */
+  readonly resolvedBundles?: ReadonlyMap<string, ResolvedBundle>
 }
 
 function emptyPublished(dir: string): PublishedSnapshot {
@@ -438,10 +569,12 @@ export class ProfileView {
     return this.outcome.success
   }
 
-  /** The profile's ordered bundle selections, queryable against the profile. */
+  /** The profile's ordered bundle selections, over the invocation resolution. */
   bundles(): readonly BundleView[] {
     return this.plan().bundles.flatMap((selection) =>
-      selection.kind === 'bundle' ? [new BundleView(selection, this.name)] : [],
+      selection.kind === 'bundle'
+        ? [new BundleView(selection, this.name, this.snapshot.resolvedBundles?.get(selection.name))]
+        : [],
     )
   }
 

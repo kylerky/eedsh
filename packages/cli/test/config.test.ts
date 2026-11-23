@@ -2,8 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
-import * as Schema from 'effect/Schema'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   ConfigError,
   loadConfig as loadConfigUnprovided,
@@ -11,22 +10,22 @@ import {
   validateConfigPath,
 } from '../src/config'
 import { CONFIG_FILENAME, configHome, defaultConfigPath } from '../src/config-path'
+import { bundleResolverLayer } from '../src/internal/effect/layer'
 
+const testResolver = bundleResolverLayer.pipe(Layer.provide(NodeServices.layer))
 const loadConfig = (configPath: string) =>
-  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+  loadConfigUnprovided(configPath, { installation: devDshInstallation(), env: {} }).pipe(
+    Effect.provide(Layer.merge(NodeServices.layer, testResolver)),
+  )
 
+import { ResolutionError } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { clearTestBridge, installTestBridge } from './support/bridge'
+import { Layer } from 'effect'
+import { BundleResolver } from '../src/internal/effect/services'
+import { devDshInstallation } from './support/bridge'
+import { fakeBundleResolver } from './support/cli'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
-
-beforeAll(async () => {
-  await installTestBridge()
-})
-
-afterAll(() => {
-  clearTestBridge()
-})
 
 async function configDir(source: string): Promise<string> {
   await mkdir(tempRoot, { recursive: true })
@@ -38,7 +37,7 @@ async function configDir(source: string): Promise<string> {
 const multiProfileSource = `
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .defaultProfile('home')
   .profile('work', (profile) => {
     profile
@@ -48,25 +47,23 @@ export default defineConfig()
   .profile('home', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base')
   })
-  .build()
 `
 
 const soleProfileSource = `
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('solo', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .generated()
   })
-  .build()
 `
 
 const invalidSiblingSource = `
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile.bundle('@deepseek-ai/dsh-base')
@@ -74,7 +71,6 @@ export default defineConfig()
   .profile('home', (profile) => {
     profile.bundle('@eedsh/runtime')
   })
-  .build()
 `
 
 const plainConfigSource = `
@@ -90,53 +86,55 @@ export default {
 `
 
 const missingPresetSource = `
-import { bundle } from '@eedsh/config'
+import { bundle, defineConfig } from '@eedsh/config'
 
-export default bundle('@deepseek-ai/dsh-base').preset('missing').toJSON()
+export default () =>
+  defineConfig()
+    .profile('work', (profile) => {
+      profile
+        .bundle('@deepseek-ai/dsh-base')
+        .generated()
+        .layer((layer) => layer.insert(bundle('@deepseek-ai/dsh-base').preset('missing')))
+    })
 `
 
 const missingPresetChildSource = `
-import { definePreset } from '@eedsh/config'
+import { defineConfig, definePreset } from '@eedsh/config'
 
 definePreset('ptc-fresh').children((children) => {
   children.child('missing')
 })
 
-export default {
-  profiles: { work: { bundles: [] } },
-}
+export default () => defineConfig()
 `
 
 const sourceConflictSource = `
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .source('@scope/plugin', { from: 'https://example.test/acme/bundle.git' })
       .package('@scope/plugin', '1.0.0')
   })
-  .build()
 `
 
 const localRefSource = `
 import { defineConfig } from '@eedsh/config'
-export default defineConfig()
+export default () => defineConfig()
   .profile('work', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .source('@scope/plugin', { from: './vendor/acme-bundle', ref: 'main' })
   })
-  .build()
 `
 
 const untaggedThrowSource = `
+import { defineConfig } from '@eedsh/config'
 throw new Error('untagged import boom')
 
-export default {
-  profiles: { work: { bundles: [] } },
-}
+export default () => defineConfig()
 `
 
 const lonePlanSource = `
@@ -205,22 +203,59 @@ describe('config loading', () => {
     expect(Object.keys(config.profiles)).toEqual(['solo'])
   })
 
-  it('loads a plain config value and validates its profiles', async () => {
-    const dir = await configDir(plainConfigSource)
-    const { config } = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
-    expect(Object.keys(config.profiles)).toEqual(['plain-export'])
-    const profile = config.profiles['plain-export']
-    expect(profile !== undefined && Result.isSuccess(profile)).toBe(true)
+  it('reports a module with no default export as config.missing_default_export', async () => {
+    const dir = await configDir(`
+import { defineConfig } from '@eedsh/config'
+export const factory = () => defineConfig()
+`)
+    const exit = await Effect.runPromiseExit(loadConfig(join(dir, 'config.ts')))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as ConfigError
+      expect(error._tag).toBe('ConfigError')
+      expect(error.code).toBe('config.missing_default_export')
+      expect(error.message).toContain('must default-export')
+    }
   })
 
-  it('rejects a lone profile plan as a config', async () => {
+  it('calls the factory with the selected version and the config directory', async () => {
+    const dir = await configDir(`
+import { defineConfig } from '@eedsh/config'
+export default (input) =>
+  defineConfig().profile('work', (profile) => {
+    profile.generated().layer((layer) => layer.insert({ id: 'version-' + input.dshVersion, name: '@scope/version' }))
+  })
+`)
+    const loaded = await Effect.runPromise(loadConfig(join(dir, 'config.ts')))
+    expect(loaded.configDir).toBe(dir)
+    const plan = loaded.config.profiles.work
+    expect(plan !== undefined && Result.isSuccess(plan)).toBe(true)
+    if (plan === undefined || Result.isFailure(plan)) return
+    const inserted = plan.success.layers[0]?.patches[0]?.insert as
+      | readonly Record<string, unknown>[]
+      | undefined
+    expect(inserted?.[0]?.id).toBe(`version-${devDshInstallation().version}`)
+  })
+
+  it('rejects a non-function default export with config.invalid_default_export', async () => {
+    const dir = await configDir(plainConfigSource)
+    const exit = await Effect.runPromiseExit(loadConfig(join(dir, 'config.ts')))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as ConfigError
+      expect(error._tag).toBe('ConfigError')
+      expect(error.code).toBe('config.invalid_default_export')
+      expect(error.message).toContain('ConfigBuilder')
+    }
+  })
+
+  it('rejects a lone profile plan as a non-factory export', async () => {
     const dir = await configDir(lonePlanSource)
     const exit = await Effect.runPromiseExit(loadConfig(join(dir, 'config.ts')))
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
-      const error = Cause.squash(exit.cause)
-      expect(Schema.isSchemaError(error)).toBe(true)
-      if (Schema.isSchemaError(error)) expect(error.message).toContain('profiles')
+      const error = Cause.squash(exit.cause) as ConfigError
+      expect(error.code).toBe('config.invalid_default_export')
     }
   })
 
@@ -234,6 +269,48 @@ describe('config loading', () => {
     if (home !== undefined && Result.isFailure(home)) {
       expect(home.failure.message).toContain('owned by the materializer')
     }
+  })
+})
+
+describe('resolution stops the build', () => {
+  it('does not call the terminal build when resolution fails', async () => {
+    const dir = await configDir(`
+import { bundle, defineConfig } from '@eedsh/config'
+
+export default () => {
+  const builder = defineConfig().profile('work', (profile) => {
+    profile
+      .bundle('@deepseek-ai/dsh-base')
+      .generated()
+      .layer((layer) => layer.insert(bundle('@deepseek-ai/dsh-base').preset('missing')))
+  })
+  builder.build = () => {
+    throw new Error('the terminal build must not run')
+  }
+  return builder
+}
+`)
+    const resolver = fakeBundleResolver({
+      resolutionFailure: new ResolutionError({
+        code: 'resolution.preset_not_found',
+        bundle: '@deepseek-ai/dsh-base',
+        message: 'bundle "@deepseek-ai/dsh-base" declares no preset "missing"',
+      }),
+    })
+    const exit = await Effect.runPromiseExit(
+      loadConfigUnprovided(join(dir, 'config.ts'), {
+        installation: devDshInstallation(),
+        env: {},
+      }).pipe(
+        Effect.provide(Layer.merge(NodeServices.layer, Layer.succeed(BundleResolver, resolver))),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (!Exit.isFailure(exit)) return
+    const error = Cause.squash(exit.cause) as ResolutionError
+    expect(error._tag).toBe('ResolutionError')
+    expect(error.code).toBe('resolution.preset_not_found')
+    expect(String(error.message)).not.toContain('terminal build')
   })
 })
 

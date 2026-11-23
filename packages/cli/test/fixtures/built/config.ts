@@ -1,7 +1,7 @@
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
-  .profile('built-cli', (profile) => {
+export default () =>
+  defineConfig().profile('built-cli', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .generated()
@@ -11,4 +11,3 @@ export default defineConfig()
           .override('agent-default-model', { marker: 'built' })
       })
   })
-  .build()

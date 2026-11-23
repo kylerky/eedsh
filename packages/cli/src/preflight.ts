@@ -6,13 +6,7 @@
  */
 
 import { isAbsolute, relative, sep } from 'node:path'
-import {
-  type AuthoringSite,
-  activeDshBridge,
-  bridgeCapability,
-  type DshBridge,
-  type PatchGroupProvenance,
-} from '@eedsh/config'
+import type { AuthoringSite, DshBridge, PatchGroupProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Layer, Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
@@ -30,23 +24,6 @@ import { entryListSchema } from './materialize/yaml-schema'
 
 /** The selected DSH's entry composer. */
 type ComposeEntries = DshBridge['composeEntries']
-
-/**
- * The active bridge's composer.
- * @returns the entry composer.
- * @throws {PreflightFailure} when no bridge is installed.
- */
-function activeCompose(): ComposeEntries {
-  const bridge = activeDshBridge()
-  if (bridge === undefined) {
-    throw new PreflightFailure({
-      message:
-        'preflight needs the active DSH installation; run "eedsh sync" or "eedsh run", or select one with --dsh',
-      warnings: [],
-    })
-  }
-  return bridgeCapability(bridge, 'composeEntries', 'preflight')
-}
 
 /** The recorded identity of one generated patch group. */
 export interface GeneratedGroup {
@@ -180,7 +157,7 @@ function composeWarnings(
  */
 export function composePreflightLayers(
   layers: readonly PreflightLayer[],
-  compose: ComposeEntries = activeCompose(),
+  compose: ComposeEntries,
 ): PreflightComposition {
   const warnings: string[] = []
   const entries = compose(
@@ -244,7 +221,7 @@ function flattenPatches(layers: readonly PreflightLayer[]): FlatPatch[] {
 export function attributePreflightWarnings(
   layers: readonly PreflightLayer[],
   warnings: readonly string[],
-  options: { readonly configDir?: string; readonly compose?: ComposeEntries } = {},
+  options: { readonly configDir?: string; readonly compose: ComposeEntries },
 ): PreflightWarning[] {
   if (warnings.length === 0) return []
   const emptyLayers = layers.filter(
@@ -255,7 +232,7 @@ export function attributePreflightWarnings(
     syntheticCount === 0 ? warnings : warnings.slice(0, warnings.length - syntheticCount)
   const synthetic = syntheticCount === 0 ? [] : warnings.slice(warnings.length - syntheticCount)
 
-  const compose = options.compose ?? activeCompose()
+  const compose = options.compose
   const attributed: PreflightWarning[] = []
   const flat = flattenPatches(layers)
   let placed = 0
@@ -427,15 +404,17 @@ export const preflightLayer: Layer.Layer<PreflightShape, never, BundleResolverSh
           resolver,
           input.installAnchor,
         )
-        const composition = composePreflightLayers(layers)
+        const compose = yield* resolver
+          .composeEntries(input.installAnchor)
+          .pipe(Effect.mapError((failure) => fail(failure.message)))
+        const composition = composePreflightLayers(layers, compose)
         const raw = composition.warnings
         const messages =
           input.explain && raw.length > 0
-            ? attributePreflightWarnings(
-                layers,
-                raw,
-                input.configDir === undefined ? {} : { configDir: input.configDir },
-              ).map((warning) => `${warning.layer}: ${warning.message}`)
+            ? attributePreflightWarnings(layers, raw, {
+                compose,
+                ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
+              }).map((warning) => `${warning.layer}: ${warning.message}`)
             : raw
         if (composition.duplicateInsertIds.length > 0) {
           return yield* Effect.fail(

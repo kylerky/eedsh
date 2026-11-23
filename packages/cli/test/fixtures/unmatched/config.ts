@@ -1,7 +1,7 @@
 import { defineConfig } from '@eedsh/config'
 
-export default defineConfig()
-  .profile('cli-unmatched', (profile) => {
+export default () =>
+  defineConfig().profile('cli-unmatched', (profile) => {
     profile
       .bundle('@deepseek-ai/dsh-base')
       .generated()
@@ -9,4 +9,3 @@ export default defineConfig()
         layer.override('missing-row', { interval: 1 })
       })
   })
-  .build()

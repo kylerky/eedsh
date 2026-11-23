@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
+import type { BundleQueryDescriptor, ResolutionTable } from '@eedsh/config'
+import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -57,9 +58,28 @@ function selectPlan(config: EedshConfig, profileName: string): ProfilePlan {
   return selected.success
 }
 
+/** The builder contract a README example's factory must return. */
+interface ReadmeBuild {
+  readonly _tag: string
+  readonly success?: EedshConfig
+  readonly failure?: { readonly message: string }
+}
+
+interface ReadmeBuilder {
+  queries(): readonly BundleQueryDescriptor[]
+  build(table: ResolutionTable): ReadmeBuild
+}
+
+function isReadmeBuilder(value: unknown): value is ReadmeBuilder {
+  if (value === null || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return typeof record.queries === 'function' && typeof record.build === 'function'
+}
+
 /**
- * Evaluate a README example as a temporary TypeScript module and validate its
- * default export as an eedsh config. The module lives below the Vitest root, so
+ * Evaluate a README example as a temporary TypeScript module, call its
+ * default-exported factory with the invocation inputs, and build the config
+ * over an empty resolution table. The module lives below the Vitest root, so
  * Vitest's transform resolves `@eedsh/config` to source. The temporary
  * directory is removed in `finally`, whether evaluation succeeds or fails.
  * @param heading - top-level README heading containing the example.
@@ -78,15 +98,25 @@ export async function readmeExample(heading: string): Promise<ReadmeExample> {
     if (loaded.default === undefined) {
       throw new Error(`README "${heading}" example has no default export`)
     }
-    const validated = validateConfigValue(loaded.default)
-    if (validated._tag === 'Failure') {
+    if (typeof loaded.default !== 'function') {
+      throw new Error(`README "${heading}" example must default-export a config factory`)
+    }
+    const builder = (loaded.default as (input: unknown) => unknown)({
+      dshVersion: '0.2.1-rc.2',
+      configDir: dir,
+    })
+    if (!isReadmeBuilder(builder)) {
+      throw new Error(`README "${heading}" example factory must return a ConfigBuilder`)
+    }
+    const built = builder.build({ bundles: [] })
+    if (built._tag !== 'Success' || built.success === undefined) {
       throw new Error(
-        `README "${heading}" example is not a valid config: ${validated.failure.message}`,
+        `README "${heading}" example is not a valid config: ${built.failure?.message ?? 'no config value'}`,
       )
     }
     return {
-      config: validated.success,
-      plan: (profileName: string) => selectPlan(validated.success, profileName),
+      config: built.success,
+      plan: (profileName: string) => selectPlan(built.success as EedshConfig, profileName),
     }
   } finally {
     await rm(dir, { recursive: true, force: true })

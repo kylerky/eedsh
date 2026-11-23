@@ -1,6 +1,6 @@
 import type { PlanFailure } from '@eedsh/plan'
+import type { AuthoringDefect, ResolutionError } from './errors'
 import type { PresetDefinitionError } from './preset'
-import type { ResolutionError } from './resolve'
 import type { SourceDeclarationError } from './source'
 
 export type {
@@ -21,6 +21,7 @@ export type {
 export * from './authoring'
 export * from './bridge'
 export * from './builders'
+export * from './errors'
 export * from './preset'
 export {
   type AuthoringSite,
@@ -31,27 +32,30 @@ export {
 } from './provenance'
 export * from './query'
 export {
-  CONFIG_DIR_ENV,
-  clearResolutionTrace,
+  type ConfigInput,
   DSH_ANCHOR_ENV,
+  findResolved,
   PROFILE_ROOT_OVERRIDE_ENV,
   type QueryRoot,
-  ResolutionError,
-  type ResolutionErrorCode,
+  queryKey,
+  queryRootKey,
   type ResolutionOrigin,
+  type ResolutionTable,
   type ResolutionTrace,
   type ResolvedBundle,
-  resolutionTrace,
-  takeResolutionTrace,
-} from './resolve'
+} from './resolution'
 export * from './source'
 
 /**
- * Every failure the authoring package reports: its own tagged authoring
- * failures plus the native plan failure its terminal build can return.
+ * Every expected failure the authoring package can report: its tagged
+ * authoring failures and the native plan failure its terminal build can return.
+ * Resolution failures are produced by the CLI but keep their identity here.
  */
 export type ConfigFailure =
   | ResolutionError
   | PresetDefinitionError
   | SourceDeclarationError
   | PlanFailure
+
+/** The defect authoring misuse reports, distinct from every expected failure. */
+export type ConfigDefect = AuthoringDefect

@@ -1,11 +1,10 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { activeDshBridge, clearDshBridge, dshVersion } from '@eedsh/config'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { discoverDshInstallation } from '../src/dsh'
 import { loadDshBridge } from '../src/dsh-bridge'
 
@@ -64,23 +63,18 @@ async function installationOf(capabilities?: readonly string[], version?: string
   return discovered.success
 }
 
-afterEach(() => {
-  clearDshBridge()
-  vi.resetModules()
-})
-
 describe('DSH capability bridge', () => {
-  it('loads app-boot from the selected installation and installs the bridge', async () => {
+  it('loads app-boot from the selected installation and returns the bridge value', async () => {
     const installation = await installationOf(undefined, '0.2.1-rc.5')
     const loaded = await loadDshBridge(installation)
     expect(Result.isSuccess(loaded)).toBe(true)
     if (Result.isFailure(loaded)) throw loaded.failure
-    const bridge = activeDshBridge()
-    expect(bridge).toBeDefined()
-    expect(bridge?.version).toBe('0.2.1-rc.5')
-    expect(bridge?.installation.installAnchor).toBe(installation.installAnchor)
+    expect(loaded.success.version).toBe('0.2.1-rc.5')
+    expect(loaded.success.installation.installAnchor).toBe(installation.installAnchor)
     for (const capability of CAPABILITIES) {
-      expect(typeof (bridge as unknown as Record<string, unknown>)[capability]).toBe('function')
+      expect(typeof (loaded.success as unknown as Record<string, unknown>)[capability]).toBe(
+        'function',
+      )
     }
   })
 
@@ -95,7 +89,6 @@ describe('DSH capability bridge', () => {
       expect(loaded.failure.capability).toBe('composeEntries')
       expect(loaded.failure.message).toContain('composeEntries')
     }
-    expect(activeDshBridge()).toBeUndefined()
   })
 
   it('fails when the installation does not ship app-boot', async () => {
@@ -116,22 +109,17 @@ describe('DSH capability bridge', () => {
     if (Result.isFailure(loaded)) expect(loaded.failure.code).toBe('dsh.bridge_unavailable')
   })
 
-  it('clears the bridge per invocation', async () => {
+  it('installs no process-global bridge state', async () => {
     const installation = await installationOf()
     expect(Result.isSuccess(await loadDshBridge(installation))).toBe(true)
-    expect(dshVersion()).toBe('0.2.1-rc.5')
-    clearDshBridge()
-    expect(activeDshBridge()).toBeUndefined()
-    expect(() => dshVersion()).toThrow(/eedsh sync/)
+    const slot = Symbol.for('@eedsh/config.dsh-bridge')
+    expect((globalThis as Record<PropertyKey, unknown>)[slot]).toBeUndefined()
   })
 
-  it('keeps the bridge across two physical @eedsh/config module instances', async () => {
+  it('returns the exact selected version to the caller', async () => {
     const installation = await installationOf(undefined, '0.2.2-alpha.2')
     const loaded = await loadDshBridge(installation)
     if (Result.isFailure(loaded)) throw loaded.failure
-    vi.resetModules()
-    const second = await import('@eedsh/config')
-    expect(second.activeDshBridge()).toBe(loaded.success)
-    expect(second.dshVersion()).toBe('0.2.2-alpha.2')
+    expect(loaded.success.version).toBe('0.2.2-alpha.2')
   })
 })

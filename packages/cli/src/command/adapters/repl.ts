@@ -15,6 +15,7 @@ import { Cause, Deferred, Effect, Exit, FileSystem, Queue, Ref, Stream } from 'e
 import * as Option from 'effect/Option'
 import { EXIT_FAILURE, EXIT_OK } from '../../exit'
 import {
+  BundleResolver,
   type CliServices,
   ConfigLoader,
   Environment,
@@ -71,6 +72,7 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const installation = yield* requireDsh(input.dsh)
     const loader = yield* ConfigLoader
+    const resolver = yield* BundleResolver
     const watcher = yield* Watcher
     const fileSystem = yield* FileSystem.FileSystem
     const spawner = yield* Spawner
@@ -95,11 +97,13 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
           env,
           stdout: output.stdout,
           stderr: output.stderr,
-          loadConfig: (path, evaluationNonce) => loader.load(path, evaluationNonce),
+          loadConfig: (path, options) => loader.load(path, options),
           watch: (dir) => watcher.watch(dir),
           syncPlan,
           fileSystem,
           spawner,
+          installation,
+          resolver,
           watchConfig: Option.isNone(input.eval),
           oneShot: Option.isSome(input.eval),
         }),

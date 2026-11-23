@@ -1,10 +1,11 @@
 # @eedsh/config
 
-The typed authoring and query surface for eedsh. `defineConfig()` starts a
-synchronous fluent builder, `bundle(name)` returns a handle that is both a plan
-selection and a query root, `definePreset(id)` authors an adapted agent preset,
-and layers, rows, and presets are typed objects.
-Typed objects normalize to plain plan data only at `build()`, so the persisted
+The typed authoring and query-descriptor surface for eedsh. A config module
+default-exports a synchronous factory `(input) => ConfigBuilder`; `defineConfig()`
+starts the builder, `bundle(name)` returns a handle that is both a plan selection
+and a query root, `definePreset(id)` authors an adapted agent preset, and layers,
+rows, presets, and query collections are typed objects. Typed objects and
+descriptors normalize to plain plan data only at `build(table)`, so the persisted
 plan stays strict JSON.
 
 The plan contract itself lives in [`@eedsh/plan`](../plan/README.md): the Effect
@@ -13,20 +14,22 @@ JSON. This package composes those primitives for authoring and re-exports the pl
 types, so `ProfilePlan` and friends can be imported from the package you already
 use.
 
-There is no DSH runtime dependency and no Effect runtime here. Effect is a peer
-dependency (also a dev dependency here) for the `Result`/`Schema.SchemaError`
-authoring surface; the source imports Effect through `effect/Result` and
-`effect/Schema` only. Authoring is synchronous because a config module must
-default-export data before tsx and DSH can consume it.
+There is no DSH runtime dependency, no Effect runtime, and no IO here. Effect is
+a peer dependency (also a dev dependency here) for the
+`Result`/`Schema.SchemaError` authoring surface; the source imports Effect through
+`effect/Result` and `effect/Schema` only. The CLI owns resolution: it calls the
+factory once, resolves every query descriptor the builder reports, and passes the
+resulting table to `build(table)`. Authoring is synchronous and pure because a
+config module must export a factory before tsx and DSH can consume it.
 
 ## Example
 
 ```ts
 import { bundle, defineConfig, js } from '@eedsh/config'
 
-const standard = bundle('@deepseek-ai/dsh-web-app').presets()[0]
+const standard = bundle('@deepseek-ai/dsh-web-app').preset('standard')
 
-export default defineConfig()
+export default () => defineConfig()
   .defaultProfile('work')
   .profile('work', (profile) => {
     profile
@@ -37,7 +40,7 @@ export default defineConfig()
       .layer((layer) => {
         layer
           .insert({ id: 'my-plugin', name: '@scope/my-plugin', config: { enabled: true } })
-          .disable(standard ?? 'preset-minimal')
+          .disable(standard)
           .override('agent-default-model', { provider: 'deepseek', model: 'deepseek-chat' })
           .insert({
             id: 'plugin-manager',
@@ -46,7 +49,6 @@ export default defineConfig()
           })
       })
   })
-  .build()
 ```
 
 ## API
@@ -58,14 +60,18 @@ export default defineConfig()
 - `.defaultProfile(name)` names the profile a command selects when none is named.
 - `.profile(name, build)` declares a profile; the callback receives a
   `ProfileBuilder` scoped to that profile, and its return value is ignored.
-- `.build()` normalizes typed objects, validates the envelope and every profile,
-  and returns `Result<EedshConfig, Schema.SchemaError>`. It never throws; a legacy
-  `dsh` field, an empty profile record, an unsafe key, or an unknown default is
-  Effect's native schema failure. Each profile is validated independently and an
-  invalid profile is stored as that profile's failure.
+- `.queries()` returns the distinct query descriptors the builder recorded.
+- `.build(table)` normalizes typed objects and descriptors using the invocation
+  resolution, validates the envelope and every profile, and returns
+  `Result<EedshConfig, Schema.SchemaError>`. It performs no IO and never throws
+  for invalid config data; a legacy `dsh` field, an empty profile record, an
+  unsafe key, or an unknown default is Effect's native schema failure. Each
+  profile is validated independently and an invalid profile is stored as that
+  profile's failure. A descriptor missing from the table is an impossible state
+  reported as an authoring defect.
 
-Builders are mutable because a config is assembled once. Calling `.build()` more
-than once returns independent equivalent values.
+Builders are mutable because a config is assembled once. Calling `.build(table)`
+more than once returns independent equivalent values.
 
 ### `ProfileBuilder`
 
@@ -101,9 +107,10 @@ for a group entry and a runtime expression node.
 
 `bundle(name)` returns a `Bundle`: an ordered plan selection
 (`.toJSON()` is `{ kind: 'bundle', name }`) and a query handle. With no root,
-queries resolve from the active installation the CLI selected for the invocation
-through its capability bridge, and never from a profile copy. Queries outside
-eedsh fail with `resolution.bridge_missing`.
+queries resolve from the installation the CLI selected for the invocation, and
+never from a profile copy; a custom bundle needs an explicit root. The descriptor
+is recorded during evaluation and resolved by the CLI in one phase, before the
+terminal build; there is no ambient bridge and no authoring-time IO.
 
 - `.fromProfile(profile | { name })` returns a query-only handle rooted at a
   profile's installed copy. The structural form lets a session view be passed
@@ -123,25 +130,27 @@ dependency.
 
 ### Queries, `Row`, and `Preset`
 
-A handle is an immutable snapshot resolved on first use:
+A handle records descriptors; the invocation resolves them before `build()`:
 
-- `.rows()` returns every declared row as a `Row`.
-- `.presets()` returns every preset as a `Preset`.
-- `.row(id)` returns one `Row` by Loader id; a missing id fails.
-- `.preset(id)` returns one `Preset` by preset id; a missing id fails.
-- `.version()`, `.packageDir()`, and `.origin()` report the resolved package
-  facts; `.origin()` is `active`, `profile`, `packageDir`, or `preview`.
+- `.rows()` returns a `RowCollection` insertable as every declared row.
+- `.presets()` returns a `PresetCollection` insertable as every preset row.
+- `.row(id)` returns a `Row` descriptor usable as an insertion input or patch
+  target; the invocation fails its resolution when the id does not exist.
+- `.preset(id)` returns a `Preset` descriptor; it targets the preset's Loader
+  row id once the build resolves it.
 
-`Row` exposes `bundle`, `id`, `data`, `toJSON()`, and the patch methods
-`disable()`, `enable()`, and `override(config)`. `Preset` adds `rowId`,
-`id`, `order`, `name`, and `disabled`; its patch methods target `rowId`.
-Handles are immutable; patch methods return plain patch data.
+`Row` exposes `bundle`, `root`, `id`, and the patch methods
+`disable()`, `enable()`, and `override(config)`; a row id is explicit, so those
+patches are eager. `Preset` exposes `bundle`, `root`, and `id`; its patch
+methods are deferred until resolution. A collection is a patch target too, and
+expands to one patch per resolved row.
 
 Failures are `ResolutionError` values with a stable `code`, the queried
 `bundle`, and a message. A failed resolution, missing row or preset, or invalid
-root fails rather than returning partial data.
+root fails rather than returning partial data. Authoring misuse the type system
+cannot exclude is a distinguishable `AuthoringDefect`, not an expected failure.
 
-Rows and presets are plan-shaped. A runtime expression parsed from DSH's
+Resolved rows and presets are plan-shaped. A runtime expression parsed from DSH's
 `!!js` scalars is exposed as the plan node `{ $eedsh: { expr } }`, never as the
 DSH-internal `__jsExpr` marker, so a query result is directly insertable and its
 nested expressions round-trip through the emitted patch.
@@ -178,7 +187,6 @@ export default defineConfig()
       .layer((layer) => layer.insert(adapted))
       .layer('registry', (layer) => layer.selectPreset(adapted, { default: standard }))
   })
-  .build()
 ```
 
 - `.from(installed)` copies only the child list; identity and metadata stay with
@@ -206,9 +214,10 @@ unmatched-target warning.
 
 ## Normalization
 
-Typed objects carry a global brand symbol and implement `.toJSON()`.
-`defineConfig().build()` recursively replaces branded objects with their plain
-values before validation; no method or class instance reaches the plan.
+Typed objects carry a global brand symbol and resolve against the invocation
+table. `defineConfig().build(table)` recursively replaces branded objects with
+their plain values before validation; no method or class instance reaches the
+plan.
 `@eedsh/plan` remains unchanged and still rejects functions, class instances,
 non-finite numbers, and circular data. A rooted `BundleQuery` has no brand, so it
 cannot be silently accepted as a plan selection.
@@ -235,9 +244,9 @@ valid sibling is unaffected.
 The public surface is the typed authoring API: `defineConfig`, `ConfigBuilder`,
 `ProfileBuilder`, `LayerBuilder`, `bundle`, `Bundle`, `BundleQuery`,
 `Row`, `Preset`, `definePreset`, `PresetDefinition`, `PresetChildren`,
-`PresetChild`, `PresetDefinitionError`, `group`, `js`, `dshVersion`,
-`ResolutionError`, the bridge registry helpers, the resolution-trace helpers, and
-the re-exported plan types. The legacy free helpers (`rows`,
+`PresetChild`, `PresetDefinitionError`, `group`, `js`, `RowCollection`,
+`PresetCollection`, `AuthoringDefect`, `ResolutionError`, the pure resolution
+types, and the re-exported plan types. The legacy free helpers (`rows`,
 `presets`, `row`, `defineProfile`, `insert`, `override`, `disable`,
 `enable`, `layer`, `raw`) are not exported.
 
@@ -248,6 +257,7 @@ Runtime plan validation is not re-exported: import `validatePlan`,
 ## Migration
 
 The free-function API is intentionally replaced. The root [README](../README.md#migrating-from-the-free-function-api)
-has the full before/after mapping. The external-DSH release removes `.dsh()`, bumps
-the plan to version 2, and turns query resolution into a CLI-installed bridge; see
-the root README's upgrade section.
+has the full before/after mapping. The external-DSH release removes `.dsh()` and bumps
+the plan to version 2. Configs now default-export a factory and authoring no
+longer performs IO or reads an ambient bridge; the CLI resolves recorded
+descriptors before the terminal build. See the root README's upgrade section.

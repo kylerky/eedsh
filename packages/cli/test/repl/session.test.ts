@@ -2,12 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  defineConfig,
-  PresetDefinitionError,
-  ResolutionError,
-  takeResolutionTrace,
-} from '@eedsh/config'
+import { defineConfig, PresetDefinitionError, ResolutionError } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
 import { type Cause, Effect, Option, Queue, Ref, Stream } from 'effect'
 import * as Result from 'effect/Result'
@@ -24,8 +19,8 @@ import {
 import { defaultSpawn } from '../../src/spawn'
 import type { PathEvent } from '../../src/watch'
 import { waitFor } from '../support/async'
-import { clearTestBridge, installTestBridge } from '../support/bridge'
-import { realFileSystemValue } from '../support/cli'
+import { devDshInstallation } from '../support/bridge'
+import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -59,7 +54,14 @@ function configWithProfiles(names: readonly string[], defaultProfile?: string): 
 }
 
 function loaded(config: EedshConfig) {
-  return { config, provenance: undefined, configDir: work }
+  return {
+    config,
+    provenance: undefined,
+    configDir: work,
+    queries: [],
+    resolution: { bundles: [] },
+    traces: [],
+  }
 }
 
 function rowsOf(plan: ProfilePlan): number {
@@ -174,6 +176,8 @@ async function session(
     stderr: (line) => err.push(line),
     fileSystem: await realFileSystemValue(),
     spawner: defaultSpawn,
+    installation: devDshInstallation(),
+    resolver: await realBundleResolverValue(),
     loadConfig: () => {
       loadCount += 1
       return failure === undefined ? Effect.succeed(loaded(current)) : Effect.fail(failure)
@@ -212,7 +216,6 @@ async function session(
 }
 
 beforeEach(async () => {
-  await installTestBridge()
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'session-'))
   await mkdir(join(work, 'home', 'profiles', 'work'), { recursive: true })
@@ -223,7 +226,6 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  clearTestBridge()
   await Promise.all(sessions.splice(0).map((item) => item.close()))
   await rm(work, { recursive: true, force: true })
 })
@@ -241,7 +243,7 @@ describe('session evaluation', () => {
     expect(await h.session.evaluate('definePreset()')).toBe('bound-define-preset')
   })
 
-  it('binds dshVersion from the config project authoring package', async () => {
+  it('does not bind the removed dshVersion helper', async () => {
     const real = await import('@eedsh/config')
     const h = await session({
       authoringModule: {
@@ -250,8 +252,8 @@ describe('session evaluation', () => {
         definePreset: authoring.module.definePreset,
       } as unknown as Record<string, unknown>,
     })
-    expect(await h.session.evaluate('typeof dshVersion')).toBe('function')
-    expect(await h.session.evaluate('dshVersion()')).toBe('0.2.1-rc.2')
+    expect(await h.session.evaluate('typeof dshVersion')).toBe('undefined')
+    expect(await h.session.evaluate('typeof bundle')).toBe('function')
   })
 
   it('selects the default profile and reports ambiguity or an unknown name', async () => {
@@ -268,6 +270,8 @@ describe('session evaluation', () => {
         stderr: () => {},
         fileSystem: await realFileSystemValue(),
         spawner: defaultSpawn,
+        installation: devDshInstallation(),
+        resolver: await realBundleResolverValue(),
         loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work', 'home']))),
         authoring,
         watchConfig: false,
@@ -283,6 +287,8 @@ describe('session evaluation', () => {
         stderr: () => {},
         fileSystem: await realFileSystemValue(),
         spawner: defaultSpawn,
+        installation: devDshInstallation(),
+        resolver: await realBundleResolverValue(),
         loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work']))),
         authoring,
         watchConfig: false,
@@ -314,6 +320,8 @@ describe('session evaluation', () => {
       stderr: () => {},
       fileSystem: await realFileSystemValue(),
       spawner: defaultSpawn,
+      installation: devDshInstallation(),
+      resolver: await realBundleResolverValue(),
       loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       watchConfig: false,
@@ -337,6 +345,8 @@ describe('session evaluation', () => {
           stderr: () => {},
           fileSystem: await realFileSystemValue(),
           spawner: defaultSpawn,
+          installation: devDshInstallation(),
+          resolver: await realBundleResolverValue(),
           loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
           watchConfig: false,
         }),
@@ -730,6 +740,8 @@ describe('shell commands', () => {
       stderr: () => {},
       fileSystem: await realFileSystemValue(),
       spawner: defaultSpawn,
+      installation: devDshInstallation(),
+      resolver: await realBundleResolverValue(),
       loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       authoring,
@@ -829,12 +841,9 @@ describe('completion catalogs', () => {
 
   it('resolves row ids for a rooted bundle through the profile install', async () => {
     await installProfileBundle()
-    takeResolutionTrace()
     const h = await session({ config: configWithProfiles(['work'], 'work') })
     const result = await h.session.complete("bundle('@fixture/custom').fromProfile('work').row('")
     expect(result.hits).toEqual(["'profile-row'"])
-    expect(takeResolutionTrace()).toEqual([])
-    expect(h.out.join('\n')).not.toContain('resolved @fixture/custom')
   })
 
   it('completes profile names in chain arguments', async () => {

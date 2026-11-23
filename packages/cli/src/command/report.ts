@@ -6,6 +6,7 @@
  * the type check.
  * @module @eedsh/cli/command/report
  */
+import type { QueryRoot } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect, Match } from 'effect'
 import type * as Console from 'effect/Console'
@@ -103,7 +104,10 @@ export function describeError(error: EedshError): string[] {
       DshFailure: (failure) => [`${failure.code}: ${failure.message}`],
       InitError: (failure) => [`${failure.code}: ${failure.message}`],
       ReplSessionError: (failure) => [...failure.lines],
-      ResolutionError: (failure) => [`${failure.code}: ${failure.message}`],
+      ResolutionError: (failure) => [
+        `${failure.code}: ${failure.message}`,
+        ...(failure.root === undefined ? [] : [`root: ${describeQueryRoot(failure.root)}`]),
+      ],
       PresetDefinitionError: (failure) => presetDefinitionErrorLines(failure),
       SourceDeclarationError: (failure) => [`${failure.code}: ${failure.message}`],
       ProvisionFailure: (failure) => [`${failure.code}: ${failure.message}`],
@@ -113,6 +117,13 @@ export function describeError(error: EedshError): string[] {
       UnexpectedFailure: (failure) => [failure.message],
     }),
   )
+}
+
+/** Describe the recorded root a resolution failure used. */
+function describeQueryRoot(root: QueryRoot): string {
+  if (root.profile !== undefined) return `profile ${JSON.stringify(root.profile)}`
+  if (root.packageDir !== undefined) return `package directory ${JSON.stringify(root.packageDir)}`
+  return 'the invocation installation'
 }
 
 export function report(stderr: (line: string) => void, error: EedshError): void {
