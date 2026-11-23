@@ -142,6 +142,8 @@ function run(
     name,
     declaration,
     command,
+    now: () => new Date('2026-11-03T08:00:00.000Z'),
+    warn: () => undefined,
     ...(options.rebuild === undefined ? {} : { rebuild: options.rebuild }),
     ...(options.noBuild === undefined ? {} : { noBuild: options.noBuild }),
   }).pipe(Effect.provide(provide(fs, options.lock)))
@@ -279,6 +281,8 @@ describe('local checkout provisioning', () => {
         name,
         declaration: { from: checkout, prepare: [] },
         command,
+        now: () => new Date('2026-11-03T08:00:00.000Z'),
+        warn: () => undefined,
       }).pipe(
         Effect.provide(
           Layer.mergeAll(NodeServices.layer, Layer.succeed(SyncLock, fakeSyncLock().shape)),

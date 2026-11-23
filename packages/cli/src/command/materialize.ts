@@ -55,6 +55,9 @@ export function programFor(
       home: resolveDshHome(undefined, env),
       configDir,
       plan,
+      now: () => new Date(),
+      // Provisioning warnings are collected on the result and printed once.
+      warn: () => undefined,
       ...(provisioning.rebuild ? { rebuild: true } : {}),
       ...(provisioning.noBuild ? { noBuild: true } : {}),
     })

@@ -7,7 +7,7 @@
  * mutable local or session field.
  * @module @eedsh/cli/repl/prompt
  */
-import { Effect, Ref, Stream } from 'effect'
+import { Effect, Exit, Ref, Stream } from 'effect'
 import * as Terminal from 'effect/Terminal'
 import type { CompletionResult } from './completion'
 import { readLines, readLinesInteractive } from './input'
@@ -15,8 +15,8 @@ import { formatSessionError, isDotCommand, type ReplSession } from './session'
 
 /** The completion surface the pure adapter needs. */
 export interface CompletingSession {
-  complete(line: string): Promise<CompletionResult>
-  completeGeneric(line: string): Promise<readonly [string[], string]>
+  complete(line: string): Effect.Effect<CompletionResult, unknown>
+  completeGeneric(line: string): Effect.Effect<readonly [readonly string[], string], unknown>
 }
 
 /**
@@ -26,18 +26,20 @@ export interface CompletingSession {
  * @param line - the text before the cursor.
  * @returns the hits and the token to replace.
  */
-export async function completeShellLine(
+export function completeShellLine(
   session: CompletingSession,
   line: string,
-): Promise<[string[], string]> {
-  try {
-    const result = await session.complete(line)
-    if (result.hits.length > 0) return [[...result.hits], line.slice(result.start)]
-    const [hits, completedOn] = await session.completeGeneric(line)
-    return [[...hits], completedOn]
-  } catch {
-    return [[], line]
-  }
+): Effect.Effect<readonly [readonly string[], string]> {
+  return Effect.gen(function* () {
+    const result = yield* Effect.exit(session.complete(line))
+    if (Exit.isFailure(result)) return [[], line]
+    if (result.value.hits.length > 0) {
+      return [[...result.value.hits], line.slice(result.value.start)]
+    }
+    const generic = yield* Effect.exit(session.completeGeneric(line))
+    if (Exit.isFailure(generic)) return [[], line]
+    return [[...generic.value[0]], generic.value[1]]
+  })
 }
 
 /** The interactive state one loop owns. */
@@ -100,13 +102,13 @@ export function runReplLoop(
           if (trimmed === '') return true
           yield* Ref.update(state, (current) => ({ ...current, prompting: false }))
           if (isDotCommand(trimmed)) {
-            const exit = yield* Effect.promise(() => session.command(trimmed))
+            const exit = yield* session.command(trimmed)
             if (exit) {
               yield* stop
               return false
             }
           } else {
-            const outcome = yield* Effect.promise(() => session.evaluateOutcome(trimmed))
+            const outcome = yield* session.evaluateOutcome(trimmed)
             yield* Effect.sync(() => {
               if (outcome.ok) session.printValue(outcome.value)
               else writeError(outcome.error)

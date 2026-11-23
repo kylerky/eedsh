@@ -32,6 +32,26 @@ function failure(input: {
 }
 
 /**
+ * Import one module path, turning a path-conversion failure or a rejected
+ * import into a `Result` failure.
+ * @param path - absolute module path.
+ * @returns the imported namespace, or the failure cause.
+ */
+async function importModule(
+  path: string,
+): Promise<Result.Result<Record<string, unknown>, unknown>> {
+  const url = Result.try({
+    try: () => pathToFileURL(path).href,
+    catch: (cause) => cause,
+  })
+  if (Result.isFailure(url)) return Result.fail(url.failure)
+  return import(url.success).then(
+    (module: Record<string, unknown>) => Result.succeed(module),
+    (cause: unknown) => Result.fail(cause),
+  )
+}
+
+/**
  * Resolve, import, and validate the bridge for one installation. The value is
  * returned to the caller's resolver cache; nothing global is installed.
  * @param installation - the selected DSH installation.
@@ -40,36 +60,36 @@ function failure(input: {
 export async function loadDshBridge(
   installation: DiscoveredDshInstallation,
 ): Promise<Result.Result<DshBridge, DshFailure>> {
-  let appBootPath: string
-  try {
-    const require = createRequire(installation.installAnchor)
-    appBootPath = require.resolve(APP_BOOT_PACKAGE)
-  } catch (cause) {
+  const resolved = Result.try({
+    try: () => createRequire(installation.installAnchor).resolve(APP_BOOT_PACKAGE),
+    catch: (cause) => cause,
+  })
+  if (Result.isFailure(resolved)) {
     return Result.fail(
       failure({
         code: 'dsh.bridge_unavailable',
         path: installation.installAnchor,
         version: installation.version,
         message: `DSH ${installation.version} cannot provide ${APP_BOOT_PACKAGE} from ${installation.installAnchor}; reinstall dsh or select another installation with --dsh`,
-        cause,
+        cause: resolved.failure,
       }),
     )
   }
+  const appBootPath = resolved.success
 
-  let module: Record<string, unknown>
-  try {
-    module = (await import(pathToFileURL(appBootPath).href)) as Record<string, unknown>
-  } catch (cause) {
+  const imported = await importModule(appBootPath)
+  if (Result.isFailure(imported)) {
     return Result.fail(
       failure({
         code: 'dsh.bridge_load_failed',
         path: appBootPath,
         version: installation.version,
         message: `cannot load ${APP_BOOT_PACKAGE} from DSH ${installation.version} at ${appBootPath}`,
-        cause,
+        cause: imported.failure,
       }),
     )
   }
+  const module = imported.success
 
   for (const capability of REQUIRED_DSH_CAPABILITIES) {
     if (typeof module[capability] !== 'function') {

@@ -4,8 +4,7 @@
  *
  * The interactive loop runs inside this invocation program: input is the
  * `Terminal` service's line stream, and the session's publication trigger posts
- * a request whose materialization this program runs directly (no nested
- * runtime around `syncProgram`).
+ * a request whose materialization this program runs directly.
  * @module @eedsh/cli/command/adapters/repl
  */
 import { dirname } from 'node:path'
@@ -25,7 +24,14 @@ import {
 } from '../../internal/effect/services'
 import type { MaterializeResult } from '../../materialize/program'
 import { type ReplLoopState, runReplLoop } from '../../repl/prompt'
-import { ReplSession, type SyncOutcome } from '../../repl/session'
+import {
+  composeFor,
+  doctorFor,
+  installPreviewFor,
+  ReplSession,
+  type SyncOutcome,
+  type SyncPlan,
+} from '../../repl/session'
 import { configFlag, dshFlag, evalFlag, profileFlag, replSyncFlag } from '../../surface'
 import { asEedshError } from '../errors'
 import { NO_PROVISIONING_MODE, syncProgram } from '../materialize'
@@ -78,59 +84,15 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
     const spawner = yield* Spawner
     const profile = Option.getOrUndefined(input.profile)
     const configDir = dirname(configPath.value)
-    // The session's async sync trigger posts a request and awaits its Deferred;
-    // the materialization below runs in this program, not a nested runtime.
+    // The session's sync trigger posts a request and awaits its Deferred; the
+    // materialization below runs in this program, not a nested runtime.
     const syncRequests = yield* Queue.unbounded<SyncRequest>()
-    const syncPlan = async (plan: ProfilePlan, provenance: ConfigProvenance | undefined) => {
-      const deferred = Deferred.makeUnsafe<SyncOutcome, unknown>()
-      Queue.offerUnsafe(syncRequests, { plan, provenance, deferred })
-      return await Effect.runPromise(Deferred.await(deferred))
-    }
-    // Session construction loads the config and the authoring package; a
-    // rejection there is this command's failure, reported once through Output.
-    const session = yield* Effect.tryPromise({
-      try: () =>
-        ReplSession.create({
-          configPath: configPath.value,
-          ...(profile === undefined ? {} : { profile }),
-          sync: input.sync,
-          env,
-          stdout: output.stdout,
-          stderr: output.stderr,
-          loadConfig: (path, options) => loader.load(path, options),
-          watch: (dir) => watcher.watch(dir),
-          syncPlan,
-          fileSystem,
-          spawner,
-          installation,
-          resolver,
-          watchConfig: Option.isNone(input.eval),
-          oneShot: Option.isSome(input.eval),
-        }),
-      catch: (cause) => asEedshError(cause),
-    })
-
-    const evalExpression = Option.getOrUndefined(input.eval)
-    if (evalExpression !== undefined) {
-      const evaluated = yield* Effect.exit(
-        Effect.tryPromise({
-          try: () => session.evaluate(evalExpression),
-          catch: (cause) => cause,
-        }),
-      )
-      yield* Effect.promise(() => session.close())
-      if (Exit.isFailure(evaluated)) {
-        if (Cause.hasInterruptsOnly(evaluated.cause)) return EXIT_FAILURE
-        report(output.stderr, asEedshError(Cause.squash(evaluated.cause)))
-        return EXIT_FAILURE
-      }
-      session.printValue(evaluated.value)
-      return EXIT_OK
-    }
-
-    const tty = process.stdin.isTTY === true && process.stdout.isTTY === true
-    const prompt = tty ? 'eedsh> ' : ''
-    const loopState = yield* Ref.make<ReplLoopState>({ running: true, prompting: false })
+    const syncPlan: SyncPlan = (plan, provenance) =>
+      Effect.gen(function* () {
+        const deferred = yield* Deferred.make<SyncOutcome, unknown>()
+        yield* Queue.offer(syncRequests, { plan, provenance, deferred })
+        return yield* Deferred.await(deferred)
+      })
     const serveSync = Stream.fromQueue(syncRequests).pipe(
       Stream.runForEach((request) =>
         Effect.gen(function* () {
@@ -161,20 +123,62 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
         }),
       ),
     )
-    const loop = yield* Effect.exit(
-      Effect.scoped(
-        Effect.gen(function* () {
-          yield* Effect.forkScoped(serveSync)
-          yield* runReplLoop(session, { tty, prompt, state: loopState })
-        }),
-      ),
-    )
-    yield* Effect.promise(() => session.close())
+    const evalExpression = Option.getOrUndefined(input.eval)
+    const tty = process.stdin.isTTY === true && process.stdout.isTTY === true
+    const run = Effect.gen(function* () {
+      // Session construction loads the config and the authoring package; a
+      // failure there is this command's failure, reported once through Output.
+      const session = yield* ReplSession.create({
+        configPath: configPath.value,
+        ...(profile === undefined ? {} : { profile }),
+        sync: input.sync,
+        env,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        loadConfig: (path, options) => loader.load(path, options),
+        watch: (dir) => watcher.watch(dir),
+        compose: composeFor(installation, resolver),
+        syncPlan,
+        installPreview: installPreviewFor(spawner),
+        now: Date.now,
+        doctor: doctorFor(env, fileSystem),
+        fileSystem,
+        spawner,
+        installation,
+        resolver,
+        watchConfig: Option.isNone(input.eval),
+        oneShot: Option.isSome(input.eval),
+      }).pipe(Effect.mapError((error) => asEedshError(error)))
+      yield* Effect.addFinalizer(() => session.close())
+
+      if (evalExpression !== undefined) {
+        const evaluated = yield* Effect.exit(
+          Effect.tryPromise({
+            try: () => session.evaluate(evalExpression),
+            catch: (cause) => cause,
+          }),
+        )
+        if (Exit.isFailure(evaluated)) {
+          if (Cause.hasInterruptsOnly(evaluated.cause)) return EXIT_FAILURE
+          report(output.stderr, asEedshError(Cause.squash(evaluated.cause)))
+          return EXIT_FAILURE
+        }
+        session.printValue(evaluated.value)
+        return EXIT_OK
+      }
+
+      const prompt = tty ? 'eedsh> ' : ''
+      const loopState = yield* Ref.make<ReplLoopState>({ running: true, prompting: false })
+      yield* Effect.forkScoped(serveSync)
+      yield* runReplLoop(session, { tty, prompt, state: loopState })
+      return EXIT_OK
+    })
+    const loop = yield* Effect.exit(Effect.scoped(run))
     if (Exit.isFailure(loop)) {
       if (Cause.hasInterruptsOnly(loop.cause)) return EXIT_FAILURE
       report(output.stderr, asEedshError(Cause.squash(loop.cause)))
       return EXIT_FAILURE
     }
-    return EXIT_OK
+    return loop.value
   }).pipe(Effect.catch((error) => failWith(asEedshError(error))))
 }

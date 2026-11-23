@@ -15,7 +15,9 @@ import * as Terminal from 'effect/Terminal'
  * token they replace. The hook runs for every Tab press; its failures are
  * contained by the editor.
  */
-export type CompletionHook = (line: string) => Promise<readonly [readonly string[], string]>
+export type CompletionHook = (
+  line: string,
+) => Effect.Effect<readonly [readonly string[], string], unknown>
 
 /**
  * A stream of lines read from the terminal, one prompt before each read.
@@ -165,12 +167,9 @@ function completeLine(
   complete: CompletionHook,
   buffer: string,
 ): Effect.Effect<readonly [readonly string[], string]> {
-  // `tryPromise` maps a thrown hook or rejected promise into the error channel;
-  // `catch` recovers only that failure, never an interrupt of the editor.
-  return Effect.tryPromise({
-    try: () => complete(buffer),
-    catch: () => undefined,
-  }).pipe(Effect.catch(() => Effect.succeed([[], buffer] as const)))
+  // The hook's own failure channel is recovered here; an interrupt of the
+  // editor itself is not.
+  return complete(buffer).pipe(Effect.catch(() => Effect.succeed([[], buffer] as const)))
 }
 
 /** Whether a key event ends the session. */

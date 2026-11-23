@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Effect } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -37,16 +38,17 @@ async function profile(): Promise<string> {
   return dir
 }
 
-function installer(calls: string[]): (dir: string) => Promise<void> {
-  return async (dir) => {
-    calls.push(dir)
-    for (const name of ['@acme/x']) {
-      await writeJson(join(dir, 'node_modules', ...name.split('/'), 'package.json'), {
-        name,
-        version: '1.2.3',
-      })
-    }
-  }
+function installer(calls: string[]): (dir: string) => Effect.Effect<void, unknown> {
+  return (dir) =>
+    Effect.promise(async () => {
+      calls.push(dir)
+      for (const name of ['@acme/x']) {
+        await writeJson(join(dir, 'node_modules', ...name.split('/'), 'package.json'), {
+          name,
+          version: '1.2.3',
+        })
+      }
+    })
 }
 
 /** The process service values every preview call runs through. */
@@ -56,7 +58,7 @@ function services(): PreviewServices {
 
 /** Prepare a preview against the process service values. */
 async function prepare(input: PreparePreviewInput) {
-  return await preparePreview(input, services())
+  return await Effect.runPromise(preparePreview(input, services()))
 }
 
 beforeEach(async () => {
@@ -82,6 +84,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer(calls),
+      now: () => Date.now(),
     })
     expect(first.reused).toBe(false)
     expect(calls).toEqual([first.dir])
@@ -100,6 +103,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer(calls),
+      now: () => Date.now(),
     })
     expect(second.reused).toBe(true)
     expect(calls).toHaveLength(1)
@@ -117,6 +121,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer([]),
+      now: () => Date.now(),
     })
     const second = await prepare({
       profileName: 'work',
@@ -126,6 +131,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer([]),
+      now: () => Date.now(),
     })
     expect(second.dir).not.toBe(first.dir)
     expect(second.reused).toBe(false)
@@ -137,17 +143,18 @@ describe('preview cache', () => {
     let active = 0
     let maximum = 0
     let calls = 0
-    const install = async (dir: string): Promise<void> => {
-      calls += 1
-      active += 1
-      maximum = Math.max(maximum, active)
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
-      await writeJson(join(dir, 'node_modules', '@acme', 'x', 'package.json'), {
-        name: '@acme/x',
-        version: '1.2.3',
+    const install = (dir: string): Effect.Effect<void, unknown> =>
+      Effect.promise(async () => {
+        calls += 1
+        active += 1
+        maximum = Math.max(maximum, active)
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+        await writeJson(join(dir, 'node_modules', '@acme', 'x', 'package.json'), {
+          name: '@acme/x',
+          version: '1.2.3',
+        })
+        active -= 1
       })
-      active -= 1
-    }
     const input = {
       profileName: 'work',
       profileDir,
@@ -156,6 +163,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install,
+      now: () => Date.now(),
     }
     const [left, right] = await Promise.all([prepare(input), prepare(input)])
     expect(calls).toBe(1)
@@ -175,6 +183,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer(calls),
+      now: () => Date.now(),
     })
     const markerPath = join(first.dir, '.eedsh-preview.json')
     const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, unknown>
@@ -187,6 +196,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer(calls),
+      now: () => Date.now(),
     })
     expect(second.reused).toBe(false)
     expect(calls).toHaveLength(2)
@@ -199,6 +209,7 @@ describe('preview cache', () => {
       env: {},
       cacheRoot,
       install: installer(calls),
+      now: () => Date.now(),
     })
     expect(third.reused).toBe(false)
     expect(calls).toHaveLength(3)
@@ -215,6 +226,7 @@ describe('preview cache', () => {
         env: {},
         cacheRoot: join(work, 'cache'),
         install: installer([]),
+        now: () => Date.now(),
       }),
     ).rejects.toBeInstanceOf(PreviewError)
   })
@@ -235,7 +247,9 @@ describe('preview cache', () => {
       specs: [],
       createdAt: 900,
     })
-    const removed = await cleanupPreviews(cacheRoot, fileSystem, { now: () => 1000, maxAgeMs: 100 })
+    const removed = await Effect.runPromise(
+      cleanupPreviews(cacheRoot, fileSystem, { now: () => 1000, maxAgeMs: 100 }),
+    )
     expect(removed).toEqual([oldDir])
     expect(await readFile(join(newDir, '.eedsh-preview.json'), 'utf8')).toContain('new')
   })
@@ -252,7 +266,7 @@ describe('pnpm installer', () => {
   it('spawns pnpm install in the preview directory', async () => {
     const { calls, spawn } = fakeSpawner()
     const dir = join(work, 'preview')
-    await installPreviewWithPnpm(dir, spawn)
+    await Effect.runPromise(installPreviewWithPnpm(dir, spawn))
     expect(calls).toHaveLength(1)
     expect(calls[0]?.args).toContain('install')
     expect(calls[0]?.options.cwd).toBe(dir)
@@ -261,7 +275,9 @@ describe('pnpm installer', () => {
 
   it('reports a failed install with its captured stderr', async () => {
     const { spawn } = fakeSpawner({ exitCode: 1, stderr: 'registry unavailable' })
-    await expect(installPreviewWithPnpm(join(work, 'preview'), spawn)).rejects.toMatchObject({
+    await expect(
+      Effect.runPromise(installPreviewWithPnpm(join(work, 'preview'), spawn)),
+    ).rejects.toMatchObject({
       code: 'preview.install_failed',
       message: expect.stringContaining('registry unavailable'),
     })

@@ -9,7 +9,11 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { type DiscoveredDshInstallation, discoverDshInstallation } from '../../src/dsh'
+import {
+  type DiscoveredDshInstallation,
+  type DiscoveryContext,
+  discoverDshInstallation,
+} from '../../src/dsh'
 import { liveCliServicesLayer } from '../../src/internal/effect/layer'
 import { BundleResolver } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
@@ -65,8 +69,12 @@ describe('slow Web HMR integration', () => {
     if (matrixDir !== undefined && matrixDir !== '') {
       const nested = join(matrixDir, 'node_modules', '@deepseek-ai', 'dsh')
       const explicit = existsSync(nested) ? nested : matrixDir
+      const context: DiscoveryContext = {
+        readAnchor: () => Effect.succeed(undefined),
+        probeVersion: () => Effect.succeed(undefined),
+      }
       const discovered = await Effect.runPromise(
-        discoverDshInstallation({ explicit, env: {}, cwd: root }).pipe(
+        discoverDshInstallation({ explicit, env: {}, cwd: root }, context).pipe(
           Effect.provide(NodeServices.layer),
         ),
       )

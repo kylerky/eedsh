@@ -5,8 +5,14 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { discoverDshInstallation } from '../src/dsh'
+import { type DiscoveryContext, discoverDshInstallation } from '../src/dsh'
 import { loadDshBridge } from '../src/dsh-bridge'
+
+/** Discovery seams for a test that selects the installation explicitly. */
+const offlineContext: DiscoveryContext = {
+  readAnchor: () => Effect.succeed(undefined),
+  probeVersion: () => Effect.succeed(undefined),
+}
 
 const CAPABILITIES = [
   'resolveProfileDir',
@@ -53,11 +59,14 @@ async function fakeInstallation(
 async function installationOf(capabilities?: readonly string[], version?: string) {
   const fake = await fakeInstallation(capabilities, version)
   const discovered = await Effect.runPromise(
-    discoverDshInstallation({
-      explicit: fake.packageDir,
-      env: {},
-      cwd: fake.packageDir,
-    }).pipe(Effect.provide(NodeServices.layer)),
+    discoverDshInstallation(
+      {
+        explicit: fake.packageDir,
+        env: {},
+        cwd: fake.packageDir,
+      },
+      offlineContext,
+    ).pipe(Effect.provide(NodeServices.layer)),
   )
   if (Result.isFailure(discovered)) throw discovered.failure
   return discovered.success

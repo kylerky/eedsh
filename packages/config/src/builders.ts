@@ -21,6 +21,7 @@ import {
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import { authoringKind, isAuthoringObject, normalizeAuthoring } from './authoring'
+import { defect } from './defect'
 import { type PresetDefinition, type PresetRef, presetRefId } from './preset'
 import {
   type AuthoringSite,
@@ -331,7 +332,7 @@ export class ProfileBuilder {
    * @returns this profile.
    */
   package(name: string, spec: string): this {
-    if (Object.hasOwn(this.sourceSpecs, name)) throw duplicatePackageDeclaration(name)
+    if (Object.hasOwn(this.sourceSpecs, name)) defect(duplicatePackageDeclaration(name))
     this.packageSpecs[name] = spec
     return this
   }
@@ -345,7 +346,7 @@ export class ProfileBuilder {
    * @returns this profile.
    */
   source(name: string, declaration: SourceDeclaration): this {
-    if (Object.hasOwn(this.packageSpecs, name)) throw duplicatePackageDeclaration(name)
+    if (Object.hasOwn(this.packageSpecs, name)) defect(duplicatePackageDeclaration(name))
     this.sourceSpecs[name] = normalizeSourceDeclaration(name, declaration)
     return this
   }

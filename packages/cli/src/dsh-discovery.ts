@@ -54,14 +54,34 @@ export interface DiscoverDshOptions {
   readonly env?: Record<string, string | undefined> | undefined
   /** Directory for project-local resolution; defaults to the working directory. */
   readonly cwd?: string | undefined
-  /** Replace the recorded-anchor read; defaults to the DSH home record. */
-  readonly readAnchor?:
-    | (() => Effect.Effect<InstallationAnchor | undefined, never, FileSystem.FileSystem>)
-    | undefined
-  /** Replace the bounded `dsh --version` guard; defaults to the real probe. */
-  readonly probeVersion?: ((launcher: string) => Effect.Effect<string | undefined>) | undefined
-  /** Build the default version probe when none is supplied. */
-  readonly runner?: CommandRunnerShape | undefined
+}
+
+/** The capabilities discovery receives from its composition root. */
+export interface DiscoveryContext {
+  /** Read the recorded installation anchor for one environment, or undefined. */
+  readonly readAnchor: (
+    env: Record<string, string | undefined>,
+  ) => Effect.Effect<InstallationAnchor | undefined, never, FileSystem.FileSystem>
+  /** Read one launcher's version with a bounded `dsh --version` probe. */
+  readonly probeVersion: (
+    launcher: string,
+    env: Record<string, string | undefined>,
+  ) => Effect.Effect<string | undefined>
+}
+
+/**
+ * Bind discovery's required capabilities to one command runner: the recorded
+ * anchor reader and the bounded `dsh --version` probe. The composition root
+ * supplies the runner; discovery itself never launches a command.
+ * @param runner - the bounded command runner.
+ * @returns the capabilities {@link discoverDshInstallation} requires.
+ */
+export function liveDiscoveryContext(runner: CommandRunnerShape): DiscoveryContext {
+  return {
+    readAnchor: (env) =>
+      readInstallationAnchorSnapshot(env).pipe(Effect.map((snapshot) => snapshot.record)),
+    probeVersion: (launcher, env) => versionProbe(runner, env)(launcher),
+  }
 }
 
 const DEFAULT_PATH_EXTENSIONS = ['.COM', '.EXE', '.BAT', '.CMD']
@@ -266,11 +286,13 @@ function discoverFromProject(
  * never silently selects a different installation. A PATH launcher that neither
  * direct resolution nor a valid recorded anchor resolves produces
  * `dsh.launcher_unresolved` and does not fall through to a project-local copy.
- * @param options - explicit path, environment, working directory, and seams.
+ * @param options - explicit path, environment, and working directory.
+ * @param context - the required anchor reader and version probe.
  * @returns the selected installation, or a tagged discovery failure.
  */
 export function discoverDshInstallation(
   options: DiscoverDshOptions = {},
+  context: DiscoveryContext,
 ): Effect.Effect<
   Result.Result<DiscoveredDshInstallation, DshFailure>,
   PlatformError.PlatformError,
@@ -296,21 +318,13 @@ export function discoverDshInstallation(
     const pathScan = yield* discoverFromPath(env)
     if (pathScan?.installation !== undefined) return Result.succeed(pathScan.installation)
 
-    const readAnchor =
-      options.readAnchor ??
-      (() => readInstallationAnchorSnapshot(env).pipe(Effect.map((snapshot) => snapshot.record)))
-    const record = yield* readAnchor()
-    const probeVersion =
-      options.probeVersion ??
-      (options.runner === undefined
-        ? (_launcher: string) => Effect.succeed<string | undefined>(undefined)
-        : versionProbe(options.runner, env))
+    const record = yield* context.readAnchor(env)
     let recorded: RecordedResolution = {}
     if (record !== undefined) {
       recorded = yield* resolveRecordedAnchor({
         record,
         pathLauncher: pathScan?.launcher,
-        probeVersion,
+        probeVersion: (launcher) => context.probeVersion(launcher, env),
       })
     }
     if (recorded.installation !== undefined) return Result.succeed(recorded.installation)

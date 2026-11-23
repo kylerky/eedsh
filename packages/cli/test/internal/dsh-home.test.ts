@@ -1,7 +1,8 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { resolveDshHome, resolveProfileDir } from '../../src/internal/dsh-home'
+import { resolveDshHome, resolveProfileDir, validatedProfileDir } from '../../src/internal/dsh-home'
 
 describe('local DSH home resolution', () => {
   it('falls back to ~/.dsh when DSH_HOME is unset', () => {
@@ -50,16 +51,22 @@ describe('local DSH home resolution', () => {
 
 describe('local profile path resolution', () => {
   it('places a profile below the given home', () => {
-    expect(resolveProfileDir('work', '/srv/dsh-home')).toBe(
-      join('/srv/dsh-home', 'profiles', 'work'),
-    )
+    const resolved = resolveProfileDir('work', '/srv/dsh-home')
+    expect(Result.isSuccess(resolved)).toBe(true)
+    if (Result.isSuccess(resolved)) {
+      expect(resolved.success).toBe(join('/srv/dsh-home', 'profiles', 'work'))
+    }
   })
 
   it('uses DSH_HOME when no home is given', () => {
     const previous = process.env.DSH_HOME
     process.env.DSH_HOME = '/tmp/eedsh-home'
     try {
-      expect(resolveProfileDir('work')).toBe(join(resolve('/tmp/eedsh-home'), 'profiles', 'work'))
+      const resolved = resolveProfileDir('work')
+      expect(Result.isSuccess(resolved)).toBe(true)
+      if (Result.isSuccess(resolved)) {
+        expect(resolved.success).toBe(join(resolve('/tmp/eedsh-home'), 'profiles', 'work'))
+      }
     } finally {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
@@ -68,7 +75,19 @@ describe('local profile path resolution', () => {
 
   it('rejects names that are not safe path segments', () => {
     for (const name of ['', '.', '..', 'node_modules', 'a/b', 'a\\b']) {
-      expect(() => resolveProfileDir(name, '/srv/dsh-home'), name).toThrow(/invalid profile name/)
+      const resolved = resolveProfileDir(name, '/srv/dsh-home')
+      expect(Result.isFailure(resolved), name).toBe(true)
+      if (Result.isFailure(resolved)) {
+        expect(resolved.failure._tag).toBe('InvalidProfileName')
+        expect(resolved.failure.name).toBe(name)
+        expect(resolved.failure.message).toBe(`dsh: invalid profile name ${JSON.stringify(name)}`)
+      }
     }
+  })
+
+  it('resolves a validated name without a failure', () => {
+    expect(validatedProfileDir('work', '/srv/dsh-home')).toBe(
+      join('/srv/dsh-home', 'profiles', 'work'),
+    )
   })
 })

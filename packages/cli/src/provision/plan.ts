@@ -31,9 +31,9 @@ export interface ProvisionPlanSourcesInput {
   /** Fail instead of preparing when preparation would be needed. */
   readonly noBuild?: boolean
   /** Receives non-fatal provisioning warnings. */
-  readonly warn?: (message: string) => void
-  /** Override the recorded preparation time, for tests. */
-  readonly now?: () => Date
+  readonly warn: (message: string) => void
+  /** The recorded preparation time. */
+  readonly now: () => Date
 }
 
 /** What provisioning every declared source produced. */
@@ -68,8 +68,8 @@ export function provisionPlanSources(
         ...(input.command === undefined ? {} : { command: input.command }),
         ...(input.rebuild === undefined ? {} : { rebuild: input.rebuild }),
         ...(input.noBuild === undefined ? {} : { noBuild: input.noBuild }),
-        ...(input.now === undefined ? {} : { now: input.now }),
-        ...(input.warn === undefined ? {} : { warn: input.warn }),
+        now: input.now,
+        warn: input.warn,
       })
       sources.push(source)
       warnings.push(...source.warnings)

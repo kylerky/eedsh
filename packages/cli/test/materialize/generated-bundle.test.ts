@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { buildGeneratedBundle, generationIdFor } from '../../src/materialize/generated-bundle'
+import {
+  buildGeneratedBundle,
+  type GeneratedBundle,
+  generationIdFor,
+} from '../../src/materialize/generated-bundle'
 import { classifyGenerationRecord } from '../../src/materialize/generation-record'
 import { emitPatchesYaml } from '../../src/materialize/yaml'
 import { planOf } from '../support/plan'
@@ -37,14 +42,16 @@ const packages = {
   '@eedsh/generated': 'link:./.eedsh/generated',
 }
 
-function build(plan: ProfilePlan = fixturePlan()) {
-  return buildGeneratedBundle({
+function build(plan: ProfilePlan = fixturePlan()): GeneratedBundle {
+  const built = buildGeneratedBundle({
     plan,
     managedBundles,
     packages,
     eedshVersion: '0.0.0',
     dshVersion: '0.2.1-rc.2',
   })
+  if (Result.isFailure(built)) throw new Error(built.failure.message)
+  return built.success
 }
 
 describe('generated bundle', () => {
@@ -213,7 +220,7 @@ describe('yaml emission', () => {
   it('emits expressions as !!js scalars that survive a DSH patch parse', async () => {
     const yaml = await import('js-yaml')
     const { entryListSchema } = await import('../../src/materialize/yaml-schema')
-    const text = emitPatchesYaml([
+    const emitted = emitPatchesYaml([
       {
         insert: [
           {
@@ -224,6 +231,8 @@ describe('yaml emission', () => {
         ],
       },
     ])
+    if (Result.isFailure(emitted)) throw new Error(emitted.failure.message)
+    const text = emitted.success
     expect(text).toContain('!!js')
     const parsed = yaml.load(text, { schema: entryListSchema }) as unknown
     expect(parsed).toEqual([
@@ -316,13 +325,7 @@ describe('DSH round-trip', () => {
         ]),
       ],
     })
-    const result = buildGeneratedBundle({
-      plan,
-      managedBundles,
-      packages,
-      eedshVersion: '0.0.0',
-      dshVersion: '0.2.1-rc.2',
-    })
+    const result = build(plan)
     const layerFile = result.files.find((file) => file.path.endsWith('.yml'))
     expect(layerFile).toBeDefined()
 

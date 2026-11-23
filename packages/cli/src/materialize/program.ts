@@ -261,13 +261,17 @@ export function materialize(
         ...(options.sourceSpecs === undefined ? {} : { sourceSpecs: options.sourceSpecs }),
       }
       const reconciled = reconcileManifest(reconcileInput)
-      const generated = buildGeneratedBundle({
+      const built = buildGeneratedBundle({
         plan: options.plan,
         managedBundles: reconciled.managedBundles,
         packages: reconciled.managedPackages,
         eedshVersion: options.eedshVersion,
         dshVersion: options.dsh.version,
       })
+      // The plan schema rejects every malformed expression node, so this
+      // failure is a defect in the validated plan rather than a reportable one.
+      if (Result.isFailure(built)) return yield* Effect.die(built.failure)
+      const generated = built.success
 
       const unchanged =
         Option.isSome(existingManifest) &&

@@ -1,36 +1,43 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Effect } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ReplSession } from '../../src/repl/session'
+import { loadConfig } from '../../src/config'
+import { BundleResolver } from '../../src/internal/effect/services'
+import { composeFor, doctorFor, ReplSession } from '../../src/repl/session'
 import { defaultSpawn } from '../../src/spawn'
 import { devDshInstallation } from '../support/bridge'
 import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
+import { type TestSession, testSession, testWatch } from './harness'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
 let work = ''
-const sessions: ReplSession[] = []
+const sessions: TestSession[] = []
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, JSON.stringify(value, null, 2))
 }
 
-async function installPreview(dir: string): Promise<void> {
-  const packageDir = join(dir, 'node_modules', '@acme', 'plugin-bundle')
-  await mkdir(packageDir, { recursive: true })
-  await writeJson(join(packageDir, 'package.json'), {
-    name: '@acme/plugin-bundle',
-    version: '1.2.3',
-    dsh: { bundle: { patch: './cordis.patch.yml' } },
-  })
-  await writeFile(
-    join(packageDir, 'cordis.patch.yml'),
-    `- insert:
+function installPreview(dir: string): Effect.Effect<void, unknown> {
+  return Effect.promise(async () => {
+    const packageDir = join(dir, 'node_modules', '@acme', 'plugin-bundle')
+    await mkdir(packageDir, { recursive: true })
+    await writeJson(join(packageDir, 'package.json'), {
+      name: '@acme/plugin-bundle',
+      version: '1.2.3',
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    })
+    await writeFile(
+      join(packageDir, 'cordis.patch.yml'),
+      `- insert:
     - id: acme-row
       name: '@acme/plugin'
 `,
-  )
+    )
+  })
 }
 
 beforeEach(async () => {
@@ -72,20 +79,38 @@ export default () => defineConfig()
     await writeFile(configPath, initial)
     const out: string[] = []
     const err: string[] = []
-    const session = await ReplSession.create({
-      configPath,
-      profile: 'work',
-      env: { DSH_HOME: join(work, 'home') },
-      stdout: (line) => out.push(line),
-      stderr: (line) => err.push(line),
-      fileSystem: await realFileSystemValue(),
-      spawner: defaultSpawn,
-      installation: devDshInstallation(),
-      resolver: await realBundleResolverValue(),
-      installPreview,
-      cacheRoot: join(work, 'cache'),
-      watchConfig: false,
-    })
+    const installation = devDshInstallation()
+    const resolver = await realBundleResolverValue()
+    const env = { DSH_HOME: join(work, 'home') }
+    const fileSystem = await realFileSystemValue()
+    const session = testSession(
+      await Effect.runPromise(
+        ReplSession.create({
+          configPath,
+          profile: 'work',
+          env,
+          stdout: (line) => out.push(line),
+          stderr: (line) => err.push(line),
+          fileSystem,
+          spawner: defaultSpawn,
+          installation,
+          resolver,
+          loadConfig: (path, options) =>
+            loadConfig(path, options).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(BundleResolver, resolver),
+            ),
+          compose: composeFor(installation, resolver),
+          syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+          watch: testWatch(),
+          installPreview,
+          now: () => Date.now(),
+          doctor: doctorFor(env, fileSystem),
+          cacheRoot: join(work, 'cache'),
+          watchConfig: false,
+        }),
+      ),
+    )
     sessions.push(session)
     expect(session.currentPlan.profile.name).toBe('work')
 

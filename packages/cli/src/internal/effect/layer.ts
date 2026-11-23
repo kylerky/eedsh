@@ -13,11 +13,15 @@ import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
-import { boundedCommandRunner, pnpmInvocation, versionProbe } from '../../command-runner'
+import { boundedCommandRunner, pnpmInvocation } from '../../command-runner'
 import { loadConfig } from '../../config'
 import { bootstrapDshInstallation } from '../../dsh-bootstrap'
 import { loadDshBridge } from '../../dsh-bridge'
-import { discoverDshInstallation, validateDshVersion } from '../../dsh-discovery'
+import {
+  discoverDshInstallation,
+  liveDiscoveryContext,
+  validateDshVersion,
+} from '../../dsh-discovery'
 import { defaultInstallationAnchorStore } from '../../installation-anchor'
 import { preflightLayer } from '../../preflight'
 import { bundlePatchLayers, resolveDescriptors, resolveOne } from '../../resolve'
@@ -176,9 +180,9 @@ export const environmentLayer: Layer.Layer<EnvironmentShape> = Layer.succeed(Env
 
 /**
  * Discovery, bootstrap, and validation of the selected DSH installation. The
- * layer captures the command runner so discovery's methods carry only the
- * FileSystem requirement; the default probe is bound to the invocation's
- * environment.
+ * layer supplies the command runner, and binds it to the required anchor-reader
+ * and version-probe capabilities, so a discovery input carries only the
+ * invocation's path, environment, and working directory.
  */
 export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape, never, CommandRunnerShape> =
   Layer.effect(
@@ -186,12 +190,7 @@ export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape, never, CommandRun
     Effect.gen(function* () {
       const runner = yield* CommandRunner
       return {
-        discover: (input) =>
-          discoverDshInstallation({
-            ...input,
-            runner,
-            probeVersion: input.probeVersion ?? versionProbe(runner, input.env),
-          }),
+        discover: (input) => discoverDshInstallation(input, liveDiscoveryContext(runner)),
         bootstrap: (input) => bootstrapDshInstallation({ ...input, runner }),
         validate: (installation) => validateDshVersion(installation),
       }

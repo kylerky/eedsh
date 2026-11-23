@@ -25,6 +25,9 @@ import type { GenerationRecord } from '../materialize/generated-bundle'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from '../materialize/generated-bundle'
 import type { GenerationLookup } from '../materialize/generation-record'
 
+/** The composed row data one row view wraps. */
+type RowData = PlanEntry
+
 /** A view failure shaped like a session failure, so the prompt can print it. */
 export class ViewError extends Error {
   readonly _tag = 'ReplSessionError'
@@ -59,7 +62,7 @@ export class BundleRowView {
   }
 
   /** The row as plain plan data. */
-  toJSON(): PlanEntry {
+  toJSON(): RowData {
     return this.data
   }
 
@@ -118,7 +121,7 @@ export class BundlePresetView {
   }
 
   /** The preset row as plain plan data. */
-  toJSON(): PlanEntry {
+  toJSON(): RowData {
     return this.data
   }
 
@@ -168,75 +171,110 @@ export class BundleView {
 
   /** Every declared row, from the invocation resolution. */
   rows(): readonly BundleRowView[] {
-    return this.bundle().rows.map((entry) => new BundleRowView(this.name, entry))
+    const bundle = this.bundle()
+    return bundle === undefined
+      ? []
+      : bundle.rows.map((entry) => new BundleRowView(this.name, entry))
   }
 
   /** Every declared preset, from the invocation resolution. */
   presets(): readonly BundlePresetView[] {
-    return this.bundle()
-      .rows.filter(isPresetEntry)
-      .map((entry) => new BundlePresetView(this.name, entry))
+    const bundle = this.bundle()
+    if (bundle === undefined) return []
+    return bundle.rows.filter(isPresetEntry).map((entry) => new BundlePresetView(this.name, entry))
+  }
+
+  /**
+   * One row by Loader id, or the tagged failure naming the available rows.
+   * @param id - the Loader row id.
+   * @returns the row result.
+   */
+  rowResult(id: string): Result.Result<BundleRowView, ViewError> {
+    const found = this.rows().find((entry) => entry.id === id)
+    if (found === undefined) {
+      return Result.fail(
+        new ViewError({
+          code: 'repl.row_not_found',
+          message: `bundle ${JSON.stringify(this.name)} declares no row ${JSON.stringify(id)}; available rows: ${this.rows()
+            .map((entry) => entry.id)
+            .join(', ')}`,
+        }),
+      )
+    }
+    return Result.succeed(found)
   }
 
   /**
    * One row by Loader id.
    * @param id - the Loader row id.
-   * @returns the typed row view.
+   * @returns the typed row view, or undefined when the id is unknown.
    */
-  row(id: string): BundleRowView {
-    const found = this.rows().find((entry) => entry.id === id)
+  row(id: string): BundleRowView | undefined {
+    return Result.getOrUndefined(this.rowResult(id))
+  }
+
+  /**
+   * One preset by preset id, or the tagged failure naming the available presets.
+   * @param id - the preset's own config id.
+   * @returns the preset result.
+   */
+  presetResult(id: string): Result.Result<BundlePresetView, ViewError> {
+    const found = this.presets().find((entry) => entry.id === id)
     if (found === undefined) {
-      throw new ViewError({
-        code: 'repl.row_not_found',
-        message: `bundle ${JSON.stringify(this.name)} declares no row ${JSON.stringify(id)}; available rows: ${this.rows()
-          .map((entry) => entry.id)
-          .join(', ')}`,
-      })
+      return Result.fail(
+        new ViewError({
+          code: 'repl.preset_not_found',
+          message: `bundle ${JSON.stringify(this.name)} declares no preset ${JSON.stringify(id)}; available presets: ${this.presets()
+            .map((entry) => entry.id)
+            .join(', ')}`,
+        }),
+      )
     }
-    return found
+    return Result.succeed(found)
   }
 
   /**
    * One preset by preset id.
    * @param id - the preset's own config id.
-   * @returns the typed preset view.
+   * @returns the typed preset view, or undefined when the id is unknown.
    */
-  preset(id: string): BundlePresetView {
-    const found = this.presets().find((entry) => entry.id === id)
-    if (found === undefined) {
-      throw new ViewError({
-        code: 'repl.preset_not_found',
-        message: `bundle ${JSON.stringify(this.name)} declares no preset ${JSON.stringify(id)}; available presets: ${this.presets()
-          .map((entry) => entry.id)
-          .join(', ')}`,
-      })
-    }
-    return found
+  preset(id: string): BundlePresetView | undefined {
+    return Result.getOrUndefined(this.presetResult(id))
   }
 
-  /** The resolved bundle package version. */
+  /** The resolved bundle package version, or an empty string when unresolved. */
   version(): string {
-    return this.bundle().version
+    return this.bundle()?.version ?? ''
   }
 
-  /** The resolved bundle package directory. */
+  /** The resolved bundle package directory, or an empty string when unresolved. */
   packageDir(): string {
-    return this.bundle().packageDir
+    return this.bundle()?.packageDir ?? ''
   }
 
-  /** Where the bundle was resolved from. */
-  origin(): ResolutionOrigin {
-    return this.bundle().origin
+  /** Where the bundle was resolved from, or undefined when unresolved. */
+  origin(): ResolutionOrigin | undefined {
+    return this.bundle()?.origin
   }
 
-  private bundle(): ResolvedBundle {
+  /**
+   * The resolved bundle, or the tagged failure when the invocation resolution
+   * has no entry for this bundle under the view's profile.
+   */
+  bundleResult(): Result.Result<ResolvedBundle, ViewError> {
     if (this.resolved === undefined) {
-      throw new ViewError({
-        code: 'repl.bundle_unresolved',
-        message: `bundle ${JSON.stringify(this.name)} is not resolved for profile ${JSON.stringify(this.profile)}; the invocation resolution has no entry for it`,
-      })
+      return Result.fail(
+        new ViewError({
+          code: 'repl.bundle_unresolved',
+          message: `bundle ${JSON.stringify(this.name)} is not resolved for profile ${JSON.stringify(this.profile)}; the invocation resolution has no entry for it`,
+        }),
+      )
     }
-    return this.resolved
+    return Result.succeed(this.resolved)
+  }
+
+  private bundle(): ResolvedBundle | undefined {
+    return Result.getOrUndefined(this.bundleResult())
   }
 }
 
@@ -307,22 +345,22 @@ function stringRecord(value: unknown): Record<string, string> {
  * @param name - the package name.
  * @returns the installed version, when the manifest is readable and valid.
  */
-async function installedVersion(
+function installedVersion(
   fileSystem: FileSystem.FileSystem,
   profileDir: string,
   name: string,
-): Promise<string | undefined> {
-  if (profileDir === '') return undefined
-  try {
+): Effect.Effect<string | undefined> {
+  return Effect.gen(function* () {
+    if (profileDir === '') return undefined
     const path = join(profileDir, 'node_modules', ...name.split('/'), 'package.json')
-    if (!(await Effect.runPromise(fileSystem.exists(path)))) return undefined
-    const parsed = JSON.parse(await Effect.runPromise(fileSystem.readFileString(path))) as {
-      version?: unknown
-    }
-    return typeof parsed.version === 'string' ? parsed.version : undefined
-  } catch {
-    return undefined
-  }
+    const exists = yield* Effect.result(fileSystem.exists(path))
+    if (Result.isFailure(exists) || !exists.success) return undefined
+    const content = yield* Effect.result(fileSystem.readFileString(path))
+    if (Result.isFailure(content)) return undefined
+    const parsed = Result.try(() => JSON.parse(content.success) as { version?: unknown })
+    if (Result.isFailure(parsed)) return undefined
+    return typeof parsed.success.version === 'string' ? parsed.success.version : undefined
+  })
 }
 
 /** The dependency specifications one profile manifest declares. */
@@ -394,18 +432,20 @@ export class PackageView {
    * @param fileSystem - the file-system service.
    * @returns the declared, managed, and installed package information.
    */
-  static async read(
+  static read(
     plan: ProfilePlan | undefined,
     profileDir: string,
     manifest: Record<string, unknown> | undefined,
     fileSystem: FileSystem.FileSystem,
-  ): Promise<PackageView> {
-    const installed: Record<string, string> = {}
-    for (const name of packageNames(plan, manifest)) {
-      const version = await installedVersion(fileSystem, profileDir, name)
-      if (version !== undefined) installed[name] = version
-    }
-    return new PackageView(plan, manifest, installed)
+  ): Effect.Effect<PackageView> {
+    return Effect.gen(function* () {
+      const installed: Record<string, string> = {}
+      for (const name of packageNames(plan, manifest)) {
+        const version = yield* installedVersion(fileSystem, profileDir, name)
+        if (version !== undefined) installed[name] = version
+      }
+      return new PackageView(plan, manifest, installed)
+    })
   }
 
   /** Every known package, sorted by name. */
@@ -551,27 +591,39 @@ export class ProfileView {
   }
 
   /**
-   * The validated plan, or a tagged failure for an invalid profile.
-   * @returns the profile plan.
+   * The validated plan, or the tagged failure for an invalid profile.
+   * @returns the plan result.
    */
-  plan(): ProfilePlan {
+  planResult(): Result.Result<ProfilePlan, ViewError> {
     if (Result.isFailure(this.outcome)) {
       const lines = [
         `profile ${JSON.stringify(this.name)} is invalid`,
         ...this.outcome.failure.message.split('\n'),
       ]
-      throw new ViewError({
-        code: 'repl.invalid_profile',
-        message: lines[0] ?? `profile ${JSON.stringify(this.name)} is invalid`,
-        lines,
-      })
+      return Result.fail(
+        new ViewError({
+          code: 'repl.invalid_profile',
+          message: lines[0] ?? `profile ${JSON.stringify(this.name)} is invalid`,
+          lines,
+        }),
+      )
     }
-    return this.outcome.success
+    return Result.succeed(this.outcome.success)
+  }
+
+  /**
+   * The validated plan, or undefined when the profile is invalid.
+   * @returns the plan, when the declared profile is valid.
+   */
+  plan(): ProfilePlan | undefined {
+    return Result.getOrUndefined(this.planResult())
   }
 
   /** The profile's ordered bundle selections, over the invocation resolution. */
   bundles(): readonly BundleView[] {
-    return this.plan().bundles.flatMap((selection) =>
+    const plan = this.plan()
+    if (plan === undefined) return []
+    return plan.bundles.flatMap((selection) =>
       selection.kind === 'bundle'
         ? [new BundleView(selection, this.name, this.snapshot.resolvedBundles?.get(selection.name))]
         : [],
@@ -580,7 +632,7 @@ export class ProfileView {
 
   /** The profile's ordered generated patch layers. */
   layers(): readonly PlanLayer[] {
-    return this.plan().layers
+    return this.plan()?.layers ?? []
   }
 
   /** Declared, managed, and installed package information. */

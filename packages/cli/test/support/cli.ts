@@ -22,6 +22,7 @@ import {
   type DiscoverDshOptions,
   type DiscoveredDshInstallation,
   discoverDshInstallation,
+  liveDiscoveryContext,
   validateDshVersion,
 } from '../../src/dsh-discovery'
 import { defaultInstallationAnchorStore } from '../../src/installation-anchor'
@@ -179,7 +180,8 @@ export function liveTestDshDiscovery(
   const onProcessFileSystem = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
     effect.pipe(Effect.provide(processFileSystem))
   return {
-    discover: (input) => onProcessFileSystem(discoverDshInstallation({ ...input, runner })),
+    discover: (input) =>
+      onProcessFileSystem(discoverDshInstallation(input, liveDiscoveryContext(runner))),
     bootstrap: (input) => onProcessFileSystem(bootstrapDshInstallation({ ...input, runner })),
     validate: (installation) => validateDshVersion(installation),
   }

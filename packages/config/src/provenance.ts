@@ -9,6 +9,7 @@
  * @module @eedsh/config/provenance
  */
 import { fileURLToPath } from 'node:url'
+import * as Result from 'effect/Result'
 
 /** One authoring site; the file is absolute in memory. */
 export interface AuthoringSite {
@@ -93,11 +94,10 @@ const STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:.*?\s+\()?(.+?):(\d+):(\d+)\)?\s*$
 /** Convert a stack-frame module URL to a host path when it is a file URL. */
 function framePath(file: string): string {
   if (!file.startsWith('file://')) return file
-  try {
-    return fileURLToPath(file)
-  } catch {
-    return decodeURIComponent(file.slice('file://'.length))
-  }
+  const converted = Result.try(() => fileURLToPath(file))
+  return Result.isSuccess(converted)
+    ? converted.success
+    : decodeURIComponent(file.slice('file://'.length))
 }
 
 function moduleDirectory(url: string): string {

@@ -8,6 +8,7 @@
 export type {
   DiscoverDshOptions,
   DiscoveredDshInstallation,
+  DiscoveryContext,
   DshSource,
 } from './dsh-discovery'
 export { discoverDshInstallation, validateDshVersion } from './dsh-discovery'

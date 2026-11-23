@@ -5,6 +5,7 @@
  */
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import * as Result from 'effect/Result'
 
 /** Directory below the DSH home that holds profiles. */
 export const PROFILES_DIR = 'profiles'
@@ -44,22 +45,58 @@ export function resolveDshHome(
   return resolve(expandHomePath(chosen, env))
 }
 
+/** A profile name that cannot name one directory below the DSH home. */
+export interface InvalidProfileName {
+  readonly _tag: 'InvalidProfileName'
+  /** The rejected name. */
+  readonly name: string
+  /** The diagnostic message for the invalid name. */
+  readonly message: string
+}
+
+/**
+ * Whether a profile name is one safe path segment.
+ * @param name - candidate profile name.
+ * @returns whether the name can name a profile directory.
+ */
+function isProfileName(name: string): boolean {
+  return (
+    name !== '' &&
+    name !== '.' &&
+    name !== '..' &&
+    name !== 'node_modules' &&
+    !name.includes('/') &&
+    !name.includes('\\')
+  )
+}
+
 /**
  * Resolve one profile directory below a DSH home.
  * @param name - the profile name, which must be one safe path segment.
  * @param home - the DSH home; resolved from the environment when omitted.
+ * @returns the absolute profile directory, or a tagged invalid-name failure.
+ */
+export function resolveProfileDir(
+  name: string,
+  home: string = resolveDshHome(),
+): Result.Result<string, InvalidProfileName> {
+  if (!isProfileName(name)) {
+    return Result.fail({
+      _tag: 'InvalidProfileName',
+      name,
+      message: `dsh: invalid profile name ${JSON.stringify(name)}`,
+    })
+  }
+  return Result.succeed(join(home, PROFILES_DIR, name))
+}
+
+/**
+ * Resolve one profile directory for a name that plan validation or profile
+ * selection already accepted. The name is used as one path segment.
+ * @param name - a validated profile name.
+ * @param home - the DSH home; resolved from the environment when omitted.
  * @returns the absolute profile directory.
  */
-export function resolveProfileDir(name: string, home: string = resolveDshHome()): string {
-  if (
-    name === '' ||
-    name === '.' ||
-    name === '..' ||
-    name === 'node_modules' ||
-    name.includes('/') ||
-    name.includes('\\')
-  ) {
-    throw new Error(`dsh: invalid profile name ${JSON.stringify(name)}`)
-  }
+export function validatedProfileDir(name: string, home: string = resolveDshHome()): string {
   return join(home, PROFILES_DIR, name)
 }

@@ -8,6 +8,7 @@
  */
 import type { JsonObject } from '@eedsh/plan'
 import { AUTHORING_KIND, authoringKind } from './authoring'
+import { defect } from './defect'
 import type { BundleQueryDescriptor, Preset } from './query'
 import type { ResolutionTable } from './resolution'
 
@@ -74,7 +75,7 @@ const STATES = new WeakMap<PresetDefinition, PresetState>()
 
 function stateOf(definition: PresetDefinition): PresetState {
   const state = STATES.get(definition)
-  if (state === undefined) throw new Error('unreachable: preset definition has no state')
+  if (state === undefined) defect(new Error('unreachable: preset definition has no state'))
   return state
 }
 
@@ -101,22 +102,26 @@ function childIndex(
     if (childIdOf(entry) === id) matches.push(index)
   })
   if (matches.length === 0) {
-    throw new PresetDefinitionError({
-      code: 'preset.child_not_found',
-      presetId: definition.id,
-      rowId: definition.rowId,
-      childId: id,
-      message: `preset ${JSON.stringify(definition.id)} (row ${JSON.stringify(definition.rowId)}) declares no child ${JSON.stringify(id)}`,
-    })
+    defect(
+      new PresetDefinitionError({
+        code: 'preset.child_not_found',
+        presetId: definition.id,
+        rowId: definition.rowId,
+        childId: id,
+        message: `preset ${JSON.stringify(definition.id)} (row ${JSON.stringify(definition.rowId)}) declares no child ${JSON.stringify(id)}`,
+      }),
+    )
   }
   if (matches.length > 1) {
-    throw new PresetDefinitionError({
-      code: 'preset.child_ambiguous',
-      presetId: definition.id,
-      rowId: definition.rowId,
-      childId: id,
-      message: `preset ${JSON.stringify(definition.id)} (row ${JSON.stringify(definition.rowId)}) declares ${matches.length} children with id ${JSON.stringify(id)}; the edit is ambiguous`,
-    })
+    defect(
+      new PresetDefinitionError({
+        code: 'preset.child_ambiguous',
+        presetId: definition.id,
+        rowId: definition.rowId,
+        childId: id,
+        message: `preset ${JSON.stringify(definition.id)} (row ${JSON.stringify(definition.rowId)}) declares ${matches.length} children with id ${JSON.stringify(id)}; the edit is ambiguous`,
+      }),
+    )
   }
   return matches[0] as number
 }
@@ -289,12 +294,14 @@ export class PresetDefinition {
 
   constructor(id: string, options: PresetDefinitionOptions = {}) {
     if (typeof id !== 'string' || id.trim() === '') {
-      throw new PresetDefinitionError({
-        code: 'preset.invalid_id',
-        presetId: typeof id === 'string' ? id : '',
-        rowId: options.rowId ?? '',
-        message: 'a preset definition needs a non-empty preset id',
-      })
+      defect(
+        new PresetDefinitionError({
+          code: 'preset.invalid_id',
+          presetId: typeof id === 'string' ? id : '',
+          rowId: options.rowId ?? '',
+          message: 'a preset definition needs a non-empty preset id',
+        }),
+      )
     }
     this.id = id
     this.rowId = options.rowId ?? `preset-${id}`
@@ -425,20 +432,24 @@ export function presetRefId(reference: PresetRef, role: string): string {
   const presetId = typeof record?.id === 'string' ? record.id : ''
   const rowId = typeof record?.rowId === 'string' ? record.rowId : ''
   if (kind !== 'preset' && kind !== 'preset-definition') {
-    throw new PresetDefinitionError({
-      code: 'preset.invalid_selection',
-      presetId,
-      rowId,
-      message: `the ${role} preset must be an installed preset or an authored preset definition; received ${describeValue(reference)}`,
-    })
+    defect(
+      new PresetDefinitionError({
+        code: 'preset.invalid_selection',
+        presetId,
+        rowId,
+        message: `the ${role} preset must be an installed preset or an authored preset definition; received ${describeValue(reference)}`,
+      }),
+    )
   }
   if (presetId === '') {
-    throw new PresetDefinitionError({
-      code: 'preset.invalid_selection',
-      presetId,
-      rowId,
-      message: `the ${role} preset has no preset id to select`,
-    })
+    defect(
+      new PresetDefinitionError({
+        code: 'preset.invalid_selection',
+        presetId,
+        rowId,
+        message: `the ${role} preset has no preset id to select`,
+      }),
+    )
   }
   return presetId
 }

@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { Effect, Exit, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import { PackageInstallFailure, PreflightFailure } from '../../src/internal/effect/errors'
 import {
@@ -59,14 +60,15 @@ function fixture() {
     runtimeSpec: RUNTIME_SPEC,
     generatedSpec: GENERATED_SPEC,
   })
-  const bundleValue = buildGeneratedBundle({
+  const built = buildGeneratedBundle({
     plan,
     managedBundles: reconciled.managedBundles,
     packages: reconciled.managedPackages,
     eedshVersion: '0.0.0',
     dshVersion: '0.2.1-rc.2',
   })
-  return { plan, reconciled, bundleValue }
+  if (Result.isFailure(built)) throw new Error(built.failure.message)
+  return { plan, reconciled, bundleValue: built.success }
 }
 
 interface StepState {

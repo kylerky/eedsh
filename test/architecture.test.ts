@@ -51,48 +51,14 @@ function sourceImports(name: PackageName): { file: string; specifier: string }[]
 }
 
 /**
- * The only production exception sites the architecture check permits. The
- * malformed-expression branch is unreachable after plan validation, and the
- * Effect-free runtime is outside this scan. The typed query handles and the
- * preset-definition child editor report authoring misuse at the synchronous
- * authoring boundary, and the source-declaration builder reports its tagged
- * failure there so fluent config composition stays direct; author-time bundle
- * resolution is gone from this package and Io lives in the CLI resolver;
- * the REPL owns Node's exception-shaped I/O (dynamic imports, REPL evaluation,
- * preview installs), the exploration views report an invalid plan lookup as a
- * tagged session failure, and completion contains failing catalog or evaluator
- * lookups so Tab never ends the session; all convert those failures to
- * printable session state. The local DSH path boundary throws for a profile
- * name that cannot be a directory, before any filesystem work. Discovery probes
- * the filesystem through Node's synchronous, exception-shaped APIs and converts
- * every expected failure to a tagged DshFailure. Preflight composition is
- * synchronous and throws a tagged PreflightFailure when no bridge is installed. The
- * bridge loader and bundle resolver wrap Node's exception-shaped require/import
- * and DSH calls in tagged failures. The anchor helpers wrap Node's
- * exception-shaped read/stat/realpath calls and convert every expected failure
- * to a tagged DshFailure or a reported write result, and the bootstrap treats
- * malformed package-manager JSON as no candidate. Authoring provenance decodes
- * exception-shaped stack-frame module URLs so attribution stays best effort.
+ * The single exception boundary. Authoring is synchronous and reports misuse
+ * only as a defect, so one module constructs that exception; every other
+ * production site reports an expected failure as a `Result` value or through
+ * the Effect error channel. The config loader is the single entry safety net
+ * that turns a thrown authoring defect into an Effect defect. No file is
+ * exempt from the scan by name.
  */
-const EXCEPTION_ALLOWLIST = new Set([
-  'packages/cli/src/materialize/yaml.ts',
-  'packages/config/src/preset.ts',
-  'packages/config/src/query.ts',
-  'packages/config/src/builders.ts',
-  'packages/config/src/source.ts',
-  'packages/config/src/provenance.ts',
-  'packages/cli/src/repl/completion.ts',
-  'packages/cli/src/repl/preview.ts',
-  'packages/cli/src/repl/prompt.ts',
-  'packages/cli/src/repl/session.ts',
-  'packages/cli/src/repl/views.ts',
-  'packages/cli/src/internal/dsh-home.ts',
-  'packages/cli/src/dsh-discovery.ts',
-  'packages/cli/src/preflight.ts',
-  'packages/cli/src/dsh-bridge.ts',
-  'packages/cli/src/installation-anchor.ts',
-  'packages/cli/src/dsh-bootstrap.ts',
-])
+const AUTHORING_DEFECT_BOUNDARY = 'packages/config/src/defect.ts'
 
 /** JavaScript exception control flow in one source text. */
 function exceptionSites(text: string): string[] {
@@ -108,12 +74,26 @@ function exceptionViolations(): { file: string; sites: string[] }[] {
   for (const name of ['config', 'cli'] as const) {
     for (const file of sourceFiles(join(root, 'packages', name, 'src'))) {
       const relativePath = relative(root, file).replaceAll('\\', '/')
-      if (EXCEPTION_ALLOWLIST.has(relativePath)) continue
-      const sites = exceptionSites(readFileSync(file, 'utf8'))
+      const sites = exceptionSites(readFileSync(file, 'utf8')).filter(
+        (site) => relativePath !== AUTHORING_DEFECT_BOUNDARY || site !== 'throw',
+      )
       if (sites.length > 0) violations.push({ file: relativePath, sites })
     }
   }
   return violations
+}
+
+/** Every production file that contains a literal `throw` keyword. */
+function throwFiles(): string[] {
+  const files: string[] = []
+  for (const name of ['config', 'cli'] as const) {
+    for (const file of sourceFiles(join(root, 'packages', name, 'src'))) {
+      if (/\bthrow\b/.test(readFileSync(file, 'utf8'))) {
+        files.push(relative(root, file).replaceAll('\\', '/'))
+      }
+    }
+  }
+  return files
 }
 
 /** Production dependencies a published package may not declare. */
@@ -244,6 +224,8 @@ describe('package boundaries', () => {
       'node:fs/promises',
       'node:module',
       'node:child_process',
+      'node:readline',
+      'node:repl',
       'tsx',
       'typescript',
     ]
@@ -359,8 +341,21 @@ describe('package boundaries', () => {
     }
   })
 
-  it('confines exception control flow to the documented allowlist', () => {
+  it('confines exception control flow to the single authoring defect boundary', () => {
     expect(exceptionViolations()).toEqual([])
+  })
+
+  it('keeps the single entry safety net in the config loader', () => {
+    expect(throwFiles()).toEqual([AUTHORING_DEFECT_BOUNDARY])
+    const loader = readFileSync(join(root, 'packages/cli/src/config.ts'), 'utf8')
+    expect(
+      loader,
+      'the config loader converts a thrown authoring defect into an Effect defect',
+    ).toMatch(/Effect\.die\(/)
+    const boundary = readFileSync(join(root, AUTHORING_DEFECT_BOUNDARY), 'utf8')
+    expect(boundary, 'the boundary exports the one defect constructor').toMatch(
+      /export function defect\(/,
+    )
   })
 
   it('confines the TypeScript evaluation toolchain to @eedsh/cli', () => {
@@ -470,5 +465,121 @@ describe('installation anchor boundaries', () => {
     expect(source, 'the anchor helper must not read the config project location').not.toMatch(
       /config-path|XDG_CONFIG_HOME|configDirectory/,
     )
+  })
+})
+
+/**
+ * The platform adapters that implement a service by calling Node IO directly.
+ * Every other module reaches these capabilities through a provided service.
+ */
+const CLI_PLATFORM_ADAPTERS = new Set([
+  'packages/cli/src/spawn.ts',
+  'packages/cli/src/internal/lock-posix.ts',
+  'packages/cli/src/internal/lock-win32.ts',
+])
+
+/** Node IO modules no command may import directly. */
+const CLI_NODE_IO_MODULES = new Set([
+  'node:fs',
+  'node:fs/promises',
+  'node:child_process',
+  'node:readline',
+  'node:repl',
+])
+
+/** Effect runtime entry points only the process entry may call. */
+const RUNTIME_START =
+  /\bEffect\.run(?:Promise|PromiseExit|Sync|SyncExit|SyncEither|Fork|Callback)\b|\bManagedRuntime\b|\bRuntime\.make\b/
+
+/** Function type names imported from other modules that no input may carry. */
+const CALLABLE_TYPE_NAMES = new Set(['CommandRunnerShape', 'ComposePlan', 'SyncPlan'])
+
+/** The body of every `interface <Name> { ... }` declaration. */
+function interfaceBodies(text: string): { name: string; body: string }[] {
+  const found: { name: string; body: string }[] = []
+  for (const match of text.matchAll(/(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\s*\{/g)) {
+    const open = (match.index ?? 0) + match[0].length - 1
+    let depth = 0
+    let close = -1
+    for (let index = open; index < text.length; index += 1) {
+      if (text[index] === '{') depth += 1
+      else if (text[index] === '}') {
+        depth -= 1
+        if (depth === 0) {
+          close = index
+          break
+        }
+      }
+    }
+    if (close !== -1) found.push({ name: match[1] as string, body: text.slice(open + 1, close) })
+  }
+  return found
+}
+
+/** Callable type aliases declared in one source text. */
+function callableAliases(text: string): Set<string> {
+  const aliases = new Set<string>()
+  for (const match of text.matchAll(
+    /(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)(?=\n(?:export\s+)?(?:type|interface|const|function|class)\b|\n\s*$)/g,
+  )) {
+    if ((match[2] as string).includes('=>')) aliases.add(match[1] as string)
+  }
+  return aliases
+}
+
+/**
+ * Optional function-typed properties on an invocation input. The check finds
+ * direct function types and aliases declared locally or imported from the
+ * services module, so a capability hidden behind a named type is still found.
+ */
+function callableOptionProperties(): string[] {
+  const violations: string[] = []
+  for (const name of ['cli', 'config'] as const) {
+    for (const file of sourceFiles(join(root, 'packages', name, 'src'))) {
+      const text = readFileSync(file, 'utf8')
+      const aliases = callableAliases(text)
+      for (const block of interfaceBodies(text)) {
+        if (!block.name.endsWith('Options') && !block.name.endsWith('Input')) continue
+        for (const match of block.body.matchAll(
+          /(?:^|\n)\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\?\s*:\s*([\s\S]*?)(?=\n\s*(?:readonly\s+)?[A-Za-z_$][\w$]*\??\s*:|\n\s*$)/g,
+        )) {
+          const type = (match[2] as string).replace(/\s+/g, ' ').trim()
+          const base = type.replace(/\s*\|\s*undefined$/, '').trim()
+          const simple = base.replace(/<.*$/, '').trim()
+          if (base.includes('=>') || aliases.has(simple) || CALLABLE_TYPE_NAMES.has(simple)) {
+            violations.push(relative(root, file) + ': ' + String(match[1]))
+          }
+        }
+      }
+    }
+  }
+  return violations.sort()
+}
+
+describe('effect-native enforcement', () => {
+  it('keeps Node IO imports inside the CLI platform adapters', () => {
+    const violations = sourceImports('cli')
+      .filter(
+        ({ file, specifier }) =>
+          CLI_NODE_IO_MODULES.has(specifier) &&
+          !CLI_PLATFORM_ADAPTERS.has(relative(root, file).replaceAll('\\', '/')),
+      )
+      .map(({ file, specifier }) => `${relative(root, file).replaceAll('\\', '/')}: ${specifier}`)
+    expect(violations, 'Node IO must be reached through a provided service').toEqual([])
+  })
+
+  it('starts the Effect runtime only in the process entry point', () => {
+    const violations = sourceFiles(join(root, 'packages/cli/src'))
+      .map((file) => relative(root, file).replaceAll('\\', '/'))
+      .filter((file) => file !== 'packages/cli/src/bin.ts')
+      .filter((file) => RUNTIME_START.test(readFileSync(join(root, file), 'utf8')))
+    expect(violations, 'only bin.ts may start a runtime').toEqual([])
+  })
+
+  it('receives no optional callable capability on an invocation input', () => {
+    expect(
+      callableOptionProperties(),
+      'an invocation input must not carry an optional capability',
+    ).toEqual([])
   })
 })

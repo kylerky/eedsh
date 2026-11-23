@@ -17,7 +17,12 @@ import { defaultConfigPath } from '../config-path'
 import type { DiscoveredDshInstallation } from '../dsh'
 import { EXIT_USAGE } from '../exit'
 import { anchorForInstallation } from '../installation-anchor'
-import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
+import {
+  type InvalidProfileName,
+  resolveDshHome,
+  resolveProfileDir,
+  validatedProfileDir,
+} from '../internal/dsh-home'
 import type { DshFailure } from '../internal/effect/errors'
 import {
   BundleResolver,
@@ -37,12 +42,15 @@ import type { ProfileSelectionError } from '../selection'
 import type { EedshError } from './errors'
 import { describeError, EXPLAIN_HINT, rawPreflightWarnings } from './report'
 
-export function profileDirForName(name: string, env: Record<string, string | undefined>): string {
+export function profileDirForName(
+  name: string,
+  env: Record<string, string | undefined>,
+): Result.Result<string, InvalidProfileName> {
   return resolveProfileDir(name, resolveDshHome(undefined, env))
 }
 
 export function profileDirFor(plan: ProfilePlan, env: Record<string, string | undefined>): string {
-  return profileDirForName(plan.profile.name, env)
+  return validatedProfileDir(plan.profile.name, resolveDshHome(undefined, env))
 }
 
 /** The capabilities discovery and bridge loading need. */

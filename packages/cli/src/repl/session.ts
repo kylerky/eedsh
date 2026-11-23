@@ -21,31 +21,25 @@ import {
   type ResolvedBundle,
 } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
-import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Fiber, Option, Stream } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
 import { asEedshError } from '../command/errors'
 import { describeError } from '../command/report'
-import {
-  type ConfigLoadFailure,
-  type ConfigLoadOptions,
-  loadConfig as defaultLoadConfig,
-  type LoadedConfig,
-} from '../config'
+import type { ConfigLoadFailure, ConfigLoadOptions, LoadedConfig } from '../config'
 import { type DoctorResult, doctor } from '../doctor'
 import type { DiscoveredDshInstallation } from '../dsh'
-import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
+import { resolveDshHome, validatedProfileDir } from '../internal/dsh-home'
 import type { BundleResolverShape } from '../internal/effect/services'
-import { BundleResolver } from '../internal/effect/services'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
 import { composePreflightLayers, type PreflightLayer, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import type { SpawnLike } from '../spawn'
-import { type PathEvent, watchConfigDirectory } from '../watch'
+import type { PathEvent } from '../watch'
 import {
   COMMAND_NAMES,
   type CompletionCatalogs,
@@ -57,6 +51,7 @@ import {
 import { diffPlans, type PlanMap } from './diff'
 import {
   cleanupPreviews,
+  installPreviewWithPnpm,
   type PreparedPreview,
   PreviewError,
   type PreviewSpec,
@@ -92,7 +87,7 @@ export interface SyncOutcome {
 export type SyncPlan = (
   plan: ProfilePlan,
   provenance: ConfigProvenance | undefined,
-) => Promise<SyncOutcome>
+) => Effect.Effect<SyncOutcome, unknown>
 
 /** One preflight composition summary. */
 export interface CompositionResult {
@@ -111,7 +106,7 @@ export type ComposePlan = (
   profileDir: string,
   provenance: ConfigProvenance | undefined,
   configDir: string,
-) => Promise<CompositionResult>
+) => Effect.Effect<CompositionResult, unknown>
 
 /** The authoring package loaded from the config project. */
 export interface AuthoringPackage {
@@ -128,8 +123,8 @@ export interface ReplSessionOptions {
   readonly sync?: boolean
   readonly cwd?: string
   readonly env?: Record<string, string | undefined>
-  readonly stdout?: LineSink
-  readonly stderr?: LineSink
+  readonly stdout: LineSink
+  readonly stderr: LineSink
   /** The file-system service for config, snapshot, and preview reads. */
   readonly fileSystem: FileSystem.FileSystem
   /** The child-process spawn seam the preview installer uses. */
@@ -138,21 +133,26 @@ export interface ReplSessionOptions {
   readonly installation: DiscoveredDshInstallation
   /** The bundle resolver value, passed like the filesystem and spawner. */
   readonly resolver: BundleResolverShape
-  readonly loadConfig?: (
+  /** The config loader the command binds to its service. */
+  readonly loadConfig: (
     path: string,
     options: ConfigLoadOptions,
   ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
   /** The config-directory watcher; the command supplies the invocation's service. */
-  readonly watch?: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>, unknown, Scope.Scope>
-  readonly compose?: ComposePlan
-  readonly syncPlan?: SyncPlan
-  readonly installPreview?: (dir: string) => Promise<void>
+  readonly watch: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>, unknown, Scope.Scope>
+  /** The preflight composition runner. */
+  readonly compose: ComposePlan
+  /** The publication runner; materialization runs in the invocation program. */
+  readonly syncPlan: SyncPlan
+  /** The preview installer seam. */
+  readonly installPreview: (dir: string) => Effect.Effect<void, unknown>
   readonly cacheRoot?: string
-  readonly now?: () => number
+  /** The clock seam for preview cleanup and markers. */
+  readonly now: () => number
   readonly authoring?: AuthoringPackage
   readonly watchConfig?: boolean
   /** Read the published state of a profile; injectable for tests. */
-  readonly doctor?: (profileDir: string) => Promise<DoctorResult>
+  readonly doctor: (profileDir: string) => Effect.Effect<DoctorResult, unknown>
   /** Suppress the banner and composition summary for `--eval`. */
   readonly oneShot?: boolean
 }
@@ -276,11 +276,7 @@ function isTopLevelAwait(error: unknown): boolean {
 
 /** Compile one script, or undefined when it is not syntactically valid. */
 function compile(code: string): vm.Script | undefined {
-  try {
-    return new vm.Script(code, { filename: 'eedsh-repl' })
-  } catch {
-    return undefined
-  }
+  return Result.getOrUndefined(Result.try(() => new vm.Script(code, { filename: 'eedsh-repl' })))
 }
 
 /**
@@ -297,13 +293,9 @@ function stripTypes(source: string): string | undefined {
     if (message.includes('stripTypeScriptTypes')) return
     Reflect.apply(emitWarning, process, [warning, ...args])
   }) as typeof process.emitWarning
-  try {
-    return stripTypeScriptTypes(source, { mode: 'strip' })
-  } catch {
-    return undefined
-  } finally {
-    process.emitWarning = emitWarning
-  }
+  const stripped = Result.try(() => stripTypeScriptTypes(source, { mode: 'strip' }))
+  process.emitWarning = emitWarning
+  return Result.getOrUndefined(stripped)
 }
 
 /** The top-level identifiers a script declares. */
@@ -350,13 +342,9 @@ function createEvaluator(options: EvaluatorOptions = {}): ReplEvaluator {
   const context = vm.createContext(sandbox)
   const declared = new Set<string>()
   const builtins = new Set<string>()
-  try {
-    const names = vm.runInContext('Object.getOwnPropertyNames(globalThis)', context)
-    if (Array.isArray(names)) {
-      for (const name of names) if (typeof name === 'string') builtins.add(name)
-    }
-  } catch {
-    // Completion degrades to the bindings assigned by the session.
+  const names = Result.try(() => vm.runInContext('Object.getOwnPropertyNames(globalThis)', context))
+  if (Result.isSuccess(names) && Array.isArray(names.success)) {
+    for (const name of names.success) if (typeof name === 'string') builtins.add(name)
   }
 
   return {
@@ -374,14 +362,14 @@ function createEvaluator(options: EvaluatorOptions = {}): ReplEvaluator {
       if (script === undefined) {
         // Recompile so the caller receives the real SyntaxError, not a
         // swallowed compile probe.
-        let error: unknown
-        try {
-          new vm.Script(code, { filename: 'eedsh-repl' })
-        } catch (caught) {
-          error = caught
+        const failure = Result.try(() => new vm.Script(code, { filename: 'eedsh-repl' }))
+        if (Result.isFailure(failure)) {
+          if (isTopLevelAwait(failure.failure)) return await evaluateAwait(context, code)
+          return Promise.reject(failure.failure)
         }
-        if (isTopLevelAwait(error)) return await evaluateAwait(context, code)
-        throw error
+        const value = failure.success.runInContext(context)
+        for (const name of declaredNames(code)) declared.add(name)
+        return value
       }
       const value = script.runInContext(context)
       for (const name of declaredNames(code)) declared.add(name)
@@ -397,12 +385,11 @@ function createEvaluator(options: EvaluatorOptions = {}): ReplEvaluator {
 }
 
 /** Whether a path exists; an inspection failure counts as missing. */
-async function pathExists(fileSystem: FileSystem.FileSystem, path: string): Promise<boolean> {
-  try {
-    return await Effect.runPromise(fileSystem.exists(path))
-  } catch {
-    return false
-  }
+function pathExists(fileSystem: FileSystem.FileSystem, path: string): Effect.Effect<boolean> {
+  return fileSystem.exists(path).pipe(
+    Effect.result,
+    Effect.map((checked) => (Result.isSuccess(checked) ? checked.success : false)),
+  )
 }
 
 /** Render a caught value with the CLI's one diagnostic vocabulary. */
@@ -421,129 +408,131 @@ function planMap(config: EedshConfig): PlanMap {
 function selectedPlan(
   config: EedshConfig,
   profile: string | undefined,
-): { name: string; plan: ProfilePlan } {
+): Result.Result<{ readonly name: string; readonly plan: ProfilePlan }, ReplSessionError> {
   const selection = selectProfile(
     config,
     profile === undefined ? Option.none() : Option.some(profile),
   )
   if (Result.isFailure(selection)) {
-    throw new ReplSessionError({
-      code: 'repl.profile_selection',
-      message: describeProfileSelection(selection.failure),
-      lines: [describeProfileSelection(selection.failure)],
-    })
+    const message = describeProfileSelection(selection.failure)
+    return Result.fail(
+      new ReplSessionError({
+        code: 'repl.profile_selection',
+        message,
+        lines: [message],
+      }),
+    )
   }
   if (Result.isFailure(selection.success.plan)) {
-    throw new ReplSessionError({
-      code: 'repl.invalid_profile',
-      message: `profile ${JSON.stringify(selection.success.name)} is invalid`,
-      lines: [
-        `profile ${JSON.stringify(selection.success.name)} is invalid`,
-        ...selection.success.plan.failure.message.split('\n'),
-      ],
-    })
+    return Result.fail(
+      new ReplSessionError({
+        code: 'repl.invalid_profile',
+        message: `profile ${JSON.stringify(selection.success.name)} is invalid`,
+        lines: [
+          `profile ${JSON.stringify(selection.success.name)} is invalid`,
+          ...selection.success.plan.failure.message.split('\n'),
+        ],
+      }),
+    )
   }
-  return { name: selection.success.name, plan: selection.success.plan.success }
+  return Result.succeed({ name: selection.success.name, plan: selection.success.plan.success })
 }
 
-async function declaresAuthoring(
+function declaresAuthoring(
   fileSystem: FileSystem.FileSystem,
   configDir: string,
-): Promise<boolean> {
-  let dir = configDir
-  while (true) {
-    const manifestPath = join(dir, 'package.json')
-    if (await pathExists(fileSystem, manifestPath)) {
-      try {
-        const manifest = JSON.parse(
-          await Effect.runPromise(fileSystem.readFileString(manifestPath)),
-        ) as Record<string, unknown>
-        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-          const value = manifest[section]
-          if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-            if (Object.hasOwn(value, '@eedsh/config')) return true
+): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    let dir = configDir
+    while (true) {
+      const manifestPath = join(dir, 'package.json')
+      if (yield* pathExists(fileSystem, manifestPath)) {
+        const content = yield* Effect.result(fileSystem.readFileString(manifestPath))
+        if (Result.isSuccess(content)) {
+          const manifest = Result.getOrUndefined(
+            Result.try(() => JSON.parse(content.success) as Record<string, unknown>),
+          )
+          if (manifest !== undefined) {
+            for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+              const value = manifest[section]
+              if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+                if (Object.hasOwn(value, '@eedsh/config')) return true
+              }
+            }
           }
         }
-      } catch {
-        // A malformed project manifest does not prove the dependency exists.
       }
+      const parent = dirname(dir)
+      if (parent === dir) return false
+      dir = parent
     }
-    const parent = dirname(dir)
-    if (parent === dir) return false
-    dir = parent
-  }
+  })
 }
 
-async function authoringPackage(
+function authoringPackage(
   fileSystem: FileSystem.FileSystem,
   configPath: string,
-): Promise<AuthoringPackage> {
-  const configDir = dirname(configPath)
-  const require = createRequire(join(configDir, 'package.json'))
-  const localPackage = join(configDir, 'node_modules', '@eedsh', 'config', 'package.json')
-  let packagePath: string
-  let entryPath: string
-  if (
-    !(await pathExists(fileSystem, localPackage)) &&
-    !(await declaresAuthoring(fileSystem, configDir))
-  ) {
-    throw new ReplSessionError({
-      code: 'repl.authoring_package_missing',
-      message: `the config project at ${configDir} has not installed @eedsh/config (no node_modules/@eedsh/config and no declaring package.json)`,
-    })
-  }
-  try {
-    packagePath = require.resolve('@eedsh/config/package.json')
-    entryPath = require.resolve('@eedsh/config')
-  } catch (cause) {
-    throw new ReplSessionError({
-      code: 'repl.authoring_package_missing',
-      message: `the config project at ${configDir} has not installed @eedsh/config: ${messageOf(cause)}`,
-    })
-  }
-  let version = 'unknown'
-  try {
-    const manifest = JSON.parse(
-      await Effect.runPromise(fileSystem.readFileString(packagePath)),
-    ) as { version?: unknown }
-    if (typeof manifest.version === 'string') version = manifest.version
-  } catch {
-    // The package resolved; a missing version only weakens the banner.
-  }
-  return {
-    module: {},
-    packagePath,
-    entryPath,
-    version,
-  }
+): Effect.Effect<AuthoringPackage, ReplSessionError> {
+  return Effect.gen(function* () {
+    const configDir = dirname(configPath)
+    const require = createRequire(join(configDir, 'package.json'))
+    const localPackage = join(configDir, 'node_modules', '@eedsh', 'config', 'package.json')
+    if (
+      !(yield* pathExists(fileSystem, localPackage)) &&
+      !(yield* declaresAuthoring(fileSystem, configDir))
+    ) {
+      return yield* Effect.fail(
+        new ReplSessionError({
+          code: 'repl.authoring_package_missing',
+          message: `the config project at ${configDir} has not installed @eedsh/config (no node_modules/@eedsh/config and no declaring package.json)`,
+        }),
+      )
+    }
+    const resolved = Result.try(() => ({
+      packagePath: require.resolve('@eedsh/config/package.json'),
+      entryPath: require.resolve('@eedsh/config'),
+    }))
+    if (Result.isFailure(resolved)) {
+      return yield* Effect.fail(
+        new ReplSessionError({
+          code: 'repl.authoring_package_missing',
+          message: `the config project at ${configDir} has not installed @eedsh/config: ${messageOf(resolved.failure)}`,
+        }),
+      )
+    }
+    let version = 'unknown'
+    const content = yield* Effect.result(fileSystem.readFileString(resolved.success.packagePath))
+    if (Result.isSuccess(content)) {
+      const manifest = Result.getOrUndefined(
+        Result.try(() => JSON.parse(content.success) as { version?: unknown }),
+      )
+      if (manifest !== undefined && typeof manifest.version === 'string') version = manifest.version
+    }
+    return {
+      module: {},
+      packagePath: resolved.success.packagePath,
+      entryPath: resolved.success.entryPath,
+      version,
+    }
+  })
 }
 
-async function loadAuthoringModule(
+function loadAuthoringModule(
   packageInfo: AuthoringPackage,
-): Promise<Record<string, unknown>> {
-  try {
-    return (await import(pathToFileURL(packageInfo.entryPath).href)) as Record<string, unknown>
-  } catch (cause) {
-    throw new ReplSessionError({
-      code: 'repl.authoring_package_unloadable',
-      message: `cannot import the config project's @eedsh/config at ${packageInfo.entryPath}: ${messageOf(cause)}`,
-    })
-  }
+): Effect.Effect<Record<string, unknown>, ReplSessionError> {
+  return Effect.tryPromise({
+    try: () =>
+      import(pathToFileURL(packageInfo.entryPath).href) as Promise<Record<string, unknown>>,
+    catch: (cause) =>
+      new ReplSessionError({
+        code: 'repl.authoring_package_unloadable',
+        message: `cannot import the config project's @eedsh/config at ${packageInfo.entryPath}: ${messageOf(cause)}`,
+      }),
+  })
 }
 
 function profileDirectory(name: string, env: Record<string, string | undefined>): string {
-  return resolveProfileDir(name, resolveDshHome(undefined, env))
-}
-
-async function defaultDoctor(
-  profileDir: string,
-  env: Record<string, string | undefined>,
-): Promise<DoctorResult> {
-  return await Effect.runPromise(
-    doctor({ profileDir, dshHome: resolveDshHome(undefined, env) }).pipe(
-      Effect.provide(NodeServices.layer),
-    ),
-  )
+  return validatedProfileDir(name, resolveDshHome(undefined, env))
 }
 
 /** One generated preflight layer per plan group, with recorded provenance. */
@@ -575,62 +564,92 @@ function sourceOf(layer: PreflightLayer, offset: number, configDir: string): str
   return `generated #${group.position}`
 }
 
-async function defaultCompose(
+/** The default composition runner, over the invocation's resolver. */
+function defaultCompose(
   plan: ProfilePlan,
   profileDir: string,
   installation: DiscoveredDshInstallation,
   provenance: ConfigProvenance | undefined,
   configDir: string,
   resolver: BundleResolverShape,
-): Promise<CompositionResult> {
-  const loaded = await Effect.runPromise(Effect.result(resolver.loadBridge(installation)))
-  if (loaded._tag === 'Failure') {
-    return { rowCount: 0, warnings: [], error: loaded.failure.message }
-  }
-  const installAnchor = installation.installAnchor
-  const layers: PreflightLayer[] = []
-  let generatedPlaced = false
-  for (const item of plan.bundles) {
-    if (item.kind === 'generated') {
-      layers.push(...generatedPreflightLayers(plan, provenance))
-      generatedPlaced = true
-      continue
+): Effect.Effect<CompositionResult> {
+  return Effect.gen(function* () {
+    const loaded = yield* Effect.result(resolver.loadBridge(installation))
+    if (Result.isFailure(loaded)) {
+      return { rowCount: 0, warnings: [], error: loaded.failure.message }
     }
-    const resolved = await Effect.runPromise(
-      Effect.result(resolver.resolveBundlePatches(item.name, profileDir, installAnchor)),
-    )
-    if (resolved._tag === 'Failure') {
-      return {
-        rowCount: 0,
-        warnings: [],
-        error: `cannot resolve bundle ${JSON.stringify(item.name)}: ${messageOf(resolved.failure)} `,
+    const installAnchor = installation.installAnchor
+    const layers: PreflightLayer[] = []
+    let generatedPlaced = false
+    for (const item of plan.bundles) {
+      if (item.kind === 'generated') {
+        layers.push(...generatedPreflightLayers(plan, provenance))
+        generatedPlaced = true
+        continue
+      }
+      const resolved = yield* Effect.result(
+        resolver.resolveBundlePatches(item.name, profileDir, installAnchor),
+      )
+      if (Result.isFailure(resolved)) {
+        return {
+          rowCount: 0,
+          warnings: [],
+          error: `cannot resolve bundle ${JSON.stringify(item.name)}: ${messageOf(resolved.failure)} `,
+        }
+      }
+      layers.push({ label: `bundle:${item.name}`, patches: [...resolved.success] })
+    }
+    if (!generatedPlaced) layers.push(...generatedPreflightLayers(plan, provenance))
+    const compose = yield* Effect.result(resolver.composeEntries(installAnchor))
+    if (Result.isFailure(compose)) {
+      return { rowCount: 0, warnings: [], error: compose.failure.message }
+    }
+    const sources: Record<string, string> = {}
+    for (const layer of layers) {
+      for (const [offset, patch] of layer.patches.entries()) {
+        const source = sourceOf(layer, offset, configDir)
+        for (const id of touchedRowIds([patch])) sources[id] = source
       }
     }
-    layers.push({ label: `bundle:${item.name}`, patches: [...resolved.success] })
-  }
-  if (!generatedPlaced) layers.push(...generatedPreflightLayers(plan, provenance))
-  const compose = await Effect.runPromise(Effect.result(resolver.composeEntries(installAnchor)))
-  if (compose._tag === 'Failure') {
-    return { rowCount: 0, warnings: [], error: compose.failure.message }
-  }
-  const sources: Record<string, string> = {}
-  for (const layer of layers) {
-    for (const [offset, patch] of layer.patches.entries()) {
-      const source = sourceOf(layer, offset, configDir)
-      for (const id of touchedRowIds([patch])) sources[id] = source
+    const composition = composePreflightLayers(layers, compose.success)
+    const warnings = [...composition.warnings]
+    if (composition.duplicateInsertIds.length > 0) {
+      warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)
     }
-  }
-  const composition = composePreflightLayers(layers, compose.success)
-  const warnings = [...composition.warnings]
-  if (composition.duplicateInsertIds.length > 0) {
-    warnings.push(`duplicate inserted row ids: ${composition.duplicateInsertIds.join(', ')}`)
-  }
-  return {
-    rowCount: composition.entries.length,
-    warnings,
-    entries: composition.entries,
-    sources,
-  }
+    return {
+      rowCount: composition.entries.length,
+      warnings,
+      entries: composition.entries,
+      sources,
+    }
+  })
+}
+
+/** Build the real composition runner for one installation and resolver. */
+export function composeFor(
+  installation: DiscoveredDshInstallation,
+  resolver: BundleResolverShape,
+): ComposePlan {
+  return (plan, profileDir, provenance, configDir) =>
+    defaultCompose(plan, profileDir, installation, provenance, configDir, resolver)
+}
+
+/** Build the real doctor runner for one environment and file system. */
+export function doctorFor(
+  env: Record<string, string | undefined>,
+  fileSystem: FileSystem.FileSystem,
+): (profileDir: string) => Effect.Effect<DoctorResult> {
+  return (profileDir) =>
+    doctor({ profileDir, dshHome: resolveDshHome(undefined, env) }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+    )
+}
+
+/** Build the real preview installer over the child-process seam. */
+export function installPreviewFor(
+  spawner: SpawnLike,
+): (dir: string) => Effect.Effect<void, unknown> {
+  return (dir) => installPreviewWithPnpm(dir, spawner)
 }
 
 /** One interactive config session. Construct with {@link ReplSession.create}. */
@@ -648,16 +667,14 @@ export class ReplSession {
   private readonly resolver: BundleResolverShape
   private readonly env: Record<string, string | undefined>
   private readonly previousOverride: string | undefined
-  private readonly loadConfig: (
-    path: string,
-    options: ConfigLoadOptions,
-  ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
+  private readonly loadConfig: ReplSessionOptions['loadConfig']
   private readonly compose: ComposePlan
-  private readonly runDoctor: (profileDir: string) => Promise<DoctorResult>
-  private readonly syncPlan: SyncPlan | undefined
-  private readonly installPreview: ((dir: string) => Promise<void>) | undefined
+  private readonly runDoctor: ReplSessionOptions['doctor']
+  private readonly syncPlan: SyncPlan
+  private readonly installPreview: ReplSessionOptions['installPreview']
   private readonly cacheRoot: string
   private readonly now: () => number
+  private readonly reloadSemaphore: Semaphore.Semaphore
   private evaluator!: ReplEvaluator
   private evaluateRaw!: (code: string) => Promise<unknown>
   private config!: EedshConfig
@@ -676,7 +693,6 @@ export class ReplSession {
   private pausedFingerprint: string | undefined
   private watcherFiber: Fiber.Fiber<void> | undefined
   private watcherScope: Scope.Closeable | undefined
-  private reloadQueue: Promise<void> = Promise.resolve()
   private evaluationNonce = 0
   private catalogVersion = 0
   private catalogCache:
@@ -687,32 +703,24 @@ export class ReplSession {
     this.options = options
     this.configPath = options.configPath
     this.configDir = dirname(options.configPath)
-    this.stdout = options.stdout ?? ((line) => console.log(line))
-    this.stderr = options.stderr ?? ((line) => console.error(line))
+    this.stdout = options.stdout
+    this.stderr = options.stderr
     this.env = options.env ?? process.env
     this.fileSystem = options.fileSystem
     this.spawner = options.spawner
     this.installation = options.installation
     this.resolver = options.resolver
     this.authoring = authoring
-    this.loadConfig =
-      options.loadConfig ??
-      ((path, loadOptions) =>
-        defaultLoadConfig(path, loadOptions).pipe(
-          Effect.provideService(FileSystem.FileSystem, this.fileSystem),
-          Effect.provideService(BundleResolver, this.resolver),
-        ))
-    this.runDoctor = options.doctor ?? ((profileDir) => defaultDoctor(profileDir, this.env))
+    this.loadConfig = options.loadConfig
+    this.runDoctor = options.doctor
     this.syncPlan = options.syncPlan
     this.installPreview = options.installPreview
     this.cacheRoot = options.cacheRoot ?? previewCacheRoot(this.env)
-    this.now = options.now ?? Date.now
+    this.now = options.now
     this.syncEnabled = options.sync === true
-    this.compose =
-      options.compose ??
-      ((plan, profileDir, provenance, configDir) =>
-        defaultCompose(plan, profileDir, this.installation, provenance, configDir, this.resolver))
+    this.compose = options.compose
     this.previousOverride = process.env.EEDSH_PROFILE_ROOT_OVERRIDE
+    this.reloadSemaphore = Semaphore.makeUnsafe(1)
   }
 
   /**
@@ -720,15 +728,23 @@ export class ReplSession {
    * @param options - config path, profile, streams, and seams.
    * @returns the initialized session, or a structured failure.
    */
-  static async create(options: ReplSessionOptions): Promise<ReplSession> {
-    let authoring = options.authoring
-    if (authoring === undefined) {
-      const info = await authoringPackage(options.fileSystem, options.configPath)
-      authoring = { ...info, module: await loadAuthoringModule(info) }
-    }
-    const session = new ReplSession(options, authoring)
-    await session.initialize()
-    return session
+  static create(
+    options: ReplSessionOptions,
+  ): Effect.Effect<ReplSession, ReplSessionError | ReplConfigFailure> {
+    return Effect.gen(function* () {
+      let authoring = options.authoring
+      if (authoring === undefined) {
+        const info = yield* authoringPackage(options.fileSystem, options.configPath)
+        authoring = { ...info, module: yield* loadAuthoringModule(info) }
+      }
+      const session = new ReplSession(options, authoring)
+      const initialized = yield* Effect.exit(session.initialize())
+      if (Exit.isFailure(initialized)) {
+        yield* session.close()
+        return yield* Effect.failCause(initialized.cause)
+      }
+      return session
+    })
   }
 
   /** The selected profile's validated plan. */
@@ -751,43 +767,50 @@ export class ReplSession {
     return this.preview !== undefined
   }
 
-  private async initialize(): Promise<void> {
-    try {
-      this.evaluator = createEvaluator({ cwd: this.configDir })
-      this.evaluateRaw = this.evaluator.evaluate
-      if (this.options.oneShot !== true) {
-        this.stdout(
-          `eedsh repl (profile selection: ${this.options.profile === undefined ? 'config default' : JSON.stringify(this.options.profile)}; sync: ${this.syncEnabled ? 'on' : 'off'})`,
+  private initialize(): Effect.Effect<void, ReplSessionError | ReplConfigFailure> {
+    const self = this
+    return Effect.gen(function* () {
+      self.evaluator = createEvaluator({ cwd: self.configDir })
+      self.evaluateRaw = self.evaluator.evaluate
+      if (self.options.oneShot !== true) {
+        self.stdout(
+          `eedsh repl (profile selection: ${self.options.profile === undefined ? 'config default' : JSON.stringify(self.options.profile)}; sync: ${self.syncEnabled ? 'on' : 'off'})`,
         )
-        this.stdout(`config: ${this.configPath}`)
-        this.stdout(`authoring: ${this.authoring.entryPath} (${this.authoring.version})`)
-        this.stdout('bindings: config, selectedProfile, plan')
-        this.stdout(
+        self.stdout(`config: ${self.configPath}`)
+        self.stdout(`authoring: ${self.authoring.entryPath} (${self.authoring.version})`)
+        self.stdout('bindings: config, selectedProfile, plan')
+        self.stdout(
           'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names (a second Tab lists ambiguous matches)',
         )
-        if (this.options.cacheRoot === undefined) {
-          await cleanupPreviews(this.cacheRoot, this.fileSystem, { now: this.now }).catch(
-            () => undefined,
-          )
+        if (self.options.cacheRoot === undefined) {
+          yield* Effect.exit(cleanupPreviews(self.cacheRoot, self.fileSystem, { now: self.now }))
         }
       }
-      await this.loadAndSelect()
-      if (this.options.watchConfig !== false) await this.startWatching()
-    } catch (error) {
-      await this.close()
-      throw error
-    }
+      yield* self.loadAndSelect()
+      if (self.options.watchConfig !== false) yield* self.startWatching()
+    })
   }
 
-  private bind(): void {
+  private bind(): Result.Result<void, ReplSessionError> {
     const context = this.evaluator.context
     for (const name of VIEW_BINDINGS) {
       if (Object.hasOwn(this.authoring.module, name)) {
-        throw new ReplSessionError({
-          code: 'repl.binding_collision',
-          message: `the config project's @eedsh/config exports "${name}", which collides with the session binding "${name}"`,
-        })
+        return Result.fail(
+          new ReplSessionError({
+            code: 'repl.binding_collision',
+            message: `the config project's @eedsh/config exports "${name}", which collides with the session binding "${name}"`,
+          }),
+        )
       }
+    }
+    const plan = this.selectedProfileView.plan()
+    if (plan === undefined) {
+      return Result.fail(
+        new ReplSessionError({
+          code: 'repl.profile_selection',
+          message: `profile ${JSON.stringify(this.profileName)} is invalid`,
+        }),
+      )
     }
     const bindings: Record<string, unknown> = {}
     for (const name of AUTHORING_BINDINGS) {
@@ -796,217 +819,264 @@ export class ReplSession {
     Object.assign(context, bindings, {
       config: this.configView,
       selectedProfile: this.selectedProfileView,
-      plan: this.selectedProfileView.plan(),
+      plan,
     })
+    return Result.succeed(undefined)
   }
 
-  private async applySelection(
+  private applySelection(
     config: EedshConfig,
     plan: ProfilePlan,
     name: string,
     provenance: ConfigProvenance | undefined,
     resolutionBundles: readonly ResolvedBundle[] = [],
     queries: readonly BundleQueryDescriptor[] = [],
-  ): Promise<void> {
-    this.config = config
-    this.plan = plan
-    this.profileName = name
-    this.provenance = provenance
-    this.resolutionBundles = resolutionBundles
-    this.queries = queries
-    this.completionBundles = new Map(
-      queries.flatMap((descriptor) => {
-        const resolved = resolutionBundles.find(
-          (item) =>
-            item.bundle === descriptor.bundle &&
-            queryKey(item.bundle, item.root) === queryKey(descriptor.bundle, descriptor.root),
+  ): Effect.Effect<void, ReplSessionError> {
+    const self = this
+    return Effect.gen(function* () {
+      self.config = config
+      self.plan = plan
+      self.profileName = name
+      self.provenance = provenance
+      self.resolutionBundles = resolutionBundles
+      self.queries = queries
+      self.completionBundles = new Map(
+        queries.flatMap((descriptor) => {
+          const resolved = resolutionBundles.find(
+            (item) =>
+              item.bundle === descriptor.bundle &&
+              queryKey(item.bundle, item.root) === queryKey(descriptor.bundle, descriptor.root),
+          )
+          return resolved === undefined
+            ? []
+            : ([[queryKey(descriptor.bundle, descriptor.root), resolved]] as const)
+        }),
+      )
+      yield* self.refreshViews()
+    })
+  }
+
+  private refreshViews(): Effect.Effect<void, ReplSessionError> {
+    const self = this
+    return Effect.gen(function* () {
+      const snapshots = yield* self.buildSnapshots(
+        self.config,
+        self.resolutionBundles,
+        self.queries,
+      )
+      self.configView = new ConfigView(self.config, snapshots)
+      const selected = self.configView.profile(self.profileName)
+      if (selected === undefined) {
+        return yield* Effect.fail(
+          new ReplSessionError({
+            code: 'repl.profile_selection',
+            message: `profile ${JSON.stringify(self.profileName)} is not declared`,
+          }),
         )
-        return resolved === undefined
-          ? []
-          : ([[queryKey(descriptor.bundle, descriptor.root), resolved]] as const)
-      }),
-    )
-    await this.refreshViews()
+      }
+      self.selectedProfileView = selected
+      self.invalidateCatalogs()
+    })
   }
 
-  private async refreshViews(): Promise<void> {
-    const snapshots = await this.buildSnapshots(this.config, this.resolutionBundles, this.queries)
-    this.configView = new ConfigView(this.config, snapshots)
-    const selected = this.configView.profile(this.profileName)
-    if (selected === undefined) {
-      throw new ReplSessionError({
-        code: 'repl.profile_selection',
-        message: `profile ${JSON.stringify(this.profileName)} is not declared`,
-      })
-    }
-    this.selectedProfileView = selected
-    this.invalidateCatalogs()
-  }
-
-  private async buildSnapshots(
+  private buildSnapshots(
     config: EedshConfig,
     resolutionBundles: readonly ResolvedBundle[],
     queries: readonly BundleQueryDescriptor[],
-  ): Promise<ReadonlyMap<string, ProfileSnapshot>> {
-    const snapshots = new Map<string, ProfileSnapshot>()
-    for (const [name, result] of Object.entries(config.profiles)) {
-      const profileDir =
-        name === this.profileName ? this.effectiveProfileDir() : profileDirectory(name, this.env)
-      const plan = Result.isSuccess(result) ? result.success : undefined
-      let composition: CompositionSnapshot | undefined
-      if (plan !== undefined) {
-        try {
-          const composed = await this.compose(plan, profileDir, this.provenance, this.configDir)
-          composition = {
-            rowCount: composed.rowCount,
-            entries: composed.entries ?? [],
-            sources: composed.sources ?? {},
-            warnings: composed.warnings,
-            error: composed.error,
-          }
-        } catch (error) {
-          composition = {
-            rowCount: 0,
-            entries: [],
-            sources: {},
-            warnings: [],
-            error: messageOf(error),
-          }
+  ): Effect.Effect<ReadonlyMap<string, ProfileSnapshot>> {
+    const self = this
+    return Effect.gen(function* () {
+      const snapshots = new Map<string, ProfileSnapshot>()
+      for (const [name, result] of Object.entries(config.profiles)) {
+        const profileDir =
+          name === self.profileName ? self.effectiveProfileDir() : profileDirectory(name, self.env)
+        const plan = Result.isSuccess(result) ? result.success : undefined
+        let composition: CompositionSnapshot | undefined
+        if (plan !== undefined) {
+          const composed = yield* Effect.exit(
+            Effect.suspend(() => self.compose(plan, profileDir, self.provenance, self.configDir)),
+          )
+          composition = Exit.isSuccess(composed)
+            ? {
+                rowCount: composed.value.rowCount,
+                entries: composed.value.entries ?? [],
+                sources: composed.value.sources ?? {},
+                warnings: composed.value.warnings,
+                error: composed.value.error,
+              }
+            : {
+                rowCount: 0,
+                entries: [],
+                sources: {},
+                warnings: [],
+                error: messageOf(Cause.squash(composed.cause)),
+              }
         }
+        const resolvedBundles = yield* self.resolveProfileBundles(
+          name,
+          plan,
+          resolutionBundles,
+          queries,
+        )
+        const published = yield* self.publishedSnapshot(profileDir)
+        const packages = yield* PackageView.read(
+          plan,
+          profileDir,
+          published.manifest,
+          self.fileSystem,
+        )
+        snapshots.set(name, { profileDir, composition, published, packages, resolvedBundles })
       }
-      const resolvedBundles = await this.resolveProfileBundles(
-        name,
-        plan,
-        resolutionBundles,
-        queries,
-      )
-      const published = await this.publishedSnapshot(profileDir)
-      const packages = await PackageView.read(plan, profileDir, published.manifest, this.fileSystem)
-      snapshots.set(name, { profileDir, composition, published, packages, resolvedBundles })
-    }
-    return snapshots
+      return snapshots
+    })
   }
 
   /** Resolve every bundle selection one profile view exposes. */
-  private async resolveProfileBundles(
+  private resolveProfileBundles(
     profile: string,
     plan: ProfilePlan | undefined,
     resolutionBundles: readonly ResolvedBundle[],
     queries: readonly BundleQueryDescriptor[],
-  ): Promise<ReadonlyMap<string, ResolvedBundle>> {
-    const resolved = new Map<string, ResolvedBundle>()
-    for (const descriptor of queries) {
-      if (descriptor.root.profile !== profile) continue
-      const item = resolutionBundles.find(
-        (candidate) =>
-          candidate.bundle === descriptor.bundle &&
-          queryKey(candidate.bundle, candidate.root) ===
-            queryKey(descriptor.bundle, descriptor.root),
-      )
-      if (item !== undefined && !resolved.has(item.bundle)) resolved.set(item.bundle, item)
-    }
-    for (const selection of plan?.bundles ?? []) {
-      if (selection.kind !== 'bundle' || resolved.has(selection.name)) continue
-      const item = await Effect.runPromise(
-        Effect.result(
-          this.resolver.resolveQuery({
+  ): Effect.Effect<ReadonlyMap<string, ResolvedBundle>> {
+    const self = this
+    return Effect.gen(function* () {
+      const resolved = new Map<string, ResolvedBundle>()
+      for (const descriptor of queries) {
+        if (descriptor.root.profile !== profile) continue
+        const item = resolutionBundles.find(
+          (candidate) =>
+            candidate.bundle === descriptor.bundle &&
+            queryKey(candidate.bundle, candidate.root) ===
+              queryKey(descriptor.bundle, descriptor.root),
+        )
+        if (item !== undefined && !resolved.has(item.bundle)) resolved.set(item.bundle, item)
+      }
+      for (const selection of plan?.bundles ?? []) {
+        if (selection.kind !== 'bundle' || resolved.has(selection.name)) continue
+        const queried = yield* Effect.result(
+          self.resolver.resolveQuery({
             bundle: selection.name,
             root: { profile },
-            installation: this.installation,
-            configDir: this.configDir,
-            env: this.env,
+            installation: self.installation,
+            configDir: self.configDir,
+            env: self.env,
           }),
-        ),
-      )
-      if (item._tag === 'Success') resolved.set(selection.name, item.success)
-    }
-    return resolved
-  }
-
-  private async publishedSnapshot(profileDir: string): Promise<PublishedSnapshot> {
-    const exists = profileDir !== '' && (await pathExists(this.fileSystem, profileDir))
-    const manifest = exists
-      ? await this.readJsonRecord(join(profileDir, 'package.json'))
-      : undefined
-    let generation: GenerationLookup | undefined
-    let record: GenerationRecord | undefined
-    let plan: unknown
-    let planPath: string | undefined
-    if (exists) {
-      const recordPath = join(profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
-      if (await pathExists(this.fileSystem, recordPath)) {
-        try {
-          const parsed = JSON.parse(
-            await Effect.runPromise(this.fileSystem.readFileString(recordPath)),
-          ) as unknown
-          generation = classifyGenerationRecord(parsed, recordPath)
-          if (generation._tag === 'valid') {
-            record = generation.record
-            planPath = join(profileDir, GENERATED_DIRNAME, 'plans', `${record.generationId}.json`)
-            if (await pathExists(this.fileSystem, planPath)) {
-              plan = JSON.parse(
-                await Effect.runPromise(this.fileSystem.readFileString(planPath)),
-              ) as unknown
-            }
-          }
-        } catch {
-          generation = undefined
-        }
+        )
+        if (Result.isSuccess(queried)) resolved.set(selection.name, queried.success)
       }
-    }
-    let findings: DoctorResult
-    try {
-      findings =
-        profileDir === ''
-          ? { findings: [], errors: 0, warnings: 0 }
-          : await this.runDoctor(profileDir)
-    } catch {
-      findings = { findings: [], errors: 0, warnings: 0 }
-    }
-    return {
-      dir: profileDir,
-      exists,
-      manifest,
-      generation,
-      record,
-      plan,
-      planPath,
-      findings: findings.findings,
-      errors: findings.errors,
-      warnings: findings.warnings,
-    }
+      return resolved
+    })
   }
 
-  private async readJsonRecord(path: string): Promise<Record<string, unknown> | undefined> {
-    try {
-      if (!(await pathExists(this.fileSystem, path))) return undefined
-      const parsed = JSON.parse(
-        await Effect.runPromise(this.fileSystem.readFileString(path)),
-      ) as unknown
+  private readJson(path: string): Effect.Effect<unknown | undefined> {
+    const self = this
+    return Effect.gen(function* () {
+      if (!(yield* pathExists(self.fileSystem, path))) return undefined
+      const content = yield* Effect.result(self.fileSystem.readFileString(path))
+      if (Result.isFailure(content)) return undefined
+      return Result.getOrUndefined(Result.try(() => JSON.parse(content.success) as unknown))
+    })
+  }
+
+  private readJsonRecord(path: string): Effect.Effect<Record<string, unknown> | undefined> {
+    const self = this
+    return Effect.gen(function* () {
+      const parsed = yield* self.readJson(path)
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : undefined
-    } catch {
-      return undefined
-    }
+    })
+  }
+
+  /**
+   * Read one profile's generation record and authoritative plan. A record that
+   * cannot be read or classified contributes no generation.
+   */
+  private readGeneration(profileDir: string): Effect.Effect<{
+    readonly generation: GenerationLookup | undefined
+    readonly record: GenerationRecord | undefined
+    readonly plan: unknown
+    readonly planPath: string | undefined
+  }> {
+    const self = this
+    return Effect.gen(function* () {
+      const recordPath = join(profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
+      if (!(yield* pathExists(self.fileSystem, recordPath))) {
+        return { generation: undefined, record: undefined, plan: undefined, planPath: undefined }
+      }
+      const parsed = yield* self.readJson(recordPath)
+      if (parsed === undefined) {
+        return { generation: undefined, record: undefined, plan: undefined, planPath: undefined }
+      }
+      const generation = Result.getOrUndefined(
+        Result.try(() => classifyGenerationRecord(parsed, recordPath)),
+      )
+      if (generation === undefined || generation._tag !== 'valid') {
+        return { generation, record: undefined, plan: undefined, planPath: undefined }
+      }
+      const record = generation.record
+      const planPath = join(profileDir, GENERATED_DIRNAME, 'plans', `${record.generationId}.json`)
+      const plan = (yield* pathExists(self.fileSystem, planPath))
+        ? yield* self.readJson(planPath)
+        : undefined
+      return { generation, record, plan, planPath }
+    })
+  }
+
+  private publishedSnapshot(profileDir: string): Effect.Effect<PublishedSnapshot> {
+    const self = this
+    return Effect.gen(function* () {
+      const exists = profileDir !== '' && (yield* pathExists(self.fileSystem, profileDir))
+      const manifest = exists
+        ? yield* self.readJsonRecord(join(profileDir, 'package.json'))
+        : undefined
+      const generation = exists
+        ? yield* self.readGeneration(profileDir)
+        : { generation: undefined, record: undefined, plan: undefined, planPath: undefined }
+      const findings = yield* self.doctorResult(profileDir)
+      return {
+        dir: profileDir,
+        exists,
+        manifest,
+        generation: generation.generation,
+        record: generation.record,
+        plan: generation.plan,
+        planPath: generation.planPath,
+        findings: findings.findings,
+        errors: findings.errors,
+        warnings: findings.warnings,
+      }
+    })
+  }
+
+  private doctorResult(profileDir: string): Effect.Effect<DoctorResult> {
+    const self = this
+    return Effect.gen(function* () {
+      if (profileDir === '') return { findings: [], errors: 0, warnings: 0 }
+      const findings = yield* Effect.exit(Effect.suspend(() => self.runDoctor(profileDir)))
+      return Exit.isSuccess(findings) ? findings.value : { findings: [], errors: 0, warnings: 0 }
+    })
   }
 
   private invalidateCatalogs(): void {
     this.catalogVersion += 1
   }
 
-  private async completionCatalogs(): Promise<CompletionCatalogs> {
-    if (this.catalogCache?.version === this.catalogVersion) return this.catalogCache.catalogs
-    const catalogs: CompletionCatalogs = {
-      commands: COMMAND_NAMES,
-      profiles: this.configView?.profiles().map((profile) => profile.name) ?? [],
-      bundles: await this.catalogBundles(),
-      packages: await this.catalogPackages(),
-      rows: (bundle, root) => this.catalogRows(bundle, root),
-      presets: (bundle, root) => this.catalogPresets(bundle, root),
-    }
-    this.catalogCache = { version: this.catalogVersion, catalogs }
-    return catalogs
+  private completionCatalogs(): Effect.Effect<CompletionCatalogs> {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.catalogCache?.version === self.catalogVersion) return self.catalogCache.catalogs
+      const catalogs: CompletionCatalogs = {
+        commands: COMMAND_NAMES,
+        profiles: self.configView?.profiles().map((profile) => profile.name) ?? [],
+        bundles: yield* self.catalogBundles(),
+        packages: yield* self.catalogPackages(),
+        rows: (bundle, root) => self.catalogRows(bundle, root),
+        presets: (bundle, root) => self.catalogPresets(bundle, root),
+      }
+      self.catalogCache = { version: self.catalogVersion, catalogs }
+      return catalogs
+    })
   }
 
   private catalogRows(bundle: string, root: CompletionRoot): readonly string[] {
@@ -1043,77 +1113,91 @@ export class ReplSession {
   }
 
   /** Resolve the bundle a completion line names, so its row and preset catalogs are available. */
-  private async prefetchCompletion(line: string): Promise<void> {
-    const bundle = /bundle\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
-    if (bundle === undefined) return
-    const profile = /\.fromProfile\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
-    const packageDir = /\.fromPackageDir\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
-    const root: QueryRoot =
-      profile !== undefined ? { profile } : packageDir !== undefined ? { packageDir } : {}
-    const key = queryKey(bundle, root)
-    if (this.completionBundles.has(key)) return
-    const resolved = await Effect.runPromise(
-      Effect.result(
-        this.resolver.resolveQuery({
-          bundle,
-          root,
-          installation: this.installation,
-          configDir: this.configDir,
-          env: this.env,
-        }),
-      ),
-    )
-    if (resolved._tag === 'Success') this.completionBundles.set(key, resolved.success)
+  private prefetchCompletion(line: string): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      const bundle = /bundle\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+      if (bundle === undefined) return
+      const profile = /\.fromProfile\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+      const packageDir = /\.fromPackageDir\(\s*(['"])(.*?)\1\s*\)/.exec(line)?.[2]
+      const root: QueryRoot =
+        profile !== undefined ? { profile } : packageDir !== undefined ? { packageDir } : {}
+      const key = queryKey(bundle, root)
+      if (self.completionBundles.has(key)) return
+      const resolved = yield* Effect.exit(
+        Effect.suspend(() =>
+          self.resolver.resolveQuery({
+            bundle,
+            root,
+            installation: self.installation,
+            configDir: self.configDir,
+            env: self.env,
+          }),
+        ),
+      )
+      if (Exit.isSuccess(resolved)) self.completionBundles.set(key, resolved.value)
+    })
   }
 
-  private async catalogBundles(): Promise<readonly string[]> {
-    const names = new Set<string>()
-    for (const item of this.plan?.bundles ?? []) {
-      if (item.kind === 'bundle') names.add(item.name)
-    }
-    for (const name of await this.manifestBundles()) names.add(name)
-    for (const name of await this.activeBundles()) names.add(name)
-    for (const spec of this.previewSpecs) names.add(spec.name)
-    return [...names].sort()
-  }
-
-  private async profileManifest(): Promise<Record<string, unknown> | undefined> {
-    return await this.readJsonRecord(join(this.effectiveProfileDir(), 'package.json'))
-  }
-
-  private async manifestBundles(): Promise<readonly string[]> {
-    const manifest = await this.profileManifest()
-    const dsh = manifest?.dsh
-    const profile =
-      dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).profile : undefined
-    const bundles =
-      profile !== null && typeof profile === 'object'
-        ? (profile as Record<string, unknown>).bundles
-        : undefined
-    return Array.isArray(bundles)
-      ? bundles.filter((item): item is string => typeof item === 'string')
-      : []
-  }
-
-  private async catalogPackages(): Promise<readonly string[]> {
-    const names = new Set<string>(Object.keys(this.plan?.packages ?? {}))
-    const manifest = await this.profileManifest()
-    if (manifest !== undefined) {
-      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-        const value = manifest[section]
-        if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
-        for (const name of Object.keys(value)) names.add(name)
+  private catalogBundles(): Effect.Effect<readonly string[]> {
+    const self = this
+    return Effect.gen(function* () {
+      const names = new Set<string>()
+      for (const item of self.plan?.bundles ?? []) {
+        if (item.kind === 'bundle') names.add(item.name)
       }
-    }
-    return [...names].sort()
+      for (const name of yield* self.manifestBundles()) names.add(name)
+      for (const name of yield* self.activeBundles()) names.add(name)
+      for (const spec of self.previewSpecs) names.add(spec.name)
+      return [...names].sort()
+    })
   }
 
-  private async activeBundles(): Promise<readonly string[]> {
-    const anchor = this.installation.installAnchor
-    try {
-      const manifest = JSON.parse(
-        await Effect.runPromise(this.fileSystem.readFileString(anchor)),
-      ) as Record<string, unknown>
+  private profileManifest(): Effect.Effect<Record<string, unknown> | undefined> {
+    return this.readJsonRecord(join(this.effectiveProfileDir(), 'package.json'))
+  }
+
+  private manifestBundles(): Effect.Effect<readonly string[]> {
+    const self = this
+    return Effect.gen(function* () {
+      const manifest = yield* self.profileManifest()
+      const dsh = manifest?.dsh
+      const profile =
+        dsh !== null && typeof dsh === 'object'
+          ? (dsh as Record<string, unknown>).profile
+          : undefined
+      const bundles =
+        profile !== null && typeof profile === 'object'
+          ? (profile as Record<string, unknown>).bundles
+          : undefined
+      return Array.isArray(bundles)
+        ? bundles.filter((item): item is string => typeof item === 'string')
+        : []
+    })
+  }
+
+  private catalogPackages(): Effect.Effect<readonly string[]> {
+    const self = this
+    return Effect.gen(function* () {
+      const names = new Set<string>(Object.keys(self.plan?.packages ?? {}))
+      const manifest = yield* self.profileManifest()
+      if (manifest !== undefined) {
+        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+          const value = manifest[section]
+          if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
+          for (const name of Object.keys(value)) names.add(name)
+        }
+      }
+      return [...names].sort()
+    })
+  }
+
+  private activeBundles(): Effect.Effect<readonly string[]> {
+    const self = this
+    return Effect.gen(function* () {
+      const anchor = self.installation.installAnchor
+      const manifest = yield* self.readJsonRecord(anchor)
+      if (manifest === undefined) return []
       const names: string[] = []
       for (const section of ['dependencies', 'optionalDependencies']) {
         const dependencies = manifest[section]
@@ -1125,26 +1209,25 @@ export class ReplSession {
           continue
         }
         for (const name of Object.keys(dependencies)) {
-          if (await this.declaresBundle(anchor, name)) names.push(name)
+          if (yield* self.declaresBundle(anchor, name)) names.push(name)
         }
       }
       return names
-    } catch {
-      return []
-    }
+    })
   }
 
-  private async declaresBundle(anchor: string, name: string): Promise<boolean> {
-    try {
-      const path = createRequire(anchor).resolve(`${name}/package.json`)
-      const manifest = JSON.parse(
-        await Effect.runPromise(this.fileSystem.readFileString(path)),
-      ) as Record<string, unknown>
+  private declaresBundle(anchor: string, name: string): Effect.Effect<boolean> {
+    const self = this
+    return Effect.gen(function* () {
+      const path = Result.getOrUndefined(
+        Result.try(() => createRequire(anchor).resolve(`${name}/package.json`)),
+      )
+      if (path === undefined) return false
+      const manifest = yield* self.readJsonRecord(path)
+      if (manifest === undefined) return false
       const dsh = manifest.dsh
       return dsh !== null && typeof dsh === 'object' && 'bundle' in dsh
-    } catch {
-      return false
-    }
+    })
   }
 
   /**
@@ -1153,9 +1236,13 @@ export class ReplSession {
    * @param line - the text before the cursor.
    * @returns the token start and hits.
    */
-  async complete(line: string): Promise<CompletionResult> {
-    await this.prefetchCompletion(line).catch(() => undefined)
-    return completeLine({ line, cursor: line.length, catalogs: await this.completionCatalogs() })
+  complete(line: string): Effect.Effect<CompletionResult> {
+    const self = this
+    return Effect.gen(function* () {
+      yield* self.prefetchCompletion(line)
+      const catalogs = yield* self.completionCatalogs()
+      return completeLine({ line, cursor: line.length, catalogs })
+    })
   }
 
   /**
@@ -1163,60 +1250,64 @@ export class ReplSession {
    * @param line - the text before the cursor.
    * @returns the filtered hits and the completed-on token.
    */
-  async completeGeneric(line: string): Promise<readonly [string[], string]> {
-    try {
-      return [filterCompletionHits(this.evaluator.complete(line)), line]
-    } catch {
-      return [[], line]
-    }
+  completeGeneric(line: string): Effect.Effect<readonly [string[], string]> {
+    return Effect.map(
+      Effect.sync(() => Result.try(() => filterCompletionHits(this.evaluator.complete(line)))),
+      (hits) => (Result.isSuccess(hits) ? ([hits.success, line] as const) : ([[], line] as const)),
+    )
   }
 
-  private async loadCandidate(): Promise<{
-    config: EedshConfig
-    plan: ProfilePlan
-    name: string
-    traces: readonly ResolutionTrace[]
-    provenance: ConfigProvenance | undefined
-    resolutionBundles: readonly ResolvedBundle[]
-    queries: readonly BundleQueryDescriptor[]
-  }> {
-    this.evaluationNonce += 1
-    const exit = await Effect.runPromiseExit(
-      this.loadConfig(this.configPath, {
-        installation: this.installation,
-        env: this.env,
-        evaluationNonce: String(this.evaluationNonce),
-      }),
-    )
-    if (Exit.isFailure(exit)) {
-      if (Cause.hasInterruptsOnly(exit.cause)) throw new Error('interrupted')
-      throw Cause.squash(exit.cause)
-    }
-    const selected = selectedPlan(exit.value.config, this.options.profile)
-    return {
-      config: exit.value.config,
-      plan: selected.plan,
-      name: selected.name,
-      traces: exit.value.traces,
-      provenance: exit.value.provenance,
-      resolutionBundles: exit.value.resolution.bundles,
-      queries: exit.value.queries,
-    }
+  private loadCandidate(): Effect.Effect<
+    {
+      config: EedshConfig
+      plan: ProfilePlan
+      name: string
+      traces: readonly ResolutionTrace[]
+      provenance: ConfigProvenance | undefined
+      resolutionBundles: readonly ResolvedBundle[]
+      queries: readonly BundleQueryDescriptor[]
+    },
+    ReplConfigFailure | ReplSessionError
+  > {
+    const self = this
+    return Effect.gen(function* () {
+      self.evaluationNonce += 1
+      const loaded = yield* Effect.suspend(() =>
+        self.loadConfig(self.configPath, {
+          installation: self.installation,
+          env: self.env,
+          evaluationNonce: String(self.evaluationNonce),
+        }),
+      )
+      const selected = yield* Effect.fromResult(selectedPlan(loaded.config, self.options.profile))
+      return {
+        config: loaded.config,
+        plan: selected.plan,
+        name: selected.name,
+        traces: loaded.traces,
+        provenance: loaded.provenance,
+        resolutionBundles: loaded.resolution.bundles,
+        queries: loaded.queries,
+      }
+    })
   }
 
-  private async loadAndSelect(): Promise<void> {
-    const loaded = await this.loadCandidate()
-    await this.applySelection(
-      loaded.config,
-      loaded.plan,
-      loaded.name,
-      loaded.provenance,
-      loaded.resolutionBundles,
-      loaded.queries,
-    )
-    this.bind()
-    this.printTraces(loaded.traces)
-    this.printComposition()
+  private loadAndSelect(): Effect.Effect<void, ReplConfigFailure | ReplSessionError> {
+    const self = this
+    return Effect.gen(function* () {
+      const loaded = yield* self.loadCandidate()
+      yield* self.applySelection(
+        loaded.config,
+        loaded.plan,
+        loaded.name,
+        loaded.provenance,
+        loaded.resolutionBundles,
+        loaded.queries,
+      )
+      yield* Effect.fromResult(self.bind())
+      self.printTraces(loaded.traces)
+      self.printComposition()
+    })
   }
 
   private printTraces(traces: readonly ResolutionTrace[]): void {
@@ -1275,80 +1366,85 @@ export class ReplSession {
   }
 
   /** Re-evaluate the config and report the diff against the last good plan. */
-  async reload(): Promise<void> {
-    const previous = planMap(this.config)
-    const previousFingerprint = this.fingerprint()
-    let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
-    try {
-      loaded = await this.loadCandidate()
-    } catch (error) {
-      this.reportFailure('reload failed', error)
-      return
-    }
-    const next = planMap(loaded.config)
-    const diff = diffPlans(previous, next)
-    if (diff.length === 0) this.stdout('reload: no changes')
-    else for (const line of diff) this.stdout(line)
-    await this.applySelection(
-      loaded.config,
-      loaded.plan,
-      loaded.name,
-      loaded.provenance,
-      loaded.resolutionBundles,
-      loaded.queries,
-    )
-    this.bind()
-    this.printTraces(loaded.traces)
-    this.printComposition()
-    if (!this.syncEnabled) return
-    const nextFingerprint = this.fingerprint()
-    if (nextFingerprint === previousFingerprint) return
-    if (this.pausedFingerprint === nextFingerprint) {
-      this.stdout('sync: still paused after the previous failure; waiting for a changed save')
-      return
-    }
-    await this.syncNow()
+  reload(): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      const previous = planMap(self.config)
+      const previousFingerprint = self.fingerprint()
+      const loaded = yield* Effect.exit(self.loadCandidate())
+      if (Exit.isFailure(loaded)) {
+        self.reportFailure('reload failed', Cause.squash(loaded.cause))
+        return
+      }
+      const next = planMap(loaded.value.config)
+      const diff = diffPlans(previous, next)
+      if (diff.length === 0) self.stdout('reload: no changes')
+      else for (const line of diff) self.stdout(line)
+      const applied = yield* Effect.result(
+        self.applySelection(
+          loaded.value.config,
+          loaded.value.plan,
+          loaded.value.name,
+          loaded.value.provenance,
+          loaded.value.resolutionBundles,
+          loaded.value.queries,
+        ),
+      )
+      if (Result.isFailure(applied)) {
+        self.reportFailure('reload failed', applied.failure)
+        return
+      }
+      const bound = self.bind()
+      if (Result.isFailure(bound)) {
+        self.reportFailure('reload failed', bound.failure)
+        return
+      }
+      self.printTraces(loaded.value.traces)
+      self.printComposition()
+      if (!self.syncEnabled) return
+      const nextFingerprint = self.fingerprint()
+      if (nextFingerprint === previousFingerprint) return
+      if (self.pausedFingerprint === nextFingerprint) {
+        self.stdout('sync: still paused after the previous failure; waiting for a changed save')
+        return
+      }
+      yield* self.syncNow()
+    })
   }
 
   /** Queue a reload so a burst of watcher callbacks cannot overlap evaluations. */
-  private enqueueReload(): Promise<void> {
-    this.reloadQueue = this.reloadQueue
-      .then(() => this.reload())
-      .catch((error: unknown) => {
-        this.reportFailure('reload failed', error)
-      })
-    return this.reloadQueue
+  private enqueueReload(): Effect.Effect<void> {
+    return this.reloadSemaphore.withPermits(1)(this.reload())
   }
 
-  private async startWatching(): Promise<void> {
-    const dir = this.configDir
-    const watch = this.options.watch ?? ((path: string) => watchConfigDirectory(path))
-    const reload = (): void => void this.enqueueReload()
-    const reportWatchFailure = (cause: Cause.Cause<unknown>): void => {
-      this.reportFailure('watch failed', Cause.squash(cause))
-    }
-    const scope = await Effect.runPromise(Scope.make())
-    try {
-      // Acquire the watcher first: it is ready (or its start failure is real)
-      // before the session reports itself initialized. The scope owns the
-      // subscription; close() interrupts the consumer and closes the scope.
-      const events = await Effect.runPromise(Effect.provideService(watch(dir), Scope.Scope, scope))
-      this.watcherScope = scope
-      this.watcherFiber = await Effect.runPromise(
-        events.pipe(
-          Stream.debounce('150 millis'),
-          Stream.runForEach(() => Effect.sync(reload)),
-          Effect.catchCause((cause) => Effect.sync(() => reportWatchFailure(cause))),
-          Effect.forkDetach,
-        ),
+  private startWatching(): Effect.Effect<void, ReplSessionError> {
+    const self = this
+    return Effect.gen(function* () {
+      const dir = self.configDir
+      const scope = yield* Scope.make()
+      const events = yield* Effect.exit(
+        Effect.suspend(() => Effect.provideService(self.options.watch(dir), Scope.Scope, scope)),
       )
-    } catch (cause) {
-      await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined))).catch(() => undefined)
-      throw new ReplSessionError({
-        code: 'repl.watch_failed',
-        message: `cannot watch ${this.configDir}: ${messageOf(cause)}`,
-      })
-    }
+      if (Exit.isFailure(events)) {
+        yield* Scope.close(scope, Exit.void)
+        return yield* Effect.fail(
+          new ReplSessionError({
+            code: 'repl.watch_failed',
+            message: `cannot watch ${dir}: ${messageOf(Cause.squash(events.cause))}`,
+          }),
+        )
+      }
+      self.watcherScope = scope
+      const fiber = yield* events.value.pipe(
+        Stream.debounce('150 millis'),
+        Stream.runForEach(() => self.enqueueReload()),
+        Effect.catchCause((cause) =>
+          Effect.sync(() => self.reportFailure('watch failed', Cause.squash(cause))),
+        ),
+        Effect.forkIn(scope),
+      )
+      self.watcherFiber = fiber
+    })
   }
 
   private reportFailure(prefix: string, error: unknown): void {
@@ -1362,17 +1458,23 @@ export class ReplSession {
     return await this.evaluateRaw(code)
   }
 
-  /** Evaluate without throwing, for prompt loops that must stay alive. */
-  async evaluateOutcome(
+  /** Evaluate without rejecting, for prompt loops that must stay alive. */
+  evaluateOutcome(
     code: string,
-  ): Promise<
+  ): Effect.Effect<
     { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: unknown }
   > {
-    try {
-      return { ok: true, value: await this.evaluate(code) }
-    } catch (error) {
-      return { ok: false, error }
-    }
+    const self = this
+    return Effect.gen(function* () {
+      const evaluated = yield* Effect.exit(
+        Effect.tryPromise({
+          try: () => self.evaluate(code),
+          catch: (error) => error,
+        }),
+      )
+      if (Exit.isSuccess(evaluated)) return { ok: true, value: evaluated.value }
+      return { ok: false, error: Cause.squash(evaluated.cause) }
+    })
   }
 
   /** Print an evaluated value through the session sink. */
@@ -1381,290 +1483,344 @@ export class ReplSession {
   }
 
   /** Run one dot command. Returns true when the session should exit. */
-  async command(line: string): Promise<boolean> {
-    const trimmed = line.trim()
-    const [word = '', ...args] = trimmed.split(/\s+/)
-    switch (word) {
-      case '.help':
-        for (const help of HELP_LINES) this.stdout(help)
-        return false
-      case '.profile': {
-        const name = args[0]
-        if (args.length !== 1 || name === undefined) {
-          this.stderr('usage: .profile <name>')
+  command(line: string): Effect.Effect<boolean> {
+    const self = this
+    return Effect.gen(function* () {
+      const trimmed = line.trim()
+      const [word = '', ...args] = trimmed.split(/\s+/)
+      switch (word) {
+        case '.help':
+          for (const help of HELP_LINES) self.stdout(help)
+          return false
+        case '.profile': {
+          const name = args[0]
+          if (args.length !== 1 || name === undefined) {
+            self.stderr('usage: .profile <name>')
+            return false
+          }
+          yield* self.switchProfile(name)
           return false
         }
-        await this.switchProfile(name)
-        return false
+        case '.reload':
+          yield* self.enqueueReload()
+          return false
+        case '.exit':
+          return true
+        case '.clear':
+          self.stdout('\u001b[2J\u001b[H')
+          return false
+        case '.resolve':
+          if (args.length === 0) {
+            self.stderr('usage: .resolve <name>@<exact-version>')
+            return false
+          }
+          yield* self.resolve(args)
+          return false
+        case '.sync': {
+          if (args.length === 0) {
+            yield* self.syncNow()
+            return false
+          }
+          if (args.length !== 1 || (args[0] !== 'on' && args[0] !== 'off')) {
+            self.stderr('usage: .sync [on|off]')
+            return false
+          }
+          self.syncEnabled = args[0] === 'on'
+          self.pausedFingerprint = undefined
+          self.stdout(`sync: ${self.syncEnabled ? 'on' : 'off'}`)
+          return false
+        }
+        default:
+          if (word.startsWith('.')) {
+            self.stderr(`invalid command: ${word}; run .help to list commands`)
+            return false
+          }
+          return false
       }
-      case '.reload':
-        await this.enqueueReload()
-        return false
-      case '.exit':
-        return true
-      case '.clear':
-        this.stdout('\u001b[2J\u001b[H')
-        return false
-      case '.resolve':
-        if (args.length === 0) {
-          this.stderr('usage: .resolve <name>@<exact-version>')
-          return false
-        }
-        await this.resolve(args)
-        return false
-      case '.sync': {
-        if (args.length === 0) {
-          await this.syncNow()
-          return false
-        }
-        if (args.length !== 1 || (args[0] !== 'on' && args[0] !== 'off')) {
-          this.stderr('usage: .sync [on|off]')
-          return false
-        }
-        this.syncEnabled = args[0] === 'on'
-        this.pausedFingerprint = undefined
-        this.stdout(`sync: ${this.syncEnabled ? 'on' : 'off'}`)
-        return false
-      }
-      default:
-        if (word.startsWith('.')) {
-          this.stderr(`invalid command: ${word}; run .help to list commands`)
-          return false
-        }
-        return false
-    }
+    })
   }
 
-  private async switchProfile(name: string): Promise<void> {
-    const names = this.configView.profiles().map((profile) => profile.name)
-    const view = this.configView.profile(name)
-    if (view === undefined) {
-      this.reportFailure(
-        'profile not switched',
-        new ReplSessionError({
-          code: 'repl.unknown_profile',
-          message: `profile ${JSON.stringify(name)} is not declared; available profiles: ${names.join(', ')}`,
-        }),
-      )
-      return
-    }
-    if (!view.valid) {
-      this.reportFailure(
-        'profile not switched',
-        new ReplSessionError({
-          code: 'repl.invalid_profile',
-          message: `profile ${JSON.stringify(name)} is invalid`,
-          lines: [`profile ${JSON.stringify(name)} is invalid`, ...(view.error ?? '').split('\n')],
-        }),
-      )
-      return
-    }
-    this.plan = view.plan()
-    this.profileName = name
-    await this.refreshViews()
-    this.bind()
-    this.stdout(`profile: ${name}`)
+  private switchProfile(name: string): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      const names = self.configView.profiles().map((profile) => profile.name)
+      const view = self.configView.profile(name)
+      if (view === undefined) {
+        self.reportFailure(
+          'profile not switched',
+          new ReplSessionError({
+            code: 'repl.unknown_profile',
+            message: `profile ${JSON.stringify(name)} is not declared; available profiles: ${names.join(', ')}`,
+          }),
+        )
+        return
+      }
+      if (!view.valid) {
+        self.reportFailure(
+          'profile not switched',
+          new ReplSessionError({
+            code: 'repl.invalid_profile',
+            message: `profile ${JSON.stringify(name)} is invalid`,
+            lines: [
+              `profile ${JSON.stringify(name)} is invalid`,
+              ...(view.error ?? '').split('\n'),
+            ],
+          }),
+        )
+        return
+      }
+      const plan = view.plan()
+      if (plan === undefined) return
+      self.plan = plan
+      self.profileName = name
+      const refreshed = yield* Effect.result(self.refreshViews())
+      if (Result.isFailure(refreshed)) {
+        self.reportFailure('profile not switched', refreshed.failure)
+        return
+      }
+      const bound = self.bind()
+      if (Result.isFailure(bound)) {
+        self.reportFailure('profile not switched', bound.failure)
+        return
+      }
+      self.stdout(`profile: ${name}`)
+    })
   }
 
-  private parseSpecs(raw: readonly string[]): PreviewSpec[] {
+  private parseSpecs(raw: readonly string[]): Result.Result<PreviewSpec[], PreviewError> {
     const specs: PreviewSpec[] = []
     for (const value of raw) {
       const at = value.lastIndexOf('@')
       if (at <= 0) {
-        throw new PreviewError({
-          code: 'preview.invalid_spec',
-          message: `${JSON.stringify(value)} is not <name>@<exact-version>`,
-        })
+        return Result.fail(
+          new PreviewError({
+            code: 'preview.invalid_spec',
+            message: `${JSON.stringify(value)} is not <name>@<exact-version>`,
+          }),
+        )
       }
       const name = value.slice(0, at)
       const version = value.slice(at + 1)
       if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
-        throw new PreviewError({
-          code: 'preview.inexact_version',
-          message: `${JSON.stringify(value)} must name an exact version, not ${JSON.stringify(version)}`,
-        })
+        return Result.fail(
+          new PreviewError({
+            code: 'preview.inexact_version',
+            message: `${JSON.stringify(value)} must name an exact version, not ${JSON.stringify(version)}`,
+          }),
+        )
       }
       specs.push({ name, version })
     }
-    return specs
+    return Result.succeed(specs)
   }
 
   /** Prepare a preview and re-evaluate the config against it. */
-  async resolve(rawSpecs: readonly string[]): Promise<void> {
-    if (this.config === undefined) return
-    let specs: PreviewSpec[]
-    try {
-      specs = this.parseSpecs(rawSpecs)
-    } catch (error) {
-      this.reportFailure('preview not ready', error)
-      return
-    }
-    const profileDir = profileDirectory(this.profileName, this.env)
-    const merged = new Map(this.previewSpecs.map((spec) => [spec.name, spec]))
-    for (const spec of specs) merged.set(spec.name, spec)
-    specs = [...merged.values()]
-    let prepared: PreparedPreview
-    try {
-      prepared = await preparePreview(
-        {
-          profileName: this.profileName,
-          profileDir,
-          dshVersion: this.installation.version,
-          specs,
-          env: this.env,
-          ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),
-          ...(this.installPreview === undefined ? {} : { install: this.installPreview }),
-          now: this.now,
-        },
-        { fileSystem: this.fileSystem, spawner: this.spawner },
+  resolve(rawSpecs: readonly string[]): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.config === undefined) return
+      const parsed = self.parseSpecs(rawSpecs)
+      if (Result.isFailure(parsed)) {
+        self.reportFailure('preview not ready', parsed.failure)
+        return
+      }
+      let specs = parsed.success
+      const profileDir = profileDirectory(self.profileName, self.env)
+      const merged = new Map(self.previewSpecs.map((spec) => [spec.name, spec]))
+      for (const spec of specs) merged.set(spec.name, spec)
+      specs = [...merged.values()]
+      const prepared = yield* Effect.exit(
+        Effect.suspend(() =>
+          preparePreview(
+            {
+              profileName: self.profileName,
+              profileDir,
+              dshVersion: self.installation.version,
+              specs,
+              env: self.env,
+              ...(self.options.cacheRoot === undefined
+                ? {}
+                : { cacheRoot: self.options.cacheRoot }),
+              install: self.installPreview,
+              now: self.now,
+            },
+            { fileSystem: self.fileSystem, spawner: self.spawner },
+          ),
+        ),
       )
-    } catch (error) {
-      this.reportFailure('preview not ready', error)
-      return
-    }
-    const previous = {
-      preview: this.preview,
-      specs: this.previewSpecs,
-      config: this.config,
-      plan: this.plan,
-      profileName: this.profileName,
-      provenance: this.provenance,
-      resolutionBundles: this.resolutionBundles,
-      queries: this.queries,
-    }
-    this.preview = prepared
-    this.previewSpecs = [...specs]
-    this.applyPreviewEnv()
-    let loaded: Awaited<ReturnType<ReplSession['loadCandidate']>>
-    try {
-      loaded = await this.loadCandidate()
-      await this.applySelection(
-        loaded.config,
-        loaded.plan,
-        loaded.name,
-        loaded.provenance,
-        loaded.resolutionBundles,
-        loaded.queries,
+      if (Exit.isFailure(prepared)) {
+        self.reportFailure('preview not ready', Cause.squash(prepared.cause))
+        return
+      }
+      const previous = {
+        preview: self.preview,
+        specs: self.previewSpecs,
+        config: self.config,
+        plan: self.plan,
+        profileName: self.profileName,
+        provenance: self.provenance,
+        resolutionBundles: self.resolutionBundles,
+        queries: self.queries,
+      }
+      self.preview = prepared.value
+      self.previewSpecs = [...specs]
+      self.applyPreviewEnv()
+      const applied = yield* Effect.exit(
+        Effect.gen(function* () {
+          const loaded = yield* self.loadCandidate()
+          yield* self.applySelection(
+            loaded.config,
+            loaded.plan,
+            loaded.name,
+            loaded.provenance,
+            loaded.resolutionBundles,
+            loaded.queries,
+          )
+          yield* Effect.fromResult(self.bind())
+          return loaded
+        }),
       )
-      this.bind()
-    } catch (error) {
-      this.preview = previous.preview
-      this.previewSpecs = previous.specs
-      await this.applySelection(
-        previous.config,
-        previous.plan,
-        previous.profileName,
-        previous.provenance,
-        previous.resolutionBundles,
-        previous.queries,
+      if (Exit.isFailure(applied)) {
+        self.preview = previous.preview
+        self.previewSpecs = previous.specs
+        yield* Effect.ignore(
+          self.applySelection(
+            previous.config,
+            previous.plan,
+            previous.profileName,
+            previous.provenance,
+            previous.resolutionBundles,
+            previous.queries,
+          ),
+        )
+        self.applyPreviewEnv()
+        self.reportFailure('preview not ready', Cause.squash(applied.cause))
+        return
+      }
+      self.stdout(
+        `preview: ${specs.map((spec) => `${spec.name}@${spec.version}`).join(', ')} at ${prepared.value.dir}${prepared.value.reused ? ' (reused)' : ''}`,
       )
-      this.applyPreviewEnv()
-      this.reportFailure('preview not ready', error)
-      return
-    }
-    this.stdout(
-      `preview: ${specs.map((spec) => `${spec.name}@${spec.version}`).join(', ')} at ${prepared.dir}${prepared.reused ? ' (reused)' : ''}`,
-    )
-    this.stdout(`profile-root override: ${JSON.stringify({ [this.profileName]: prepared.dir })}`)
-    this.printTraces(loaded.traces)
-    this.printComposition()
+      self.stdout(
+        `profile-root override: ${JSON.stringify({ [self.profileName]: prepared.value.dir })}`,
+      )
+      self.printTraces(applied.value.traces)
+      self.printComposition()
+    })
   }
 
   /** Publish the current evaluation, or report why publication did not happen. */
-  async syncNow(): Promise<SyncOutcome | undefined> {
-    if (this.syncPlan === undefined) {
-      this.stderr('sync: this session has no publication runner')
-      return undefined
-    }
-    const plan = this.plan
-    try {
-      const outcome = await this.syncPlan(plan, this.provenance)
-      for (const warning of outcome.warnings ?? []) this.stderr(`warning: ${warning}`)
-      for (const notice of outcome.notices ?? []) this.stderr(notice)
-      this.stdout(
-        outcome.changed
-          ? `published profile ${JSON.stringify(plan.profile.name)} (generation ${outcome.generationId.slice(0, 12)})`
-          : `profile ${JSON.stringify(plan.profile.name)} is up to date (generation ${outcome.generationId.slice(0, 12)})`,
+  syncNow(): Effect.Effect<SyncOutcome | undefined> {
+    const self = this
+    return Effect.gen(function* () {
+      const plan = self.plan
+      const published = yield* Effect.exit(
+        Effect.gen(function* () {
+          const outcome = yield* Effect.suspend(() => self.syncPlan(plan, self.provenance))
+          for (const warning of outcome.warnings ?? []) self.stderr(`warning: ${warning}`)
+          for (const notice of outcome.notices ?? []) self.stderr(notice)
+          self.stdout(
+            outcome.changed
+              ? `published profile ${JSON.stringify(plan.profile.name)} (generation ${outcome.generationId.slice(0, 12)})`
+              : `profile ${JSON.stringify(plan.profile.name)} is up to date (generation ${outcome.generationId.slice(0, 12)})`,
+          )
+          if (outcome.changed && outcome.restartRequired === true) {
+            self.stdout('restart required: the published bundle or package set changed')
+          }
+          if (self.preview !== undefined && outcome.changed) yield* self.verifyPreview(plan)
+          yield* self.refreshViews()
+          yield* Effect.fromResult(self.bind())
+          return outcome
+        }),
       )
-      if (outcome.changed && outcome.restartRequired === true) {
-        this.stdout('restart required: the published bundle or package set changed')
+      if (Exit.isFailure(published)) {
+        self.pausedFingerprint = self.fingerprint()
+        self.reportFailure('sync failed', Cause.squash(published.cause))
+        if (self.preview !== undefined) {
+          self.stderr('preview: still active; fix the failure and run .sync again')
+        }
+        return undefined
       }
-      this.pausedFingerprint = undefined
-      if (this.preview !== undefined && outcome.changed) await this.verifyPreview(plan)
-      await this.refreshViews()
-      this.bind()
-      return outcome
-    } catch (error) {
-      this.pausedFingerprint = this.fingerprint()
-      this.reportFailure('sync failed', error)
-      if (this.preview !== undefined)
-        this.stderr('preview: still active; fix the failure and run .sync again')
-      return undefined
-    }
+      self.pausedFingerprint = undefined
+      return published.value
+    })
   }
 
-  private async verifyPreview(published: ProfilePlan): Promise<void> {
-    const preview = this.preview
-    if (preview === undefined) return
-    this.clearPreviewEnv()
-    try {
-      const loaded = await this.loadCandidate()
-      if (canonicalJson(loaded.plan) === canonicalJson(published)) {
-        await removePreview(preview.dir, this.fileSystem)
-        this.preview = undefined
-        this.previewSpecs = []
-        this.retainedPreviewDir = undefined
-        await this.applySelection(
-          loaded.config,
-          loaded.plan,
-          loaded.name,
-          loaded.provenance,
-          loaded.resolutionBundles,
-          loaded.queries,
-        )
-        this.bind()
-        this.stdout(
-          'bootstrap complete: the real install reproduces the published plan; preview deleted',
-        )
-        return
-      }
-      this.preview = undefined
-      this.previewSpecs = []
-      this.retainedPreviewDir = preview.dir
-      this.config = loaded.config
-      this.plan = loaded.plan
-      this.profileName = loaded.name
-      this.provenance = loaded.provenance
-      this.resolutionBundles = loaded.resolutionBundles
-      this.queries = loaded.queries
-      this.bind()
-      this.stdout('preview divergence: the real install does not reproduce the published plan')
-      this.stdout(
-        `kept preview at ${preview.dir}; the real evaluation is active for the next .sync`,
+  private verifyPreview(published: ProfilePlan): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      const preview = self.preview
+      if (preview === undefined) return
+      self.clearPreviewEnv()
+      const verified = yield* Effect.exit(
+        Effect.gen(function* () {
+          const loaded = yield* self.loadCandidate()
+          if (canonicalJson(loaded.plan) === canonicalJson(published)) {
+            yield* removePreview(preview.dir, self.fileSystem)
+            self.preview = undefined
+            self.previewSpecs = []
+            self.retainedPreviewDir = undefined
+            yield* self.applySelection(
+              loaded.config,
+              loaded.plan,
+              loaded.name,
+              loaded.provenance,
+              loaded.resolutionBundles,
+              loaded.queries,
+            )
+            yield* Effect.fromResult(self.bind())
+            self.stdout(
+              'bootstrap complete: the real install reproduces the published plan; preview deleted',
+            )
+            return
+          }
+          self.preview = undefined
+          self.previewSpecs = []
+          self.retainedPreviewDir = preview.dir
+          self.config = loaded.config
+          self.plan = loaded.plan
+          self.profileName = loaded.name
+          self.provenance = loaded.provenance
+          self.resolutionBundles = loaded.resolutionBundles
+          self.queries = loaded.queries
+          yield* Effect.fromResult(self.bind())
+          self.stdout('preview divergence: the real install does not reproduce the published plan')
+          self.stdout(
+            `kept preview at ${preview.dir}; the real evaluation is active for the next .sync`,
+          )
+          self.printTraces(loaded.traces)
+        }),
       )
-      this.printTraces(loaded.traces)
-    } catch (error) {
-      this.applyPreviewEnv()
-      this.preview = preview
-      this.reportFailure('preview verification failed; preview kept', error)
-    }
+      if (Exit.isFailure(verified)) {
+        self.applyPreviewEnv()
+        self.preview = preview
+        self.reportFailure(
+          'preview verification failed; preview kept',
+          Cause.squash(verified.cause),
+        )
+      }
+    })
   }
 
   /** Stop watching, close the evaluator, and restore the process environment. */
-  async close(): Promise<void> {
-    if (this.watcherFiber !== undefined) {
-      await Effect.runPromise(Fiber.interrupt(this.watcherFiber))
-      this.watcherFiber = undefined
-    }
-    if (this.watcherScope !== undefined) {
-      const scope = this.watcherScope
-      this.watcherScope = undefined
-      await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined))).catch(() => undefined)
-    }
-    this.clearPreviewEnv()
-    if (this.retainedPreviewDir !== undefined) {
-      this.stdout(`preview retained at ${this.retainedPreviewDir}`)
-    }
+  close(): Effect.Effect<void> {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.watcherFiber !== undefined) {
+        const fiber = self.watcherFiber
+        self.watcherFiber = undefined
+        yield* Fiber.interrupt(fiber)
+      }
+      if (self.watcherScope !== undefined) {
+        const scope = self.watcherScope
+        self.watcherScope = undefined
+        yield* Scope.close(scope, Exit.void)
+      }
+      self.clearPreviewEnv()
+      if (self.retainedPreviewDir !== undefined) {
+        self.stdout(`preview retained at ${self.retainedPreviewDir}`)
+        self.retainedPreviewDir = undefined
+      }
+    })
   }
 }
 

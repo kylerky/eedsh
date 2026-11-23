@@ -198,10 +198,10 @@ export interface ProvisionSourceInput {
   readonly rebuild?: boolean
   /** Fail instead of preparing when preparation would be needed. */
   readonly noBuild?: boolean
-  /** Override the recorded preparation time, for tests. */
-  readonly now?: () => Date
+  /** The recorded preparation time. */
+  readonly now: () => Date
   /** Receives non-fatal provisioning warnings. */
-  readonly warn?: (message: string) => void
+  readonly warn: (message: string) => void
 }
 
 /** What provisioning one source did. */
@@ -343,9 +343,9 @@ function provisionSourceUnlocked(
     const warnings: string[] = []
     const warn = (message: string) => {
       warnings.push(message)
-      input.warn?.(message)
+      input.warn(message)
     }
-    const now = input.now ?? (() => new Date())
+    const now = input.now
 
     if (resolved.kind === 'local') {
       return yield* provisionLocal({

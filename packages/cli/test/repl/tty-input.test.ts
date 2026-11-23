@@ -50,7 +50,7 @@ function interactiveTerminal(
 /** Run the editor for one scripted line and capture its display. */
 async function runEditor(
   events: readonly Terminal.UserInput[],
-  complete: (line: string) => Promise<readonly [readonly string[], string]>,
+  complete: (line: string) => Effect.Effect<readonly [readonly string[], string], unknown>,
   prompt = 'eedsh> ',
 ): Promise<{ readonly line: string; readonly displayed: string }> {
   const displayed: string[] = []
@@ -60,7 +60,7 @@ async function runEditor(
 }
 
 /** No completion hits. */
-const noHits = async (): Promise<readonly [readonly string[], string]> => [[], '']
+const noHits = () => Effect.succeed([[], ''] as const)
 
 describe('Terminal interactive line editor', () => {
   it('echoes printable input, backspaces, and submits on Enter', async () => {
@@ -75,7 +75,7 @@ describe('Terminal interactive line editor', () => {
   it('inserts a unique completion and lets the user submit it', async () => {
     const result = await runEditor(
       [...typeText('selectedPro'), key('tab'), key('return', { input: '\r' })],
-      async () => [['selectedProfile'], 'selectedPro'],
+      () => Effect.succeed([['selectedProfile'], 'selectedPro'] as const),
     )
     expect(result.line).toBe('selectedProfile')
     expect(result.displayed).toBe('eedsh> selectedProfile\n')
@@ -84,7 +84,7 @@ describe('Terminal interactive line editor', () => {
   it('inserts the common extension of several hits', async () => {
     const result = await runEditor(
       [...typeText('selectedPro'), key('tab'), key('return', { input: '\r' })],
-      async () => [['selectedProfile', 'selectedProfiles'], 'selectedPro'],
+      () => Effect.succeed([['selectedProfile', 'selectedProfiles'], 'selectedPro'] as const),
     )
     expect(result.line).toBe('selectedProfile')
     expect(result.displayed).not.toContain('selectedProfiles')
@@ -93,7 +93,7 @@ describe('Terminal interactive line editor', () => {
   it('lists ambiguous hits and redraws the prompt with the buffer', async () => {
     const result = await runEditor(
       [...typeText('s'), key('tab'), key('return', { input: '\r' })],
-      async () => [['selectedProfile', 'sync'], 's'],
+      () => Effect.succeed([['selectedProfile', 'sync'], 's'] as const),
     )
     expect(result.line).toBe('s')
     expect(result.displayed).toBe('eedsh> s\nselectedProfile\nsync\needsh> s\n')
@@ -102,9 +102,7 @@ describe('Terminal interactive line editor', () => {
   it('contains a completion failure and keeps the prompt usable', async () => {
     const result = await runEditor(
       [...typeText('s'), key('tab'), ...typeText('x'), key('return', { input: '\r' })],
-      async () => {
-        throw new Error('completion broke')
-      },
+      () => Effect.fail(new Error('completion broke')),
     )
     expect(result.line).toBe('sx')
     expect(result.displayed).toBe('eedsh> sx\n')

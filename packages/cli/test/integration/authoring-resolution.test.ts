@@ -167,7 +167,7 @@ export default () => defineConfig()
     if (plan === undefined || Result.isFailure(plan)) return
     expect(JSON.stringify(plan.success)).not.toContain('__jsExpr')
 
-    const generated = buildGeneratedBundle({
+    const built = buildGeneratedBundle({
       plan: plan.success,
       managedBundles: ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated'],
       packages: {
@@ -177,6 +177,8 @@ export default () => defineConfig()
       eedshVersion: '0.0.0',
       dshVersion: '0.2.1-rc.2',
     })
+    if (Result.isFailure(built)) throw new Error(built.failure.message)
+    const generated = built.success
     const layerFile = generated.files.find((file) => file.path.endsWith('.yml'))
     expect(layerFile?.content).toContain('!!js')
     expect(layerFile?.content).not.toContain('$eedsh')

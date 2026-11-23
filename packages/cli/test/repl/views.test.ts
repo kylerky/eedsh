@@ -8,7 +8,7 @@ import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DoctorResult } from '../../src/doctor'
 import { touchedRowIds } from '../../src/preflight'
-import { ReplSession } from '../../src/repl/session'
+import { composeFor, ReplSession } from '../../src/repl/session'
 import {
   ConfigView,
   EntryView,
@@ -22,6 +22,7 @@ import {
 import { defaultSpawn } from '../../src/spawn'
 import { devDshInstallation } from '../support/bridge'
 import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
+import { testSession, testWatch } from './harness'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 let work = ''
@@ -34,11 +35,12 @@ const authoring = {
   version: '0.0.0',
 }
 
-const fakeDoctor = async (): Promise<DoctorResult> => ({
-  findings: [],
-  errors: 0,
-  warnings: 0,
-})
+const fakeDoctor = (): Effect.Effect<DoctorResult> =>
+  Effect.succeed({
+    findings: [],
+    errors: 0,
+    warnings: 0,
+  })
 
 function configOf(build: (builder: ReturnType<typeof defineConfig>) => void): EedshConfig {
   const builder = defineConfig()
@@ -131,20 +133,20 @@ async function makeSession(
     compose?: (
       plan: ProfilePlan,
       profileDir: string,
-    ) => Promise<{
+    ) => Effect.Effect<{
       rowCount: number
       warnings: readonly string[]
       entries?: readonly Record<string, unknown>[]
       sources?: Readonly<Record<string, string>>
     }>
     useDefaultCompose?: boolean
-    syncPlan?: (plan: ProfilePlan) => Promise<{
+    syncPlan?: (plan: ProfilePlan) => Effect.Effect<{
       changed: boolean
       generationId: string
       restartRequired?: boolean
     }>
-    installPreview?: (dir: string) => Promise<void>
-    doctor?: (dir: string) => Promise<DoctorResult>
+    installPreview?: (dir: string) => Effect.Effect<void, unknown>
+    doctor?: (dir: string) => Effect.Effect<DoctorResult>
     provenance?: ConfigProvenance
   } = {},
 ) {
@@ -152,58 +154,63 @@ async function makeSession(
   const out: string[] = []
   const err: string[] = []
   const syncs: ProfilePlan[] = []
-  const session = await ReplSession.create({
-    configPath: join(work, 'config.ts'),
-    env: { DSH_HOME: join(work, 'home') },
-    stdout: (line) => out.push(line),
-    stderr: (line) => err.push(line),
-    fileSystem: await realFileSystemValue(),
-    spawner: defaultSpawn,
-    installation: devDshInstallation(),
-    resolver: await realBundleResolverValue(),
-    loadConfig: () =>
-      Effect.succeed({
-        config: current,
-        provenance: options.provenance,
-        configDir: work,
-        queries: [],
-        resolution: { bundles: [] },
-        traces: [],
-      }),
-    ...(options.useDefaultCompose === true
-      ? {}
-      : {
-          compose:
-            options.compose ??
-            (async (plan: ProfilePlan) => ({
-              rowCount: plan.layers.reduce(
-                (count, layer) =>
-                  count +
-                  layer.patches.reduce(
-                    (inner, patch) =>
-                      inner + (Array.isArray(patch.insert) ? patch.insert.length : 0),
-                    0,
-                  ),
-                0,
-              ),
-              warnings: [],
-            })),
+  const installation = devDshInstallation()
+  const resolver = await realBundleResolverValue()
+  const session = await Effect.runPromise(
+    ReplSession.create({
+      configPath: join(work, 'config.ts'),
+      env: { DSH_HOME: join(work, 'home') },
+      stdout: (line) => out.push(line),
+      stderr: (line) => err.push(line),
+      fileSystem: await realFileSystemValue(),
+      spawner: defaultSpawn,
+      installation,
+      resolver,
+      loadConfig: () =>
+        Effect.succeed({
+          config: current,
+          provenance: options.provenance,
+          configDir: work,
+          queries: [],
+          resolution: { bundles: [] },
+          traces: [],
         }),
-    syncPlan:
-      options.syncPlan ??
-      (async (plan) => {
-        syncs.push(plan)
-        return { changed: true, generationId: 'abcdef0123456789' }
-      }),
-    doctor: options.doctor ?? fakeDoctor,
-    cacheRoot: join(work, 'cache'),
-    authoring,
-    watchConfig: false,
-    ...(options.installPreview === undefined ? {} : { installPreview: options.installPreview }),
-  })
+      compose:
+        options.compose ??
+        (options.useDefaultCompose === true
+          ? composeFor(installation, resolver)
+          : (plan: ProfilePlan) =>
+              Effect.succeed({
+                rowCount: plan.layers.reduce(
+                  (count, layer) =>
+                    count +
+                    layer.patches.reduce(
+                      (inner, patch) =>
+                        inner + (Array.isArray(patch.insert) ? patch.insert.length : 0),
+                      0,
+                    ),
+                  0,
+                ),
+                warnings: [],
+              })),
+      syncPlan:
+        options.syncPlan ??
+        ((plan) => {
+          syncs.push(plan)
+          return Effect.succeed({ changed: true, generationId: 'abcdef0123456789' })
+        }),
+      watch: testWatch(),
+      installPreview: options.installPreview ?? (() => Effect.void),
+      now: () => Date.now(),
+      doctor: options.doctor ?? fakeDoctor,
+      cacheRoot: join(work, 'cache'),
+      authoring,
+      watchConfig: false,
+    }),
+  )
   sessions.push(session)
   return {
-    session,
+    session: testSession(session),
     out,
     err,
     syncs,
@@ -224,7 +231,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  await Promise.all(sessions.splice(0).map((session) => session.close()))
+  await Promise.all(sessions.splice(0).map((session) => Effect.runPromise(session.close())))
   await rm(work, { recursive: true, force: true })
 })
 
@@ -248,7 +255,7 @@ describe('profile and bundle views', () => {
     expect(view.name).toBe('work')
     expect(view.valid).toBe(true)
     expect(view.error).toBeUndefined()
-    expect(view.plan().profile.name).toBe('work')
+    expect(view.plan()?.profile.name).toBe('work')
     expect(view.result()).toBe(outcome)
     const bundles = view.bundles()
     expect(bundles.map((bundle) => bundle.name)).toEqual(['@deepseek-ai/dsh-base'])
@@ -260,15 +267,20 @@ describe('profile and bundle views', () => {
     expect(view.layers()).toHaveLength(1)
   })
 
-  it('reports an invalid profile without throwing from the constructor', () => {
+  it('reports an invalid profile as a tagged plan failure', () => {
     const config = baseConfig()
     const outcome = config.profiles.home
     if (outcome === undefined) throw new Error('missing home profile')
     const view = new ProfileView('home', outcome, snapshotOf())
     expect(view.valid).toBe(false)
     expect(view.error).toContain('owned by the materializer')
-    expect(() => view.plan()).toThrow(ViewError)
-    expect(() => view.plan()).toThrow(/invalid/)
+    const result = view.planResult()
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(ViewError)
+      expect(result.failure.message).toContain('invalid')
+    }
+    expect(view.plan()).toBeUndefined()
     expect(view.packages().declared).toEqual({})
   })
 
@@ -306,14 +318,16 @@ describe('package views', () => {
         },
       }),
     )
-    const view = await PackageView.read(
-      outcome.success,
-      profileDir,
-      JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as Record<
-        string,
-        unknown
-      >,
-      await realFileSystemValue(),
+    const view = await Effect.runPromise(
+      PackageView.read(
+        outcome.success,
+        profileDir,
+        JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as Record<
+          string,
+          unknown
+        >,
+        await realFileSystemValue(),
+      ),
     )
     expect(view.declared).toEqual({ '@scope/plugin': 'link:../plugin' })
     expect(view.managed).toEqual(['@eedsh/generated', '@eedsh/runtime', '@scope/plugin'])
@@ -530,13 +544,14 @@ describe('exploration snapshots', () => {
   })
 
   it('uses the preview directory as the selected profile root', async () => {
-    const installPreview = async (dir: string): Promise<void> => {
-      await mkdir(join(dir, 'node_modules', '@acme', 'x'), { recursive: true })
-      await writeFile(
-        join(dir, 'node_modules', '@acme', 'x', 'package.json'),
-        JSON.stringify({ name: '@acme/x', version: '1.2.3' }),
-      )
-    }
+    const installPreview = (dir: string): Effect.Effect<void, unknown> =>
+      Effect.promise(async () => {
+        await mkdir(join(dir, 'node_modules', '@acme', 'x'), { recursive: true })
+        await writeFile(
+          join(dir, 'node_modules', '@acme', 'x', 'package.json'),
+          JSON.stringify({ name: '@acme/x', version: '1.2.3' }),
+        )
+      })
     const h = await makeSession({
       installPreview,
       config: configOf((builder) => builder.profile('work', (profile) => profile.generated())),
@@ -552,33 +567,34 @@ describe('exploration snapshots', () => {
   it('refreshes published state after a successful sync', async () => {
     const h = await makeSession({
       config: configOf((builder) => builder.profile('work', (profile) => profile.generated())),
-      syncPlan: async () => {
-        const profileDir = join(work, 'home', 'profiles', 'work')
-        const recordDir = join(profileDir, '.eedsh', 'generated')
-        await mkdir(join(recordDir, 'plans'), { recursive: true })
-        await writeFile(
-          join(recordDir, 'package.json'),
-          JSON.stringify({
-            name: '@eedsh/generated',
-            eedsh: {
-              format: 'eedsh/generation',
-              version: 1,
-              generationId: 'gen-1',
-              planHash: 'a'.repeat(64),
-              eedshVersion: '0.0.0',
-              dshVersion: '0.2.1-rc.2',
-              layers: [],
-              bundles: ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated'],
-              packages: { '@eedsh/runtime': 'link:runtime' },
-            },
-          }),
-        )
-        await writeFile(
-          join(recordDir, 'plans', 'gen-1.json'),
-          JSON.stringify({ profile: { name: 'work' } }),
-        )
-        return { changed: true, generationId: 'gen-1' }
-      },
+      syncPlan: () =>
+        Effect.promise(async () => {
+          const profileDir = join(work, 'home', 'profiles', 'work')
+          const recordDir = join(profileDir, '.eedsh', 'generated')
+          await mkdir(join(recordDir, 'plans'), { recursive: true })
+          await writeFile(
+            join(recordDir, 'package.json'),
+            JSON.stringify({
+              name: '@eedsh/generated',
+              eedsh: {
+                format: 'eedsh/generation',
+                version: 1,
+                generationId: 'gen-1',
+                planHash: 'a'.repeat(64),
+                eedshVersion: '0.0.0',
+                dshVersion: '0.2.1-rc.2',
+                layers: [],
+                bundles: ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated'],
+                packages: { '@eedsh/runtime': 'link:runtime' },
+              },
+            }),
+          )
+          await writeFile(
+            join(recordDir, 'plans', 'gen-1.json'),
+            JSON.stringify({ profile: { name: 'work' } }),
+          )
+          return { changed: true, generationId: 'gen-1' }
+        }),
     })
     expect(await h.session.evaluate('selectedProfile.published().exists')).toBe(true)
     expect(await h.session.evaluate('selectedProfile.published().record')).toBeUndefined()
@@ -617,12 +633,13 @@ describe('read-only exploration', () => {
             .layer('cli', (layer) => layer.insert({ id: 'row-a', name: '@scope/a' })),
         ),
       ),
-      compose: async () => ({
-        rowCount: 1,
-        warnings: [],
-        entries: [{ id: 'row-a' }],
-        sources: { 'row-a': 'generated #1' },
-      }),
+      compose: () =>
+        Effect.succeed({
+          rowCount: 1,
+          warnings: [],
+          entries: [{ id: 'row-a' }],
+          sources: { 'row-a': 'generated #1' },
+        }),
     })
     const script = `
       config.defaultProfile

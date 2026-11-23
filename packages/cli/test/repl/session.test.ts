@@ -21,6 +21,7 @@ import type { PathEvent } from '../../src/watch'
 import { waitFor } from '../support/async'
 import { devDshInstallation } from '../support/bridge'
 import { realBundleResolverValue, realFileSystemValue } from '../support/cli'
+import { type TestSession, testSession, testWatch } from './harness'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -140,7 +141,7 @@ function ttyTerminal(
 }
 
 interface Harness {
-  session: ReplSession
+  session: TestSession
   out: string[]
   err: string[]
   loads: () => number
@@ -149,14 +150,19 @@ interface Harness {
   syncs: ProfilePlan[]
 }
 
+/** The doctor seam the session tests use; never reports a finding. */
+function testDoctor(): Effect.Effect<{ findings: never[]; errors: number; warnings: number }> {
+  return Effect.succeed({ findings: [], errors: 0, warnings: 0 })
+}
+
 async function session(
   options: {
     config?: EedshConfig
     profile?: string
     sync?: boolean
-    syncPlan?: (plan: ProfilePlan) => Promise<SyncOutcome>
+    syncPlan?: (plan: ProfilePlan) => Effect.Effect<SyncOutcome, unknown>
     watch?: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>>
-    installPreview?: (dir: string) => Promise<void>
+    installPreview?: (dir: string) => Effect.Effect<void, unknown>
     watchConfig?: boolean
     authoringModule?: Record<string, unknown>
   } = {},
@@ -167,40 +173,44 @@ async function session(
   const out: string[] = []
   const err: string[] = []
   const syncs: ProfilePlan[] = []
-  const created = await ReplSession.create({
-    configPath: join(work, 'config.ts'),
-    ...(options.profile === undefined ? {} : { profile: options.profile }),
-    sync: options.sync ?? false,
-    env: { DSH_HOME: join(work, 'home') },
-    stdout: (line) => out.push(line),
-    stderr: (line) => err.push(line),
-    fileSystem: await realFileSystemValue(),
-    spawner: defaultSpawn,
-    installation: devDshInstallation(),
-    resolver: await realBundleResolverValue(),
-    loadConfig: () => {
-      loadCount += 1
-      return failure === undefined ? Effect.succeed(loaded(current)) : Effect.fail(failure)
-    },
-    compose: async (plan) => ({ rowCount: rowsOf(plan), warnings: [] }),
-    syncPlan:
-      options.syncPlan ??
-      (async (plan) => {
-        syncs.push(plan)
-        return { changed: true, generationId: 'abcdef0123456789' }
-      }),
-    ...(options.watch === undefined ? {} : { watch: options.watch }),
-    ...(options.installPreview === undefined ? {} : { installPreview: options.installPreview }),
-    cacheRoot: join(work, 'cache'),
-    authoring:
-      options.authoringModule === undefined
-        ? authoring
-        : { ...authoring, module: options.authoringModule },
-    watchConfig: options.watchConfig ?? false,
-  })
+  const created = await Effect.runPromise(
+    ReplSession.create({
+      configPath: join(work, 'config.ts'),
+      ...(options.profile === undefined ? {} : { profile: options.profile }),
+      sync: options.sync ?? false,
+      env: { DSH_HOME: join(work, 'home') },
+      stdout: (line) => out.push(line),
+      stderr: (line) => err.push(line),
+      fileSystem: await realFileSystemValue(),
+      spawner: defaultSpawn,
+      installation: devDshInstallation(),
+      resolver: await realBundleResolverValue(),
+      loadConfig: () => {
+        loadCount += 1
+        return failure === undefined ? Effect.succeed(loaded(current)) : Effect.fail(failure)
+      },
+      compose: (plan) => Effect.succeed({ rowCount: rowsOf(plan), warnings: [] }),
+      syncPlan:
+        options.syncPlan ??
+        ((plan) => {
+          syncs.push(plan)
+          return Effect.succeed({ changed: true, generationId: 'abcdef0123456789' })
+        }),
+      watch: options.watch ?? testWatch(),
+      installPreview: options.installPreview ?? (() => Effect.void),
+      cacheRoot: join(work, 'cache'),
+      now: () => Date.now(),
+      doctor: testDoctor,
+      authoring:
+        options.authoringModule === undefined
+          ? authoring
+          : { ...authoring, module: options.authoringModule },
+      watchConfig: options.watchConfig ?? false,
+    }),
+  )
   sessions.push(created)
   return {
-    session: created,
+    session: testSession(created),
     out,
     err,
     loads: () => loadCount,
@@ -226,7 +236,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  await Promise.all(sessions.splice(0).map((item) => item.close()))
+  await Promise.all(sessions.splice(0).map((item) => Effect.runPromise(item.close())))
   await rm(work, { recursive: true, force: true })
 })
 
@@ -263,36 +273,52 @@ describe('session evaluation', () => {
     expect(defaulted.session.profile).toBe('home')
 
     await expect(
-      ReplSession.create({
-        configPath: join(work, 'config.ts'),
-        env: { DSH_HOME: join(work, 'home') },
-        stdout: () => {},
-        stderr: () => {},
-        fileSystem: await realFileSystemValue(),
-        spawner: defaultSpawn,
-        installation: devDshInstallation(),
-        resolver: await realBundleResolverValue(),
-        loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work', 'home']))),
-        authoring,
-        watchConfig: false,
-      }),
+      Effect.runPromise(
+        ReplSession.create({
+          configPath: join(work, 'config.ts'),
+          env: { DSH_HOME: join(work, 'home') },
+          stdout: () => {},
+          stderr: () => {},
+          fileSystem: await realFileSystemValue(),
+          spawner: defaultSpawn,
+          installation: devDshInstallation(),
+          resolver: await realBundleResolverValue(),
+          loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work', 'home']))),
+          compose: () => Effect.succeed({ rowCount: 0, warnings: [] }),
+          syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+          watch: testWatch(),
+          installPreview: () => Effect.void,
+          now: () => Date.now(),
+          doctor: testDoctor,
+          authoring,
+          watchConfig: false,
+        }),
+      ),
     ).rejects.toMatchObject({ code: 'repl.profile_selection' })
 
     await expect(
-      ReplSession.create({
-        configPath: join(work, 'config.ts'),
-        profile: 'missing',
-        env: { DSH_HOME: join(work, 'home') },
-        stdout: () => {},
-        stderr: () => {},
-        fileSystem: await realFileSystemValue(),
-        spawner: defaultSpawn,
-        installation: devDshInstallation(),
-        resolver: await realBundleResolverValue(),
-        loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work']))),
-        authoring,
-        watchConfig: false,
-      }),
+      Effect.runPromise(
+        ReplSession.create({
+          configPath: join(work, 'config.ts'),
+          profile: 'missing',
+          env: { DSH_HOME: join(work, 'home') },
+          stdout: () => {},
+          stderr: () => {},
+          fileSystem: await realFileSystemValue(),
+          spawner: defaultSpawn,
+          installation: devDshInstallation(),
+          resolver: await realBundleResolverValue(),
+          loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work']))),
+          compose: () => Effect.succeed({ rowCount: 0, warnings: [] }),
+          syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+          watch: testWatch(),
+          installPreview: () => Effect.void,
+          now: () => Date.now(),
+          doctor: testDoctor,
+          authoring,
+          watchConfig: false,
+        }),
+      ),
     ).rejects.toBeInstanceOf(ReplSessionError)
   })
 
@@ -313,24 +339,32 @@ describe('session evaluation', () => {
       join(packageDir, 'index.js'),
       "export const defineConfig = () => 'bound'\nexport const marker = 99\n",
     )
-    const created = await ReplSession.create({
-      configPath: join(configDir, 'config.ts'),
-      env: { DSH_HOME: join(work, 'home') },
-      stdout: () => {},
-      stderr: () => {},
-      fileSystem: await realFileSystemValue(),
-      spawner: defaultSpawn,
-      installation: devDshInstallation(),
-      resolver: await realBundleResolverValue(),
-      loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
-      compose: async () => ({ rowCount: 1, warnings: [] }),
-      watchConfig: false,
-    })
+    const created = await Effect.runPromise(
+      ReplSession.create({
+        configPath: join(configDir, 'config.ts'),
+        env: { DSH_HOME: join(work, 'home') },
+        stdout: () => {},
+        stderr: () => {},
+        fileSystem: await realFileSystemValue(),
+        spawner: defaultSpawn,
+        installation: devDshInstallation(),
+        resolver: await realBundleResolverValue(),
+        loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
+        compose: () => Effect.succeed({ rowCount: 1, warnings: [] }),
+        syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+        watch: testWatch(),
+        installPreview: () => Effect.void,
+        now: () => Date.now(),
+        doctor: testDoctor,
+        watchConfig: false,
+      }),
+    )
     sessions.push(created)
+    const live = testSession(created)
     expect(created.authoring.version).toBe('9.9.9')
     expect(created.authoring.entryPath).toBe(join(packageDir, 'index.js'))
-    expect(await created.evaluate('defineConfig()')).toBe('bound')
-    expect((await created.evaluateOutcome('marker')).ok).toBe(false)
+    expect(await live.evaluate('defineConfig()')).toBe('bound')
+    expect((await live.evaluateOutcome('marker')).ok).toBe(false)
     await rm(configDir, { recursive: true, force: true })
   })
 
@@ -338,18 +372,26 @@ describe('session evaluation', () => {
     const configDir = await mkdtemp(join(tmpdir(), 'eedsh-authoring-missing-'))
     try {
       await expect(
-        ReplSession.create({
-          configPath: join(configDir, 'config.ts'),
-          env: { DSH_HOME: join(work, 'home') },
-          stdout: () => {},
-          stderr: () => {},
-          fileSystem: await realFileSystemValue(),
-          spawner: defaultSpawn,
-          installation: devDshInstallation(),
-          resolver: await realBundleResolverValue(),
-          loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
-          watchConfig: false,
-        }),
+        Effect.runPromise(
+          ReplSession.create({
+            configPath: join(configDir, 'config.ts'),
+            env: { DSH_HOME: join(work, 'home') },
+            stdout: () => {},
+            stderr: () => {},
+            fileSystem: await realFileSystemValue(),
+            spawner: defaultSpawn,
+            installation: devDshInstallation(),
+            resolver: await realBundleResolverValue(),
+            loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
+            compose: () => Effect.succeed({ rowCount: 0, warnings: [] }),
+            syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+            watch: testWatch(),
+            installPreview: () => Effect.void,
+            now: () => Date.now(),
+            doctor: testDoctor,
+            watchConfig: false,
+          }),
+        ),
       ).rejects.toMatchObject({ code: 'repl.authoring_package_missing' })
     } finally {
       await rm(configDir, { recursive: true, force: true })
@@ -545,11 +587,12 @@ describe('session sync', () => {
     let changed = true
     const restart = true
     const h = await session({
-      syncPlan: async () => ({
-        changed,
-        generationId: 'abcdef0123456789',
-        restartRequired: restart,
-      }),
+      syncPlan: () =>
+        Effect.succeed({
+          changed,
+          generationId: 'abcdef0123456789',
+          restartRequired: restart,
+        }),
     })
     await h.session.command('.sync')
     expect(h.out.join('\n')).toContain('published profile "work"')
@@ -562,9 +605,7 @@ describe('session sync', () => {
 
   it('keeps the prompt usable after a sync failure', async () => {
     const h = await session({
-      syncPlan: async () => {
-        throw { _tag: 'SyncLocked', message: 'another sync holds the lock' }
-      },
+      syncPlan: () => Effect.fail({ _tag: 'SyncLocked', message: 'another sync holds the lock' }),
     })
     await h.session.command('.sync')
     expect(h.err.join('\n')).toContain('sync failed')
@@ -578,9 +619,9 @@ describe('session sync', () => {
       sync: true,
       watchConfig: true,
       watch: () => Effect.succeed(Stream.fromQueue(events)),
-      syncPlan: async () => {
+      syncPlan: () => {
         calls += 1
-        return { changed: true, generationId: 'abcdef0123456789' }
+        return Effect.succeed({ changed: true, generationId: 'abcdef0123456789' })
       },
     })
     h.setConfig(configWith(['a', 'b']))
@@ -594,10 +635,10 @@ describe('session sync', () => {
     let calls = 0
     const h = await session({
       sync: true,
-      syncPlan: async () => {
+      syncPlan: () => {
         calls += 1
-        if (fail) throw new Error('install broke')
-        return { changed: true, generationId: 'abcdef0123456789' }
+        if (fail) return Effect.fail(new Error('install broke'))
+        return Effect.succeed({ changed: true, generationId: 'abcdef0123456789' })
       },
     })
     h.setConfig(configWith(['a', 'b']))
@@ -642,8 +683,13 @@ describe('preview integration', () => {
     return line?.match(/ at (.*?)(?: \(reused\))?$/)?.[1]
   }
 
+  /** The Effect-returning installer seam over the fixture installer. */
+  function previewInstaller(dir: string): Effect.Effect<void, unknown> {
+    return Effect.promise(() => installPreview(dir))
+  }
+
   it('prints the override, evaluates, and never touches the profile', async () => {
-    const h = await session({ installPreview })
+    const h = await session({ installPreview: previewInstaller })
     const profileManifest = join(work, 'home', 'profiles', 'work', 'package.json')
     const before = await readFile(profileManifest, 'utf8')
     await h.session.resolve(['@acme/x@1.2.3'])
@@ -656,8 +702,8 @@ describe('preview integration', () => {
 
   it('deletes the preview when the real install reproduces the plan', async () => {
     const h = await session({
-      installPreview,
-      syncPlan: async () => ({ changed: true, generationId: 'abcdef0123456789' }),
+      installPreview: previewInstaller,
+      syncPlan: () => Effect.succeed({ changed: true, generationId: 'abcdef0123456789' }),
     })
     await h.session.resolve(['@acme/x@1.2.3'])
     const dir = previewDir(h.out)
@@ -671,10 +717,10 @@ describe('preview integration', () => {
   it('keeps the preview when the real install diverges', async () => {
     let h!: Harness
     h = await session({
-      installPreview,
-      syncPlan: async () => {
+      installPreview: previewInstaller,
+      syncPlan: () => {
         h.setConfig(configWith(['different']))
-        return { changed: true, generationId: 'abcdef0123456789' }
+        return Effect.succeed({ changed: true, generationId: 'abcdef0123456789' })
       },
     })
     await h.session.resolve(['@acme/x@1.2.3'])
@@ -691,9 +737,7 @@ describe('preview integration', () => {
 
   it('keeps the previous evaluation when the preview install fails', async () => {
     const h = await session({
-      installPreview: async () => {
-        throw new Error('registry unavailable')
-      },
+      installPreview: () => Effect.fail(new Error('registry unavailable')),
     })
     const before = h.session.currentPlan
     await h.session.resolve(['@acme/x@1.2.3'])
@@ -733,20 +777,27 @@ describe('shell commands', () => {
   it('runs a non-TTY loop without prompts', async () => {
     const out: string[] = []
     const prompts: string[] = []
-    const configured = await ReplSession.create({
-      configPath: join(work, 'config.ts'),
-      env: { DSH_HOME: join(work, 'home') },
-      stdout: (line) => out.push(line),
-      stderr: () => {},
-      fileSystem: await realFileSystemValue(),
-      spawner: defaultSpawn,
-      installation: devDshInstallation(),
-      resolver: await realBundleResolverValue(),
-      loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
-      compose: async () => ({ rowCount: 1, warnings: [] }),
-      authoring,
-      watchConfig: false,
-    })
+    const configured = await Effect.runPromise(
+      ReplSession.create({
+        configPath: join(work, 'config.ts'),
+        env: { DSH_HOME: join(work, 'home') },
+        stdout: (line) => out.push(line),
+        stderr: () => {},
+        fileSystem: await realFileSystemValue(),
+        spawner: defaultSpawn,
+        installation: devDshInstallation(),
+        resolver: await realBundleResolverValue(),
+        loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
+        compose: () => Effect.succeed({ rowCount: 1, warnings: [] }),
+        syncPlan: () => Effect.succeed({ changed: false, generationId: 'gen' }),
+        watch: testWatch(),
+        installPreview: () => Effect.void,
+        now: () => Date.now(),
+        doctor: testDoctor,
+        authoring,
+        watchConfig: false,
+      }),
+    )
     sessions.push(configured)
     await Effect.runPromise(
       runReplLoop(configured, { prompt: '' }).pipe(
@@ -761,7 +812,7 @@ describe('shell commands', () => {
     const h = await session()
     const prompts: string[] = []
     await Effect.runPromise(
-      runReplLoop(h.session, { prompt: 'eedsh> ' }).pipe(
+      runReplLoop(h.session.raw, { prompt: 'eedsh> ' }).pipe(
         Effect.provideService(Terminal.Terminal, fakeTerminal(['1 + 1', '.exit'], prompts)),
       ),
     )
@@ -774,7 +825,7 @@ describe('shell commands', () => {
     const displayed: string[] = []
     const events = [...typed('selectedPro'), keyEvent('tab'), keyEvent('return', { input: '\r' })]
     await Effect.runPromise(
-      runReplLoop(h.session, { tty: true, prompt: 'eedsh> ' }).pipe(
+      runReplLoop(h.session.raw, { tty: true, prompt: 'eedsh> ' }).pipe(
         Effect.provideService(Terminal.Terminal, ttyTerminal(events, displayed)),
       ),
     )
@@ -785,7 +836,7 @@ describe('shell commands', () => {
   it('renders an evaluation failure and keeps the loop running', async () => {
     const h = await session()
     await Effect.runPromise(
-      runReplLoop(h.session, { prompt: '' }).pipe(
+      runReplLoop(h.session.raw, { prompt: '' }).pipe(
         Effect.provideService(Terminal.Terminal, fakeTerminal(['missingName', '.exit'])),
       ),
     )
@@ -800,7 +851,7 @@ describe('shell commands', () => {
       Ref.make<ReplLoopState>({ running: true, prompting: false }),
     )
     await Effect.runPromise(
-      runReplLoop(h.session, { prompt: '', state }).pipe(
+      runReplLoop(h.session.raw, { prompt: '', state }).pipe(
         Effect.provideService(Terminal.Terminal, fakeTerminal(['.help'])),
       ),
     )

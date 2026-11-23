@@ -5,6 +5,7 @@
  * prompt adapter supplies the line up to the cursor and renders the result.
  * @module @eedsh/cli/repl/completion
  */
+import * as Result from 'effect/Result'
 
 /** The shell commands the session knows, in help order. */
 export const COMMAND_NAMES = [
@@ -180,11 +181,7 @@ function stripQuotes(value: string): string {
 }
 
 function safeNames(resolve: () => readonly string[]): readonly string[] {
-  try {
-    return resolve()
-  } catch {
-    return []
-  }
+  return Result.getOrElse(Result.try(resolve), () => [])
 }
 
 interface ChainInfo {
@@ -363,37 +360,38 @@ function commandCompletion(
 }
 
 /**
- * Compute completions for the text before the cursor. The walk never throws:
+ * Compute completions for the text before the cursor. The walk is total:
  * a failing catalog contributes no hits, and an unrecognized expression yields
  * an empty result so the prompt can fall back to JavaScript completion.
  * @param request - the line, cursor, and domain catalogs.
  * @returns the token start and matching hits.
  */
 export function complete(request: CompletionRequest): CompletionResult {
-  try {
-    const before = request.line.slice(0, request.cursor)
-    const command = commandCompletion(before, request.catalogs)
-    if (command !== undefined) return command
-    const string = openString(before)
-    if (string !== undefined) {
-      const token = before.slice(string.start)
-      return (
-        argumentCompletion(before, string.start, token, request.catalogs) ?? {
-          start: string.start,
-          hits: [],
-        }
-      )
-    }
-    const start = wordStart(before)
-    const token = before.slice(start)
-    if (start > 0 && before[start - 1] === '.') {
-      const info = chainInfo(before.slice(0, start - 1))
-      return { start, hits: methodHits(info, token) }
-    }
-    const argument = argumentCompletion(before, start, token, request.catalogs)
-    if (argument !== undefined) return argument
-    return { start, hits: [] }
-  } catch {
-    return { start: request.cursor, hits: [] }
-  }
+  return Result.getOrElse(
+    Result.try(() => {
+      const before = request.line.slice(0, request.cursor)
+      const command = commandCompletion(before, request.catalogs)
+      if (command !== undefined) return command
+      const string = openString(before)
+      if (string !== undefined) {
+        const token = before.slice(string.start)
+        return (
+          argumentCompletion(before, string.start, token, request.catalogs) ?? {
+            start: string.start,
+            hits: [],
+          }
+        )
+      }
+      const start = wordStart(before)
+      const token = before.slice(start)
+      if (start > 0 && before[start - 1] === '.') {
+        const info = chainInfo(before.slice(0, start - 1))
+        return { start, hits: methodHits(info, token) }
+      }
+      const argument = argumentCompletion(before, start, token, request.catalogs)
+      if (argument !== undefined) return argument
+      return { start, hits: [] }
+    }),
+    () => ({ start: request.cursor, hits: [] }),
+  )
 }

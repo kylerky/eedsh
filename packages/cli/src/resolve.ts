@@ -26,7 +26,7 @@ import {
 import { Effect } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
-import { resolveDshHome, resolveProfileDir } from './internal/dsh-home'
+import { resolveDshHome, validatedProfileDir } from './internal/dsh-home'
 
 /** The selected installation and invocation facts resolution needs. */
 export interface ResolutionContext {
@@ -139,7 +139,7 @@ function rootOverride(env: Record<string, string | undefined>): Record<string, s
 function profileDirectory(profile: string, env: Record<string, string | undefined>): string {
   const override = rootOverride(env)[profile]
   if (override !== undefined) return override
-  return resolveProfileDir(profile, resolveDshHome(undefined, env))
+  return validatedProfileDir(profile, resolveDshHome(undefined, env))
 }
 
 /**
@@ -194,9 +194,7 @@ function explicitRoot(
     if (root.profile !== undefined) {
       const profile = root.profile
       const override = rootOverride(context.env)[profile]
-      const selected = Result.succeed(profileDirectory(profile, context.env))
-      if (Result.isFailure(selected)) return yield* Effect.fail(selected.failure)
-      const dir = selected.success
+      const dir = profileDirectory(profile, context.env)
       const profileManifest = join(dir, 'package.json')
       const exists = yield* fs.exists(profileManifest).pipe(Effect.orElseSucceed(() => false))
       if (!exists) {

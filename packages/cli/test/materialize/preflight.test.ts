@@ -37,13 +37,15 @@ beforeAll(async () => {
 const managedBundles = ['@deepseek-ai/dsh-base', '@eedsh/runtime', '@eedsh/generated']
 
 function buildGenerated(plan: ProfilePlan): GeneratedBundle {
-  return buildGeneratedBundle({
+  const built = buildGeneratedBundle({
     plan,
     managedBundles,
     packages: {},
     eedshVersion: '0.0.0',
     dshVersion: '0.2.1-rc.2',
   })
+  if (Result.isFailure(built)) throw new Error(built.failure.message)
+  return built.success
 }
 
 function fixturePlan(layers: ProfilePlan['layers']): ProfilePlan {

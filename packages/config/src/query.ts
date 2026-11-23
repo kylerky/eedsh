@@ -8,6 +8,7 @@
 import type { JsonValue, NamedBundle, PlanPatch } from '@eedsh/plan'
 import { AUTHORING_KIND, authoringKind, isAuthoringObject } from './authoring'
 import type { PlanEntry } from './builders'
+import { defect } from './defect'
 import { AuthoringDefect } from './errors'
 import {
   findResolved,
@@ -95,25 +96,29 @@ function resolvedBundle(
 ): ResolvedBundle {
   const resolved = findResolved(table, bundle, root)
   if (resolved === undefined) {
-    throw new AuthoringDefect({
-      code: 'authoring.missing_resolution',
-      bundle,
-      message:
-        `the build table has no resolution for bundle ${JSON.stringify(bundle)} from ${rootText(root)}` +
-        (detail === '' ? '' : ` (${detail})`) +
-        '; the invocation must resolve every descriptor the builder reports',
-    })
+    defect(
+      new AuthoringDefect({
+        code: 'authoring.missing_resolution',
+        bundle,
+        message:
+          `the build table has no resolution for bundle ${JSON.stringify(bundle)} from ${rootText(root)}` +
+          (detail === '' ? '' : ` (${detail})`) +
+          '; the invocation must resolve every descriptor the builder reports',
+      }),
+    )
   }
   return resolved
 }
 
 function missingEntry(bundle: string, message: string, facts: Record<string, string>): never {
-  throw new AuthoringDefect({
-    code: 'authoring.missing_entry',
-    bundle,
-    message,
-    ...facts,
-  })
+  return defect(
+    new AuthoringDefect({
+      code: 'authoring.missing_entry',
+      bundle,
+      message,
+      ...facts,
+    }),
+  )
 }
 
 /**
@@ -509,11 +514,13 @@ export class Bundle extends BundleQuery {
     if (typeof profile === 'string') return profile
     const name = profile === null || typeof profile !== 'object' ? undefined : profile.name
     if (typeof name === 'string' && name !== '') return name
-    throw new AuthoringDefect({
-      code: 'authoring.profile_invalid',
-      bundle: this.bundle,
-      message: `a profile root must be a profile name or a handle carrying a name; received ${describe(profile)}`,
-    })
+    defect(
+      new AuthoringDefect({
+        code: 'authoring.profile_invalid',
+        bundle: this.bundle,
+        message: `a profile root must be a profile name or a handle carrying a name; received ${describe(profile)}`,
+      }),
+    )
   }
 }
 
@@ -537,12 +544,14 @@ export function bundleSelection(value: string | Bundle): NamedBundle {
   if (authoringKind(value) === 'bundle') return value.toJSON()
   const candidate = value as unknown as { name?: unknown }
   const name = typeof candidate?.name === 'string' ? candidate.name : 'unknown'
-  throw new AuthoringDefect({
-    code: 'authoring.rooted_query',
-    bundle: name,
-    message:
-      'a rooted bundle query is query-only and cannot be a plan selection; pass the bundle name instead',
-  })
+  defect(
+    new AuthoringDefect({
+      code: 'authoring.rooted_query',
+      bundle: name,
+      message:
+        'a rooted bundle query is query-only and cannot be a plan selection; pass the bundle name instead',
+    }),
+  )
 }
 
 /**
@@ -554,11 +563,13 @@ export function patchTargetId(target: PatchTarget): string {
   if (typeof target === 'string') return target
   if (target instanceof Row) return target.id
   const bundle = isRecord(target) && typeof target.bundle === 'string' ? target.bundle : ''
-  throw new AuthoringDefect({
-    code: 'authoring.invalid_target',
-    bundle,
-    message: `a layer patch target must be a row id or a Row when its id is known; received ${describe(target)}`,
-  })
+  defect(
+    new AuthoringDefect({
+      code: 'authoring.invalid_target',
+      bundle,
+      message: `a layer patch target must be a row id or a Row when its id is known; received ${describe(target)}`,
+    }),
+  )
 }
 
 /**
@@ -600,11 +611,13 @@ export function patchTargetValue(
     return new PatchDescriptor(deferred, operation)
   }
   const bundle = isRecord(target) && typeof target.bundle === 'string' ? target.bundle : ''
-  throw new AuthoringDefect({
-    code: 'authoring.invalid_target',
-    bundle,
-    message: `a layer patch target must be a row id, a Row, a Preset, or a row or preset collection; received ${describe(target)}`,
-  })
+  defect(
+    new AuthoringDefect({
+      code: 'authoring.invalid_target',
+      bundle,
+      message: `a layer patch target must be a row id, a Row, a Preset, or a row or preset collection; received ${describe(target)}`,
+    }),
+  )
 }
 
 /**

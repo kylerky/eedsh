@@ -203,7 +203,7 @@ export interface InitInput {
   /** A validated explicit installation to record after the project files. */
   anchorRecord?: InstallationAnchor | undefined
   /** Sink for non-fatal warnings, such as a failed anchor write. */
-  warn?: ((line: string) => void) | undefined
+  warn: (line: string) => void
 }
 
 /** What an init run wrote, kept, and reported. */
@@ -272,7 +272,7 @@ export function runInit(
         )
         if (Result.isFailure(writtenAnchor)) {
           anchorError = messageOf(writtenAnchor.failure)
-          input.warn?.(`eedsh: warning: cannot record the installation anchor: ${anchorError}`)
+          input.warn(`eedsh: warning: cannot record the installation anchor: ${anchorError}`)
         } else {
           recordedAnchor = anchorRecord
         }

@@ -90,8 +90,13 @@ export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, neve
       if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
       profileName = selection.success.name
     }
+    const profileDir = profileDirForName(profileName, env)
+    if (Result.isFailure(profileDir)) {
+      output.stderr(profileDir.failure.message)
+      return EXIT_USAGE
+    }
     const result = yield* doctor({
-      profileDir: profileDirForName(profileName, env),
+      profileDir: profileDir.success,
       dshHome: resolveDshHome(undefined, env),
       ...(doctorDsh === undefined ? {} : { dsh: doctorDsh }),
     })

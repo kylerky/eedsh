@@ -6,6 +6,7 @@
  * @module @eedsh/config/source
  */
 import type { PlanSource } from '@eedsh/plan'
+import { defect } from './defect'
 
 /** Stable failure codes for source authoring. */
 export type SourceDeclarationErrorCode = 'source.duplicate_package' | 'source.ref_on_local_checkout'
@@ -99,13 +100,15 @@ export function normalizeSourceDeclaration(
 ): PlanSource {
   const kind = sourceAcquisitionKind(declaration.from)
   if (kind === 'local' && declaration.ref !== undefined) {
-    throw new SourceDeclarationError({
-      code: 'source.ref_on_local_checkout',
-      packageName: name,
-      message:
-        `source ${JSON.stringify(name)} declares ref ${JSON.stringify(declaration.ref)} on the ` +
-        `local checkout ${JSON.stringify(declaration.from)}; ref applies only to a git source`,
-    })
+    defect(
+      new SourceDeclarationError({
+        code: 'source.ref_on_local_checkout',
+        packageName: name,
+        message:
+          `source ${JSON.stringify(name)} declares ref ${JSON.stringify(declaration.ref)} on the ` +
+          `local checkout ${JSON.stringify(declaration.from)}; ref applies only to a git source`,
+      }),
+    )
   }
   const prepare =
     declaration.prepare ?? (kind === 'git' ? GIT_PREPARE_DEFAULTS : LOCAL_PREPARE_DEFAULTS)

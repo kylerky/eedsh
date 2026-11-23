@@ -9,9 +9,10 @@ import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Schema } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
+import * as Result from 'effect/Result'
 import { writeFileAtomic } from '../internal/atomic-write'
 import { sha256 } from '../internal/sha256'
-import { emitPatchesYaml } from './yaml'
+import { emitPatchesYaml, type MalformedExpression } from './yaml'
 
 /** The generated bundle's package name. */
 export const GENERATED_PACKAGE_NAME = '@eedsh/generated'
@@ -181,11 +182,18 @@ export function generationIdFor(input: {
 /**
  * Build every artifact of a generated bundle.
  * @param input - plan, managed bundles and packages, and version provenance.
- * @returns the bundle, its file list, and the plan copy.
+ * @returns the bundle, its file list, and the plan copy, or a malformed-expression failure.
  */
-export function buildGeneratedBundle(input: BuildGeneratedBundleInput): GeneratedBundle {
+export function buildGeneratedBundle(
+  input: BuildGeneratedBundleInput,
+): Result.Result<GeneratedBundle, MalformedExpression> {
   const planHash = hashPlan(input.plan)
-  const emitted = input.plan.layers.map((item) => emitPatchesYaml(item.patches))
+  const emitted: string[] = []
+  for (const item of input.plan.layers) {
+    const content = emitPatchesYaml(item.patches)
+    if (Result.isFailure(content)) return Result.fail(content.failure)
+    emitted.push(content.success)
+  }
   const hashes = emitted.map((content) => sha256(content))
   const generationId = generationIdFor({
     planHash,
@@ -225,7 +233,7 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
   files.push({ path: authoritativePlanPath(generationId), content: authoritativeContent })
   files.push({ path: 'package.json', content: `${JSON.stringify(manifest, null, 2)}\n` })
 
-  return {
+  return Result.succeed({
     generationId,
     planHash,
     generation,
@@ -235,7 +243,7 @@ export function buildGeneratedBundle(input: BuildGeneratedBundleInput): Generate
     authoritativePlanContent: authoritativeContent,
     planPath: '.eedsh/plan.json',
     planContent: `${authoritativeContent}\n`,
-  }
+  })
 }
 
 /**

@@ -8,8 +8,10 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { canonicalJson } from '@eedsh/plan'
-import { Effect, Option, PlatformError } from 'effect'
+import { Cause, Effect, Exit, Option, PlatformError } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
+import * as Result from 'effect/Result'
+import * as Semaphore from 'effect/Semaphore'
 import { pnpmInvocation } from '../command-runner'
 import type { SpawnLike } from '../spawn'
 
@@ -30,10 +32,10 @@ export interface PreparePreviewInput {
   readonly env: Record<string, string | undefined>
   /** Cache root override, primarily for tests. */
   readonly cacheRoot?: string
-  /** Installer override, primarily for tests. */
-  readonly install?: (dir: string) => Promise<void>
-  /** Clock override for cleanup and markers. */
-  readonly now?: () => number
+  /** The installer seam; the session passes the pnpm installer. */
+  readonly install: (dir: string) => Effect.Effect<void, unknown>
+  /** The clock seam for cleanup and markers. */
+  readonly now: () => number
   /** Age after which an unused preview is removed. */
   readonly maxAgeMs?: number
 }
@@ -84,24 +86,22 @@ function messageOf(error: unknown): string {
 }
 
 /** Read a file, or undefined when it is missing or unreadable. */
-async function optionalFile(
+function optionalFile(
   fileSystem: FileSystem.FileSystem,
   path: string,
-): Promise<string | undefined> {
-  try {
-    return await Effect.runPromise(fileSystem.readFileString(path))
-  } catch {
-    return undefined
-  }
+): Effect.Effect<string | undefined> {
+  return fileSystem.readFileString(path).pipe(
+    Effect.result,
+    Effect.map((read) => (Result.isSuccess(read) ? read.success : undefined)),
+  )
 }
 
 /** Whether a path exists; an inspection failure counts as missing. */
-async function pathExists(fileSystem: FileSystem.FileSystem, path: string): Promise<boolean> {
-  try {
-    return await Effect.runPromise(fileSystem.exists(path))
-  } catch {
-    return false
-  }
+function pathExists(fileSystem: FileSystem.FileSystem, path: string): Effect.Effect<boolean> {
+  return fileSystem.exists(path).pipe(
+    Effect.result,
+    Effect.map((checked) => (Result.isSuccess(checked) ? checked.success : false)),
+  )
 }
 
 /** The reported modification time, in milliseconds, or zero when unavailable. */
@@ -135,34 +135,36 @@ function normalizeSpecs(specs: readonly PreviewSpec[]): PreviewSpec[] {
  * @param fileSystem - the file-system service.
  * @returns the hash-keyed cache directory name.
  */
-export async function previewKey(
+export function previewKey(
   input: PreparePreviewInput,
   fileSystem: FileSystem.FileSystem,
-): Promise<string> {
-  const manifestPath = join(input.profileDir, 'package.json')
-  let manifest: string
-  try {
-    manifest = await Effect.runPromise(fileSystem.readFileString(manifestPath))
-  } catch (cause) {
-    throw new PreviewError({
-      code: 'preview.profile_missing',
-      path: manifestPath,
-      message: `cannot prepare a preview: profile ${JSON.stringify(input.profileName)} has no manifest at ${manifestPath}: ${messageOf(cause)}`,
+): Effect.Effect<string, PreviewError> {
+  return Effect.gen(function* () {
+    const manifestPath = join(input.profileDir, 'package.json')
+    const read = yield* Effect.result(fileSystem.readFileString(manifestPath))
+    if (Result.isFailure(read)) {
+      return yield* Effect.fail(
+        new PreviewError({
+          code: 'preview.profile_missing',
+          path: manifestPath,
+          message: `cannot prepare a preview: profile ${JSON.stringify(input.profileName)} has no manifest at ${manifestPath}: ${messageOf(read.failure)}`,
+        }),
+      )
+    }
+    const workspace =
+      (yield* optionalFile(fileSystem, join(input.profileDir, 'pnpm-workspace.yaml'))) ?? null
+    const lockfile =
+      (yield* optionalFile(fileSystem, join(input.profileDir, 'pnpm-lock.yaml'))) ?? null
+    const material = canonicalJson({
+      profile: input.profileName,
+      manifest: read.success,
+      workspace,
+      lockfile,
+      dshVersion: input.dshVersion,
+      specs: normalizeSpecs(input.specs),
     })
-  }
-  const workspace =
-    (await optionalFile(fileSystem, join(input.profileDir, 'pnpm-workspace.yaml'))) ?? null
-  const lockfile =
-    (await optionalFile(fileSystem, join(input.profileDir, 'pnpm-lock.yaml'))) ?? null
-  const material = canonicalJson({
-    profile: input.profileName,
-    manifest,
-    workspace,
-    lockfile,
-    dshVersion: input.dshVersion,
-    specs: normalizeSpecs(input.specs),
+    return createHash('sha256').update(material).digest('hex')
   })
-  return createHash('sha256').update(material).digest('hex')
 }
 
 interface PreviewMarker {
@@ -172,16 +174,18 @@ interface PreviewMarker {
   readonly createdAt: number
 }
 
-async function readMarker(
+function readMarker(
   fileSystem: FileSystem.FileSystem,
   dir: string,
-): Promise<PreviewMarker | undefined> {
-  try {
-    const parsed = JSON.parse(
-      await Effect.runPromise(fileSystem.readFileString(join(dir, '.eedsh-preview.json'))),
-    ) as unknown
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    const record = parsed as Record<string, unknown>
+): Effect.Effect<PreviewMarker | undefined> {
+  return Effect.gen(function* () {
+    const content = yield* optionalFile(fileSystem, join(dir, '.eedsh-preview.json'))
+    if (content === undefined) return undefined
+    const parsed = Result.try(() => JSON.parse(content) as unknown)
+    if (Result.isFailure(parsed)) return undefined
+    const value = parsed.success
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+    const record = value as Record<string, unknown>
     if (record.key !== basename(dir)) return undefined
     if (typeof record.profile !== 'string') return undefined
     if (!Array.isArray(record.specs)) return undefined
@@ -199,51 +203,60 @@ async function readMarker(
       specs,
       createdAt: record.createdAt,
     }
-  } catch {
-    return undefined
-  }
+  })
 }
 
-async function packageInstalled(
+function packageInstalled(
   fileSystem: FileSystem.FileSystem,
   dir: string,
   name: string,
-): Promise<boolean> {
-  return await pathExists(fileSystem, join(dir, 'node_modules', ...name.split('/'), 'package.json'))
+): Effect.Effect<boolean> {
+  return pathExists(fileSystem, join(dir, 'node_modules', ...name.split('/'), 'package.json'))
 }
 
-async function reusable(
+function reusable(
   fileSystem: FileSystem.FileSystem,
   dir: string,
   key: string,
   specs: readonly PreviewSpec[],
   profileName: string,
-): Promise<boolean> {
-  const marker = await readMarker(fileSystem, dir)
-  if (marker === undefined) return false
-  if (marker.key !== key || marker.profile !== profileName) return false
-  if (canonicalJson(marker.specs) !== canonicalJson(specs)) return false
-  for (const spec of specs) {
-    if (!(await packageInstalled(fileSystem, dir, spec.name))) return false
-  }
-  return true
+): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    const marker = yield* readMarker(fileSystem, dir)
+    if (marker === undefined) return false
+    if (marker.key !== key || marker.profile !== profileName) return false
+    if (canonicalJson(marker.specs) !== canonicalJson(specs)) return false
+    for (const spec of specs) {
+      if (!(yield* packageInstalled(fileSystem, dir, spec.name))) return false
+    }
+    return true
+  })
 }
 
 /**
  * The default installer: pnpm install inside the preview directory.
  * @param dir - the preview directory.
  * @param spawner - the child-process spawn seam.
- * @returns a promise that resolves when pnpm exits successfully.
+ * @returns an effect that completes when pnpm exits successfully.
  */
-export async function installPreviewWithPnpm(dir: string, spawner: SpawnLike): Promise<void> {
-  const invocation = pnpmInvocation(['install'])
-  await new Promise<void>((resolvePromise, reject) => {
+export function installPreviewWithPnpm(
+  dir: string,
+  spawner: SpawnLike,
+): Effect.Effect<void, PreviewError> {
+  return Effect.callback<void, PreviewError>((resume) => {
+    const invocation = pnpmInvocation(['install'])
     const child = spawner(invocation.command, [...invocation.args], {
       cwd: dir,
       stdio: 'pipe',
       env: process.env,
     })
+    let settled = false
     let stderr = ''
+    const finish = (effect: Effect.Effect<void, PreviewError>): void => {
+      if (settled) return
+      settled = true
+      resume(effect)
+    }
     // The spawn seam pipes all three streams; drain stdout so a chatty installer
     // cannot block on a full pipe while its output stays suppressed.
     child.stdout?.on('data', () => {})
@@ -251,104 +264,123 @@ export async function installPreviewWithPnpm(dir: string, spawner: SpawnLike): P
       stderr += String(chunk)
     })
     child.on('error', (cause) => {
-      reject(
-        new PreviewError({
-          code: 'preview.install_failed',
-          path: dir,
-          message: `cannot install the session preview at ${dir}: ${messageOf(cause)}`,
-        }),
-      )
-    })
-    child.on('exit', (code) => {
-      if (code === 0) resolvePromise()
-      else
-        reject(
+      finish(
+        Effect.fail(
           new PreviewError({
             code: 'preview.install_failed',
             path: dir,
-            message: `preview installation at ${dir} exited with code ${String(code)}: ${stderr.trim()}`,
+            message: `cannot install the session preview at ${dir}: ${messageOf(cause)}`,
           }),
-        )
+        ),
+      )
     })
+    child.on('exit', (code) => {
+      if (code === 0) {
+        finish(Effect.void)
+      } else {
+        finish(
+          Effect.fail(
+            new PreviewError({
+              code: 'preview.install_failed',
+              path: dir,
+              message: `preview installation at ${dir} exited with code ${String(code)}: ${stderr.trim()}`,
+            }),
+          ),
+        )
+      }
+    })
+    return Effect.void
   })
 }
 
-async function writePreviewManifest(
+function writePreviewManifest(
   fileSystem: FileSystem.FileSystem,
   dir: string,
   specs: readonly PreviewSpec[],
-): Promise<void> {
-  const path = join(dir, 'package.json')
-  const parsed = JSON.parse(await Effect.runPromise(fileSystem.readFileString(path))) as unknown
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new PreviewError({
-      code: 'preview.profile_invalid',
-      path,
-      message: `cannot prepare a preview: profile manifest ${path} must hold a JSON object`,
-    })
-  }
-  const manifest = parsed as Record<string, unknown>
-  const dependencies =
-    manifest.dependencies !== null &&
-    typeof manifest.dependencies === 'object' &&
-    !Array.isArray(manifest.dependencies)
-      ? { ...(manifest.dependencies as Record<string, string>) }
-      : {}
-  for (const spec of specs) dependencies[spec.name] = spec.version
-  manifest.dependencies = dependencies
-  await Effect.runPromise(
-    fileSystem.writeFileString(path, `${JSON.stringify(manifest, null, 2)}\n`),
-  )
+): Effect.Effect<void, PreviewError | PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const path = join(dir, 'package.json')
+    const content = yield* fileSystem.readFileString(path)
+    const parsed = Result.try(() => JSON.parse(content) as unknown)
+    if (Result.isFailure(parsed)) {
+      return yield* Effect.fail(
+        new PreviewError({
+          code: 'preview.profile_invalid',
+          path,
+          message: `cannot prepare a preview: profile manifest ${path} must hold a JSON object`,
+        }),
+      )
+    }
+    const value = parsed.success
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return yield* Effect.fail(
+        new PreviewError({
+          code: 'preview.profile_invalid',
+          path,
+          message: `cannot prepare a preview: profile manifest ${path} must hold a JSON object`,
+        }),
+      )
+    }
+    const manifest = value as Record<string, unknown>
+    const dependencies =
+      manifest.dependencies !== null &&
+      typeof manifest.dependencies === 'object' &&
+      !Array.isArray(manifest.dependencies)
+        ? { ...(manifest.dependencies as Record<string, string>) }
+        : {}
+    for (const spec of specs) dependencies[spec.name] = spec.version
+    manifest.dependencies = dependencies
+    yield* fileSystem.writeFileString(path, `${JSON.stringify(manifest, null, 2)}\n`)
+  })
 }
 
-async function copyProfileMetadata(
+function copyProfileMetadata(
   input: PreparePreviewInput,
   dir: string,
   fileSystem: FileSystem.FileSystem,
-): Promise<void> {
-  await Effect.runPromise(fileSystem.makeDirectory(dir, { recursive: true }))
-  await Effect.runPromise(
-    fileSystem.copyFile(join(input.profileDir, 'package.json'), join(dir, 'package.json')),
-  )
-  for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
-    const source = join(input.profileDir, file)
-    if (await pathExists(fileSystem, source)) {
-      await Effect.runPromise(fileSystem.copyFile(source, join(dir, file)))
+): Effect.Effect<void, PreviewError | PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    yield* fileSystem.makeDirectory(dir, { recursive: true })
+    yield* fileSystem.copyFile(join(input.profileDir, 'package.json'), join(dir, 'package.json'))
+    for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
+      const source = join(input.profileDir, file)
+      if (yield* pathExists(fileSystem, source)) {
+        yield* fileSystem.copyFile(source, join(dir, file))
+      }
     }
-  }
-  await writePreviewManifest(fileSystem, dir, normalizeSpecs(input.specs))
+    yield* writePreviewManifest(fileSystem, dir, normalizeSpecs(input.specs))
+  })
 }
 
-const inProcessLocks = new Map<string, Promise<void>>()
+const inProcessLocks = new Map<string, Semaphore.Semaphore>()
 
-async function withInProcessLock<T>(key: string, run: () => Promise<T>): Promise<T> {
-  const previous = inProcessLocks.get(key) ?? Promise.resolve()
-  let release!: () => void
-  const current = new Promise<void>((resolvePromise) => {
-    release = resolvePromise
-  })
-  const next = previous.then(() => current)
-  inProcessLocks.set(key, next)
-  await previous
-  try {
-    return await run()
-  } finally {
-    release()
-    if (inProcessLocks.get(key) === next) inProcessLocks.delete(key)
-  }
+/** The process-wide mutex for one preview key, created on first use. */
+function inProcessLock(key: string): Semaphore.Semaphore {
+  const existing = inProcessLocks.get(key)
+  if (existing !== undefined) return existing
+  const created = Semaphore.makeUnsafe(1)
+  inProcessLocks.set(key, created)
+  return created
+}
+
+function withInProcessLock<A, E>(key: string, effect: Effect.Effect<A, E>): Effect.Effect<A, E> {
+  return Effect.flatMap(
+    Effect.sync(() => inProcessLock(key)),
+    (semaphore) => semaphore.withPermits(1)(effect),
+  )
 }
 
 const LOCK_TIMEOUT_MS = 30_000
 const STALE_LOCK_MS = 5 * 60_000
 
-async function acquireFileLock(
+function acquireFileLock(
   fileSystem: FileSystem.FileSystem,
   path: string,
-): Promise<() => Promise<void>> {
-  const deadline = Date.now() + LOCK_TIMEOUT_MS
-  while (true) {
-    try {
-      await Effect.runPromise(
+): Effect.Effect<Effect.Effect<void>, PreviewError> {
+  return Effect.gen(function* () {
+    const deadline = Date.now() + LOCK_TIMEOUT_MS
+    while (true) {
+      const attempt = yield* Effect.exit(
         Effect.scoped(
           Effect.gen(function* () {
             const handle = yield* fileSystem.open(path, { flag: 'wx' })
@@ -356,128 +388,138 @@ async function acquireFileLock(
           }),
         ),
       )
-      return async () => {
-        await Effect.runPromise(fileSystem.remove(path, { force: true }))
+      if (Exit.isSuccess(attempt)) {
+        return fileSystem.remove(path, { force: true }).pipe(Effect.ignore)
       }
-    } catch (cause) {
+      const cause = Cause.squash(attempt.cause)
       const exists = PlatformError.isPlatformError(cause) && cause.reason._tag === 'AlreadyExists'
       if (!exists) {
-        throw new PreviewError({
-          code: 'preview.lock_failed',
-          path,
-          message: `cannot lock the session preview at ${path}: ${messageOf(cause)}`,
-        })
+        return yield* Effect.fail(
+          new PreviewError({
+            code: 'preview.lock_failed',
+            path,
+            message: `cannot lock the session preview at ${path}: ${messageOf(cause)}`,
+          }),
+        )
       }
-      try {
-        const info = await Effect.runPromise(fileSystem.stat(path))
-        if (Date.now() - modifiedTime(info) > STALE_LOCK_MS) {
-          await Effect.runPromise(fileSystem.remove(path, { force: true }))
-          continue
-        }
-      } catch {
+      const info = yield* Effect.exit(fileSystem.stat(path))
+      if (Exit.isSuccess(info) && Date.now() - modifiedTime(info.value) > STALE_LOCK_MS) {
+        yield* fileSystem.remove(path, { force: true }).pipe(Effect.ignore)
         continue
       }
       if (Date.now() > deadline) {
-        throw new PreviewError({
-          code: 'preview.lock_timeout',
-          path,
-          message: `timed out waiting for another session to finish the preview at ${path}`,
-        })
+        return yield* Effect.fail(
+          new PreviewError({
+            code: 'preview.lock_timeout',
+            path,
+            message: `timed out waiting for another session to finish the preview at ${path}`,
+          }),
+        )
       }
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+      yield* Effect.sleep(50)
     }
-  }
+  })
 }
 
 /**
  * Prepare or reuse a preview for the selected profile. Concurrent sessions
- * with the same key serialize on an in-process chain and a cache lock file.
- * @param input - profile, selected DSH version, specs, and cache/install seams.
+ * with the same key serialize on an in-process mutex and a cache lock file.
+ * @param input - profile, selected DSH version, specs, cache/install seams, and clock.
  * @param services - the file-system and spawn services to read and install through.
  * @returns the prepared preview and its profile-root override.
  */
-export async function preparePreview(
+export function preparePreview(
   input: PreparePreviewInput,
   services: PreviewServices,
-): Promise<PreparedPreview> {
-  const { fileSystem, spawner } = services
-  const specs = normalizeSpecs(input.specs)
-  if (specs.length === 0) {
-    throw new PreviewError({
-      code: 'preview.spec_required',
-      message: 'a preview needs at least one exact package spec, such as @acme/x@1.2.3',
-    })
-  }
-  const key = await previewKey(input, fileSystem)
-  const cacheRoot = input.cacheRoot ?? previewCacheRoot(input.env)
-  await Effect.runPromise(fileSystem.makeDirectory(cacheRoot, { recursive: true }))
-  await cleanupPreviews(cacheRoot, fileSystem, {
-    ...(input.now === undefined ? {} : { now: input.now }),
-    ...(input.maxAgeMs === undefined ? {} : { maxAgeMs: input.maxAgeMs }),
-  }).catch(() => undefined)
-  const dir = join(cacheRoot, key)
-  const lockPath = join(cacheRoot, `${key}.lock`)
-
-  return withInProcessLock(key, async () => {
-    const release = await acquireFileLock(fileSystem, lockPath)
-    try {
-      if (await reusable(fileSystem, dir, key, specs, input.profileName)) {
-        return {
-          key,
-          dir,
-          profileName: input.profileName,
-          specs,
-          override: { [input.profileName]: dir },
-          reused: true,
-        }
-      }
-      await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
-      await copyProfileMetadata(input, dir, fileSystem)
-      const install =
-        input.install ?? ((installDir: string) => installPreviewWithPnpm(installDir, spawner))
-      try {
-        await install(dir)
-      } catch (cause) {
-        throw cause instanceof PreviewError
-          ? cause
-          : new PreviewError({
-              code: 'preview.install_failed',
-              path: dir,
-              message: `preview installation at ${dir} failed: ${messageOf(cause)}`,
-            })
-      }
-      for (const spec of specs) {
-        if (!(await packageInstalled(fileSystem, dir, spec.name))) {
-          throw new PreviewError({
-            code: 'preview.package_missing',
-            path: dir,
-            message: `preview installation at ${dir} did not install ${spec.name}@${spec.version}`,
-          })
-        }
-      }
-      const marker: PreviewMarker = {
-        key,
-        profile: input.profileName,
-        specs,
-        createdAt: (input.now ?? Date.now)(),
-      }
-      await Effect.runPromise(
-        fileSystem.writeFileString(
-          join(dir, '.eedsh-preview.json'),
-          `${JSON.stringify(marker, null, 2)}\n`,
-        ),
+): Effect.Effect<PreparedPreview, PreviewError | PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const { fileSystem } = services
+    const specs = normalizeSpecs(input.specs)
+    if (specs.length === 0) {
+      return yield* Effect.fail(
+        new PreviewError({
+          code: 'preview.spec_required',
+          message: 'a preview needs at least one exact package spec, such as @acme/x@1.2.3',
+        }),
       )
-      return {
-        key,
-        dir,
-        profileName: input.profileName,
-        specs,
-        override: { [input.profileName]: dir },
-        reused: false,
-      }
-    } finally {
-      await release()
     }
+    const key = yield* previewKey(input, fileSystem)
+    const cacheRoot = input.cacheRoot ?? previewCacheRoot(input.env)
+    yield* fileSystem.makeDirectory(cacheRoot, { recursive: true })
+    yield* Effect.exit(
+      cleanupPreviews(cacheRoot, fileSystem, {
+        now: input.now,
+        ...(input.maxAgeMs === undefined ? {} : { maxAgeMs: input.maxAgeMs }),
+      }),
+    )
+    const dir = join(cacheRoot, key)
+    const lockPath = join(cacheRoot, `${key}.lock`)
+
+    return yield* withInProcessLock(
+      key,
+      Effect.gen(function* () {
+        const release = yield* acquireFileLock(fileSystem, lockPath)
+        return yield* Effect.ensuring(
+          Effect.gen(function* () {
+            if (yield* reusable(fileSystem, dir, key, specs, input.profileName)) {
+              return {
+                key,
+                dir,
+                profileName: input.profileName,
+                specs,
+                override: { [input.profileName]: dir },
+                reused: true,
+              }
+            }
+            yield* fileSystem.remove(dir, { recursive: true, force: true })
+            yield* copyProfileMetadata(input, dir, fileSystem)
+            const installed = yield* Effect.exit(Effect.suspend(() => input.install(dir)))
+            if (Exit.isFailure(installed)) {
+              const cause = Cause.squash(installed.cause)
+              return yield* Effect.fail(
+                cause instanceof PreviewError
+                  ? cause
+                  : new PreviewError({
+                      code: 'preview.install_failed',
+                      path: dir,
+                      message: `preview installation at ${dir} failed: ${messageOf(cause)}`,
+                    }),
+              )
+            }
+            for (const spec of specs) {
+              if (!(yield* packageInstalled(fileSystem, dir, spec.name))) {
+                return yield* Effect.fail(
+                  new PreviewError({
+                    code: 'preview.package_missing',
+                    path: dir,
+                    message: `preview installation at ${dir} did not install ${spec.name}@${spec.version}`,
+                  }),
+                )
+              }
+            }
+            const marker: PreviewMarker = {
+              key,
+              profile: input.profileName,
+              specs,
+              createdAt: input.now(),
+            }
+            yield* fileSystem.writeFileString(
+              join(dir, '.eedsh-preview.json'),
+              `${JSON.stringify(marker, null, 2)}\n`,
+            )
+            return {
+              key,
+              dir,
+              profileName: input.profileName,
+              specs,
+              override: { [input.profileName]: dir },
+              reused: false,
+            }
+          }),
+          release,
+        )
+      }),
+    )
   })
 }
 
@@ -485,16 +527,20 @@ export async function preparePreview(
  * Remove one preview directory, leaving its lock file alone.
  * @param dir - the preview directory.
  * @param fileSystem - the file-system service.
- * @returns a promise that resolves once the directory is gone.
+ * @returns an effect that completes once the directory is gone.
  */
-export async function removePreview(dir: string, fileSystem: FileSystem.FileSystem): Promise<void> {
-  await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
+export function removePreview(
+  dir: string,
+  fileSystem: FileSystem.FileSystem,
+): Effect.Effect<void, PlatformError.PlatformError> {
+  return fileSystem.remove(dir, { recursive: true, force: true })
 }
 
 /** Inputs for {@link cleanupPreviews}. */
 export interface CleanupPreviewsOptions {
   readonly maxAgeMs?: number
-  readonly now?: () => number
+  /** The clock seam for marker and modification-age comparisons. */
+  readonly now: () => number
 }
 
 /**
@@ -505,37 +551,33 @@ export interface CleanupPreviewsOptions {
  * @param options - age and clock.
  * @returns the removed directories.
  */
-export async function cleanupPreviews(
+export function cleanupPreviews(
   cacheRoot: string,
   fileSystem: FileSystem.FileSystem,
-  options: CleanupPreviewsOptions = {},
-): Promise<string[]> {
-  const maxAge = options.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000
-  const now = (options.now ?? Date.now)()
-  let entries: string[]
-  try {
-    entries = await Effect.runPromise(fileSystem.readDirectory(cacheRoot))
-  } catch {
-    return []
-  }
-  const removed: string[] = []
-  for (const name of entries) {
-    const dir = join(cacheRoot, name)
-    let created = now
-    const marker = await readMarker(fileSystem, dir)
-    if (marker !== undefined) created = marker.createdAt
-    else {
-      try {
-        const info = await Effect.runPromise(fileSystem.stat(dir))
-        if (info.type !== 'Directory') continue
-        created = createdTime(info)
-      } catch {
-        continue
+  options: CleanupPreviewsOptions,
+): Effect.Effect<string[], PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const maxAge = options.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000
+    const now = options.now()
+    const entries = yield* Effect.result(fileSystem.readDirectory(cacheRoot))
+    if (Result.isFailure(entries)) return []
+    const removed: string[] = []
+    for (const name of entries.success) {
+      const dir = join(cacheRoot, name)
+      let created = now
+      const marker = yield* readMarker(fileSystem, dir)
+      if (marker !== undefined) {
+        created = marker.createdAt
+      } else {
+        const info = yield* Effect.result(fileSystem.stat(dir))
+        if (Result.isFailure(info)) continue
+        if (info.success.type !== 'Directory') continue
+        created = createdTime(info.success)
       }
+      if (now - created <= maxAge) continue
+      yield* fileSystem.remove(dir, { recursive: true, force: true })
+      removed.push(dir)
     }
-    if (now - created <= maxAge) continue
-    await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
-    removed.push(dir)
-  }
-  return removed
+    return removed
+  })
 }
