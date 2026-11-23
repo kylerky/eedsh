@@ -1,90 +1,115 @@
 /**
- * The `sync --watch` file watcher. It watches the config directory (not
- * transitive imports outside it) and debounces bursts of editor writes. The
- * stop request is the invocation's interruption seam until watch mode becomes a
- * `Stream`.
+ * The config-directory watcher as a scoped Effect that yields a `Stream` of
+ * path events. Acquiring the watch effect starts chokidar and waits for its
+ * initial scan, so watch mode can run its first sync against a watcher that is
+ * already ready; closing the scope closes the watcher. Interruption is the one
+ * stop request.
  * @module @eedsh/cli/watch
  */
-import { watch } from 'chokidar'
-import { Effect } from 'effect'
+import { type FSWatcher, watch } from 'chokidar'
+import { Data, Effect, Queue, Stream } from 'effect'
+import * as PlatformError from 'effect/PlatformError'
+import type * as Scope from 'effect/Scope'
+import type { PathEvent } from './internal/effect/services'
+import { messageOf } from './internal/error-message'
 
-/** A live watch registration. */
-export interface WatchSession {
-  close(): Promise<void>
-}
+export type { PathEvent }
 
-/** Inputs for {@link watchConfigDirectory}. */
-export interface WatchConfigDirectoryInput {
-  /** Directory to watch. */
-  dir: string
-  /** Called after a debounced batch of changes. */
-  onChange: () => void
-  /** Debounce window in milliseconds. */
-  debounceMs?: number
+/**
+ * A watcher failure that happened while closing the subscription. The scope
+ * closes during interruption, so the failure cannot become a typed error; it
+ * stays a defect carrying the close cause for the process to report once.
+ */
+export class WatchCloseError extends Data.TaggedError('WatchCloseError')<{
+  readonly cause: unknown
+}> {
+  override get message(): string {
+    return messageOf(this.cause)
+  }
 }
 
 const IGNORED_SEGMENTS = new Set(['node_modules', '.eedsh', '.git'])
 
-/**
- * Watch a config directory for additions, edits, and removals.
- * @param input - directory, change callback, and debounce window.
- * @returns a session that closes the watcher.
- */
-export async function watchConfigDirectory(
-  input: WatchConfigDirectoryInput,
-): Promise<WatchSession> {
-  const watcher = watch(input.dir, {
-    ignoreInitial: true,
-    ignored: (path: string) => path.split(/[\\/]/).some((segment) => IGNORED_SEGMENTS.has(segment)),
+function watchStartFailure(dir: string, cause: unknown): PlatformError.PlatformError {
+  return PlatformError.systemError({
+    _tag: 'Unknown',
+    module: 'Watcher',
+    method: 'watch',
+    pathOrDescriptor: dir,
+    description: messageOf(cause),
+    cause,
   })
-
-  let timer: NodeJS.Timeout | undefined
-  const notify = (): void => {
-    if (timer !== undefined) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = undefined
-      input.onChange()
-    }, input.debounceMs ?? 150)
-  }
-  watcher.on('add', notify)
-  watcher.on('change', notify)
-  watcher.on('unlink', notify)
-
-  await new Promise<void>((resolve, reject) => {
-    watcher.once('ready', () => resolve())
-    watcher.once('error', reject)
-  })
-
-  return {
-    close: async () => {
-      if (timer !== undefined) clearTimeout(timer)
-      await watcher.close()
-    },
-  }
 }
 
 /**
- * A stop request from an injected `AbortSignal`, SIGINT, or SIGTERM.
- * @param signal - an explicit abort signal, when the caller has one.
- * @returns an effect that completes when the session should stop.
+ * Create the chokidar watcher and wire its callbacks into the queue. Events
+ * observed during the initial scan are queued; the stream is handed out only
+ * after `ready`, so a consumer never sees one before the scan completes.
  */
-export function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
-  return Effect.callback<void>((resume) => {
-    if (signal !== undefined) {
-      if (signal.aborted) {
-        resume(Effect.void)
-        return
-      }
-      const onAbort = () => resume(Effect.void)
-      signal.addEventListener('abort', onAbort, { once: true })
-      return Effect.sync(() => signal.removeEventListener('abort', onAbort))
-    }
-    const onSignal = () => resume(Effect.void)
-    process.once('SIGINT', onSignal)
-    process.once('SIGTERM', onSignal)
-    return Effect.sync(() => {
-      process.removeListener('SIGINT', onSignal)
-      process.removeListener('SIGTERM', onSignal)
+function createWatcher(dir: string, queue: Queue.Queue<PathEvent>): FSWatcher {
+  const watcher = watch(dir, {
+    ignoreInitial: true,
+    ignored: (path: string) => path.split(/[\\/]/).some((segment) => IGNORED_SEGMENTS.has(segment)),
+  })
+  const emit = (kind: PathEvent['kind']) => (path: string) => {
+    Queue.offerUnsafe(queue, { kind, path })
+  }
+  watcher.on('add', emit('add'))
+  watcher.on('change', emit('change'))
+  watcher.on('unlink', emit('unlink'))
+  return watcher
+}
+
+/** Resolve once chokidar finished its initial scan. */
+function waitForReady(watcher: FSWatcher): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    watcher.once('ready', () => resolve())
+    watcher.once('error', (cause: unknown) => reject(cause))
+  })
+}
+
+/** Close the watcher; a close failure is a defect reported by watch mode. */
+function closeWatcher(watcher: FSWatcher): Effect.Effect<void> {
+  return Effect.tryPromise({
+    try: () => watcher.close(),
+    catch: (cause) => new WatchCloseError({ cause }),
+  }).pipe(Effect.orDie)
+}
+
+/**
+ * Create the watcher, wait until it is ready, and register its close in the
+ * current scope. A failed start releases the watcher that was already created.
+ */
+function openWatcher(
+  dir: string,
+  queue: Queue.Queue<PathEvent>,
+): Effect.Effect<FSWatcher, PlatformError.PlatformError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const watcher = yield* Effect.acquireRelease(
+      Effect.sync(() => createWatcher(dir, queue)),
+      (opened) => closeWatcher(opened),
+    )
+    yield* Effect.tryPromise({
+      try: () => waitForReady(watcher),
+      catch: (cause) => watchStartFailure(dir, cause),
     })
+    return watcher
+  })
+}
+
+/**
+ * Subscribe to a config directory. The effect completes once the watcher is
+ * ready, with a stream that carries every observed add, change, and unlink; the
+ * surrounding scope owns the subscription and closes it exactly once.
+ * @param dir - directory to watch.
+ * @returns the scoped event stream.
+ */
+export function watchConfigDirectory(
+  dir: string,
+): Effect.Effect<Stream.Stream<PathEvent>, PlatformError.PlatformError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const queue = yield* Queue.unbounded<PathEvent>()
+    yield* openWatcher(dir, queue)
+    return Stream.fromQueue(queue)
   })
 }

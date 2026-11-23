@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
@@ -17,7 +17,8 @@ import {
   captureOutput,
   fakeBundleResolver,
   fakeDshDiscovery,
-  fakeWatcher,
+  forkCli,
+  interruptCli,
   liveTestDshDiscovery,
   realFileSystem,
   runCli,
@@ -27,6 +28,7 @@ import {
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
+  fakeWatcher,
   memoryFileSystem,
 } from './support/fakes'
 import { fakeSpawner } from './support/process'
@@ -79,6 +81,8 @@ function harness(options: HarnessOptions = {}) {
     err,
     run: (argv: readonly string[], extra: CliOverrides = {}) =>
       runCli(argv, { ...overrides, ...extra }),
+    fork: (argv: readonly string[], extra: CliOverrides = {}) =>
+      forkCli(argv, { ...overrides, ...extra }),
   }
 }
 
@@ -109,19 +113,14 @@ describe('command surface characterization', () => {
 
   it('runs sync --watch until it is stopped', async () => {
     const h = harness()
-    let onChange: (() => void) | undefined
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return { close: async () => {} }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
-    expect(typeof onChange).toBe('function')
-    controller.abort()
-    expect(await running).toBe(0)
+    expect(watcher.watchCalls).toHaveLength(1)
+    const exit = await interruptCli(running)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
   })
 
   it('runs check through the compiler seam without materializing', async () => {

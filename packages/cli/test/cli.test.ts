@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { ConfigProvenance } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
-import { Deferred, Effect, Layer } from 'effect'
+import { Cause, Deferred, Effect, Exit, Layer } from 'effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -14,6 +14,7 @@ import { readmeExample } from '../../../test/support/readme'
 import { ConfigError, type LoadedConfig } from '../src/config'
 import { DshFailure } from '../src/internal/effect/errors'
 import { type CliServices, Output } from '../src/internal/effect/services'
+import { WatchCloseError } from '../src/watch'
 import { delay, waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
@@ -22,7 +23,8 @@ import {
   fakeBundleResolver,
   fakeConfigLoader,
   fakeDshDiscovery,
-  fakeWatcher,
+  forkCli,
+  interruptCli,
   realFileSystem,
   runCli,
 } from './support/cli'
@@ -31,6 +33,7 @@ import {
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
+  fakeWatcher,
   memoryFileSystem,
 } from './support/fakes'
 import { planOf } from './support/plan'
@@ -57,6 +60,11 @@ function configWith(...plans: ProfilePlan[]): EedshConfig {
   return {
     profiles: Object.fromEntries(plans.map((plan) => [plan.profile.name, Result.succeed(plan)])),
   }
+}
+
+/** Whether an invocation settled because its fiber was interrupted. */
+function interrupted(exit: Exit.Exit<number, never>): boolean {
+  return Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
 }
 
 function hasAnsi(text: string): boolean {
@@ -172,12 +180,15 @@ function harness(options: HarnessOptions = {}) {
     ...(options.realPreflight === true ? {} : { preflight: preflight.shape }),
     extra: [countingOutput],
   }
+  const layered = (overrides: CliOverrides): CliOverrides => ({
+    ...base,
+    ...overrides,
+    extra: [...(overrides.extra ?? []), ...(base.extra ?? [])],
+  })
   const run = (argv: readonly string[], overrides: CliOverrides = {}) =>
-    runCli(argv, {
-      ...base,
-      ...overrides,
-      extra: [...(overrides.extra ?? []), ...(base.extra ?? [])],
-    })
+    runCli(argv, layered(overrides))
+  const fork = (argv: readonly string[], overrides: CliOverrides = {}) =>
+    forkCli(argv, layered(overrides))
   return {
     fs,
     packages,
@@ -186,6 +197,7 @@ function harness(options: HarnessOptions = {}) {
     out,
     err,
     run,
+    fork,
     constructions: () => constructions,
     finalizers: () => finalizers,
   }
@@ -457,16 +469,9 @@ export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
     await writeFile(configPath, watchConfigSource('row-a'))
 
     const h = harness()
-    let onChange: (() => void) | undefined
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return {
-        close: async () => {},
-      }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
     const patches = () =>
       [...h.fs.files.entries()]
@@ -476,11 +481,11 @@ export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
     expect(await waitFor(() => patches().some((patch) => patch.includes('row-a')))).toBe(true)
     await delay(20)
     await writeFile(configPath, watchConfigSource('row-b'))
-    onChange?.()
+    watcher.notify()
 
     expect(await waitFor(() => patches().some((patch) => patch.includes('row-b')))).toBe(true)
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 })
 
@@ -1315,16 +1320,7 @@ describe('eedsh sync --watch', () => {
       layers: [layer('cli', [insert({ id: 'row-b', name: '@scope/row-b' })])],
     })
 
-    let onChange: (() => void) | undefined
-    let closed = 0
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return {
-        close: async () => {
-          closed += 1
-        },
-      }
-    }
+    const watcher = fakeWatcher()
     let call = 0
     const loadConfig = (): Effect.Effect<LoadedConfig, ConfigError> => {
       call += 1
@@ -1333,36 +1329,33 @@ describe('eedsh sync --watch', () => {
       }
       return Effect.succeed(loaded(configWith(call === 1 ? planA : planB)))
     }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
       configLoader: fakeConfigLoader(loadConfig),
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
     const first = h.fs.files.get(generatedManifest)
     const constructions = h.constructions()
 
-    onChange?.()
+    watcher.notify()
     expect(await waitFor(() => h.err.join('\n').includes('config compile failed'))).toBe(true)
     expect(h.fs.files.get(generatedManifest)).toBe(first)
 
-    onChange?.()
+    watcher.notify()
     expect(await waitFor(() => h.fs.files.get(generatedManifest) !== first)).toBe(true)
     expect(h.constructions()).toBe(constructions)
 
-    controller.abort()
-    expect(await running).toBe(0)
-    expect(closed).toBe(1)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
+    expect(watcher.closes).toHaveLength(1)
   })
 
   it('releases the layer and reports when the watcher cannot start', async () => {
     const h = harness()
-    const watch = async () => {
-      throw new Error('watcher failed')
-    }
+    const watcher = fakeWatcher({ fail: new Error('watcher failed') })
     const code = await h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch }),
+      watcher: watcher.shape,
     })
     expect(code).toBe(1)
     expect(h.packages.installs).toEqual([])
@@ -1373,16 +1366,12 @@ describe('eedsh sync --watch', () => {
 
   it('releases the layer and skips the watcher when discovery fails', async () => {
     const h = harness({ discoveryFails: true })
-    let watchCalls = 0
-    const watch = async () => {
-      watchCalls += 1
-      return { close: async () => {} }
-    }
+    const watcher = fakeWatcher()
     const code = await h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: AbortSignal.abort() }),
+      watcher: watcher.shape,
     })
     expect(code).toBe(1)
-    expect(watchCalls).toBe(0)
+    expect(watcher.watchCalls).toHaveLength(0)
     expect(h.packages.installs).toEqual([])
     expect(h.fs.files.size).toBe(0)
     expect(h.finalizers()).toBe(1)
@@ -1392,30 +1381,21 @@ describe('eedsh sync --watch', () => {
 
   it('starts the initial sync only after the watcher is ready', async () => {
     const h = harness()
-    let releaseWatcher: (() => void) | undefined
-    const watcherReady = new Promise<void>((resolve) => {
-      releaseWatcher = resolve
-    })
-    let watchCalled = false
-    const watch = async () => {
-      watchCalled = true
-      await watcherReady
-      return { close: async () => {} }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const ready = Effect.runSync(Deferred.make<void>())
+    const watcher = fakeWatcher({ ready })
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
 
-    expect(await waitFor(() => watchCalled)).toBe(true)
+    expect(await waitFor(() => watcher.watchCalls.length === 1)).toBe(true)
     const installsBeforeReady = h.packages.installs.length
-    releaseWatcher?.()
     expect(installsBeforeReady).toBe(0)
     expect(h.fs.files.size).toBe(0)
+    await Effect.runPromise(Deferred.succeed(ready, undefined))
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('runs exactly one follow-up sync when a change arrives during the initial sync', async () => {
@@ -1423,14 +1403,9 @@ describe('eedsh sync --watch', () => {
     const h = harness({
       packages: { beforeInstall: (count) => (count === 1 ? Deferred.await(gate) : Effect.void) },
     })
-    let onChange: (() => void) | undefined
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return { close: async () => {} }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
     const runs = () =>
       h.out.filter(
@@ -1438,16 +1413,14 @@ describe('eedsh sync --watch', () => {
       ).length
 
     expect(await waitFor(() => h.packages.installs.length === 1)).toBe(true)
-    const hasOnChange = typeof onChange === 'function'
-    onChange?.()
+    watcher.notify()
     await Effect.runPromise(Deferred.succeed(gate, undefined))
-    expect(hasOnChange).toBe(true)
     expect(await waitFor(() => runs() === 2)).toBe(true)
     await delay(100)
     expect(runs()).toBe(2)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('coalesces a burst of changes during a sync into one follow-up sync', async () => {
@@ -1455,14 +1428,9 @@ describe('eedsh sync --watch', () => {
     const h = harness({
       packages: { beforeInstall: (count) => (count === 1 ? Deferred.await(gate) : Effect.void) },
     })
-    let onChange: (() => void) | undefined
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return { close: async () => {} }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
     const runs = () =>
       h.out.filter(
@@ -1470,18 +1438,16 @@ describe('eedsh sync --watch', () => {
       ).length
 
     expect(await waitFor(() => h.packages.installs.length === 1)).toBe(true)
-    const hasOnChange = typeof onChange === 'function'
-    onChange?.()
-    onChange?.()
-    onChange?.()
+    watcher.notify()
+    watcher.notify()
+    watcher.notify()
     await Effect.runPromise(Deferred.succeed(gate, undefined))
-    expect(hasOnChange).toBe(true)
     expect(await waitFor(() => runs() === 2)).toBe(true)
     await delay(100)
     expect(runs()).toBe(2)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('interrupts an in-flight rerun and releases the lock, watcher, and layer', async () => {
@@ -1500,40 +1466,29 @@ describe('eedsh sync --watch', () => {
       layers: [layer('cli', [insert({ id: 'row-b', name: '@scope/row-b' })])],
       packages: { '@scope/plugin': '1.0.0' },
     })
-    let onChange: (() => void) | undefined
-    let closed = 0
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return {
-        close: async () => {
-          closed += 1
-        },
-      }
-    }
+    const watcher = fakeWatcher()
     let calls = 0
     const loadConfig = (): Effect.Effect<LoadedConfig> => {
       calls += 1
       return Effect.succeed(loaded(configWith(calls === 1 ? planA : planB)))
     }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
       configLoader: fakeConfigLoader(loadConfig),
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+      watcher: watcher.shape,
     })
 
     await waitFor(() => h.fs.files.has(generatedManifest))
-    onChange?.()
+    watcher.notify()
     const started = await waitFor(() => h.packages.installs.length === 2)
 
-    controller.abort()
-    const code = await running
+    const exit = await interruptCli(running)
     const lockHeldAtStop = h.lock.isHeld()
     const releasesAtStop = [...h.lock.releases]
-    const watcherClosesAtStop = closed
+    const watcherClosesAtStop = watcher.closes.length
     const layerFinalizersAtStop = h.finalizers()
     await Effect.runPromise(Deferred.succeed(gate, undefined))
 
-    expect(code).toBe(0)
+    expect(interrupted(exit)).toBe(true)
     expect(started).toBe(true)
     expect(lockHeldAtStop).toBe(false)
     expect(releasesAtStop).toContain(homePath('profiles', 'cli-fixture', '.eedsh', 'sync.lock'))
@@ -1541,50 +1496,35 @@ describe('eedsh sync --watch', () => {
     expect(layerFinalizersAtStop).toBe(1)
   })
 
-  it('warns but exits 0 when the watcher fails to close on a normal stop', async () => {
+  it('surfaces a close failure on the interrupted exit', async () => {
     const h = harness()
-    let closed = 0
-    const watch = async () => ({
-      close: async () => {
-        closed += 1
-        throw new Error('close failed')
+    const watcher = fakeWatcher({
+      onClose: () => {
+        throw new WatchCloseError({ cause: new Error('close failed') })
       },
     })
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
-    controller.abort()
+    // `main` observes the interrupted Exit carrying the close defect; `bin`
+    // reports it as a warning and keeps the stop successful (EXIT_OK).
+    const exit = await interruptCli(running)
+    const defect = Exit.isFailure(exit) ? Cause.findDefect(exit.cause) : undefined
 
-    expect(await running).toBe(0)
-    expect(closed).toBe(1)
-    expect(h.err.join('\n')).toContain('warning: close failed')
+    expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true)
+    expect(defect !== undefined && Result.isSuccess(defect)).toBe(true)
+    if (defect !== undefined && Result.isSuccess(defect)) {
+      expect(defect.success).toBeInstanceOf(WatchCloseError)
+    }
+    expect(watcher.closes).toHaveLength(1)
     expect(h.finalizers()).toBe(1)
   })
 })
 
 describe('multi-profile sync --watch', () => {
   const manifestPath = (name: string) => generatedPath(name)
-
-  function watchControl() {
-    let onChange: (() => void) | undefined
-    let closes = 0
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return {
-        close: async () => {
-          closes += 1
-        },
-      }
-    }
-    return {
-      watch,
-      notify: () => onChange?.(),
-      closes: () => closes,
-    }
-  }
 
   function twoProfiles(workRow: string, homeRow: string): string {
     return `import { defineConfig } from '@eedsh/config'
@@ -1687,10 +1627,9 @@ export default defineConfig()
   it('publishes every profile on a bare watch and on reruns', async () => {
     const h = harness()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(
@@ -1700,45 +1639,43 @@ export default defineConfig()
     ).toBe(true)
 
     await writeFile(configPath, twoProfiles('work-b', 'home-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
       true,
     )
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('narrows watch to --profile', async () => {
     const h = harness()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
     await delay(100)
     expect(h.fs.files.has(manifestPath('work'))).toBe(false)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('picks up a profile added while watching', async () => {
     const h = harness()
     const configPath = await watchConfig(singleProfile('work-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
 
     await writeFile(configPath, twoProfiles('work-a', 'home-added'))
-    control.notify()
+    watcher.notify()
     expect(
       await waitFor(
         () =>
@@ -1747,17 +1684,16 @@ export default defineConfig()
       ),
     ).toBe(true)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('stops syncing a profile removed from the config and keeps its state', async () => {
     const h = harness()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(
@@ -1768,23 +1704,22 @@ export default defineConfig()
     const homeManifest = h.fs.files.get(manifestPath('home'))
 
     await writeFile(configPath, singleProfile('work-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b')))).toBe(
       true,
     )
     expect(h.fs.files.get(manifestPath('home'))).toBe(homeManifest)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('reports an invalid profile and still syncs its valid siblings', async () => {
     const h = harness()
     const configPath = await watchConfig(invalidHome('work-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
@@ -1793,27 +1728,26 @@ export default defineConfig()
     expect(h.fs.files.has(manifestPath('home'))).toBe(false)
 
     await writeFile(configPath, twoProfiles('work-a', 'home-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('continues after the selected profile disappears', async () => {
     const h = harness()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      watcher: watcher.shape,
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
 
     await delay(20)
     await writeFile(configPath, singleProfile('work-b'))
-    control.notify()
+    watcher.notify()
     expect(
       await waitFor(
         () =>
@@ -1823,23 +1757,22 @@ export default defineConfig()
 
     await delay(20)
     await writeFile(configPath, twoProfiles('work-a', 'home-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
       true,
     )
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 
   it('keeps the session active after a materialization failure', async () => {
     const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
     const h = harness({ basePatches, realPreflight: true })
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
-    const control = watchControl()
-    const controller = new AbortController()
-    const running = h.run(['sync', '--strict', '--config', configPath, '--watch'], {
-      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--strict', '--config', configPath, '--watch'], {
+      watcher: watcher.shape,
     })
 
     expect(
@@ -1850,7 +1783,7 @@ export default defineConfig()
 
     await delay(20)
     await writeFile(configPath, strictWorkSource('home-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => h.err.join('\n').includes('missing-row'))).toBe(true)
     expect(h.err.join('\n')).toContain('work')
     expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('home-b')))).toBe(
@@ -1859,16 +1792,15 @@ export default defineConfig()
 
     await delay(20)
     await writeFile(configPath, twoProfiles('work-b', 'home-b'))
-    control.notify()
+    watcher.notify()
     expect(await waitFor(() => generatedPatches(h).some((patch) => patch.includes('work-b')))).toBe(
       true,
     )
 
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(interrupted(exit)).toBe(true)
   })
 })
-
 describe('eedsh check', () => {
   const configPath = fixture('basic')
 

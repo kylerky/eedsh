@@ -19,7 +19,7 @@ import { discoverDshInstallation, validateDshVersion } from '../../dsh-discovery
 import { defaultInstallationAnchorStore } from '../../installation-anchor'
 import { preflightLayer } from '../../preflight'
 import { defaultSpawn, type SpawnLike } from '../../spawn'
-import { stopSignal, watchConfigDirectory } from '../../watch'
+import { watchConfigDirectory } from '../../watch'
 import { posixSyncLock } from '../lock-posix'
 import { win32SyncLock } from '../lock-win32'
 import { PackageInstallFailure } from './errors'
@@ -237,10 +237,9 @@ export const bundleResolverLayer: Layer.Layer<BundleResolverShape> = Layer.succe
     Effect.fromResult(resolveBundleLayers(packageName, profileDir, installAnchor)),
 })
 
-/** The chokidar-backed config-directory watcher and the signal stop. */
+/** The chokidar-backed config-directory watcher. */
 export const watcherLayer: Layer.Layer<WatcherShape> = Layer.succeed(Watcher, {
-  watch: (dir, onChange) => watchConfigDirectory({ dir, onChange }),
-  stop: stopSignal(undefined),
+  watch: (dir) => watchConfigDirectory(dir),
 })
 
 /** The machine-local installation anchor record. */

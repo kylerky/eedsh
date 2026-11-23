@@ -8,7 +8,7 @@
 import type { DshBridge } from '@eedsh/config'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, type Exit, Layer } from 'effect'
+import { Effect, type Exit, Fiber, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import { ChildProcessSpawner } from 'effect/process'
@@ -63,8 +63,8 @@ import {
 import { preflightLayer } from '../../src/preflight'
 import type { SpawnLike } from '../../src/spawn'
 import { defaultSpawn } from '../../src/spawn'
-import { stopSignal, watchConfigDirectory } from '../../src/watch'
 import type { fakeChildProcessSpawner } from './fakes'
+import { fakeWatcher } from './fakes'
 
 /** The service value the fake child-process spawner provides. */
 export type ChildProcessSpawnerService = ReturnType<typeof fakeChildProcessSpawner>['spawner']
@@ -234,19 +234,6 @@ export function fakeConfigLoader(load: ConfigLoaderShape['load']): ConfigLoaderS
   return { load }
 }
 
-/** A watcher that uses a test's watch factory and stop signal. */
-export function fakeWatcher(
-  options: {
-    signal?: AbortSignal
-    watch?: (dir: string, onChange: () => void) => Promise<{ close(): Promise<void> }>
-  } = {},
-): WatcherShape {
-  return {
-    watch: options.watch ?? ((dir, onChange) => watchConfigDirectory({ dir, onChange })),
-    stop: options.signal === undefined ? stopSignal(undefined) : stopSignal(options.signal),
-  }
-}
-
 /**
  * Build one CLI service layer. This is the shared base layer tests compose on:
  * omitted capabilities are the live values, and the layer is self-contained, so
@@ -290,7 +277,7 @@ export function cliLayer(overrides: CliOverrides = {}): Layer.Layer<CliServices>
         ? configLoaderLayer.pipe(Layer.provide(platform))
         : Layer.succeed(ConfigLoader, overrides.configLoader),
     ),
-    asCli(Layer.succeed(Watcher, overrides.watcher ?? fakeWatcher())),
+    asCli(Layer.succeed(Watcher, overrides.watcher ?? fakeWatcher().shape)),
     asCli(Layer.succeed(InstallationAnchor, overrides.anchor ?? liveTestInstallationAnchorStore)),
     asCli(Layer.succeed(Spawner, overrides.spawner ?? defaultSpawn)),
     asCli(
@@ -339,4 +326,29 @@ export function runCliExit(
   return Effect.runPromiseExit(
     Effect.suspend(() => main(argv)).pipe(Effect.provide(cliLayer(overrides))),
   )
+}
+
+/**
+ * Fork one CLI invocation onto the shared runtime. The caller owns the fiber:
+ * `awaitCli` observes its Exit and `interruptCli` stops it and waits for the
+ * invocation's finalizers.
+ */
+export function forkCli(
+  argv: readonly string[],
+  overrides: CliOverrides = {},
+): Fiber.Fiber<number, never> {
+  return Effect.runFork(Effect.suspend(() => main(argv)).pipe(Effect.provide(cliLayer(overrides))))
+}
+
+/** Wait for a forked CLI invocation and return its one Exit. */
+export function awaitCli(fiber: Fiber.Fiber<number, never>): Promise<Exit.Exit<number, never>> {
+  return Effect.runPromise(Fiber.await(fiber))
+}
+
+/** Interrupt a forked CLI invocation and return its Exit after finalizers run. */
+export async function interruptCli(
+  fiber: Fiber.Fiber<number, never>,
+): Promise<Exit.Exit<number, never>> {
+  await Effect.runPromise(Fiber.interrupt(fiber))
+  return await awaitCli(fiber)
 }

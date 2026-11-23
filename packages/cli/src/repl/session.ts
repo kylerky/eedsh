@@ -1,21 +1,23 @@
 /**
  * The config REPL session. It owns evaluation bindings, the selected profile,
  * save-triggered reloads, preview resolution, and in-session publication.
+ * Evaluation runs in one `node:vm` context so top-level declarations persist
+ * between lines; input and prompting belong to the `Terminal` service.
  * Formatting lives here so the command, tests, and non-TTY runs share it.
  * @module @eedsh/cli/repl/session
  */
-import { createRequire } from 'node:module'
+import { createRequire, stripTypeScriptTypes } from 'node:module'
 import { dirname, join, relative } from 'node:path'
-import type { REPLServer } from 'node:repl'
-import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { inspect } from 'node:util'
+import vm from 'node:vm'
 import { activeDshBridge, type ConfigProvenance, bundle as defaultBundle } from '@eedsh/config'
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Cause, Effect, Exit, Option } from 'effect'
+import { Cause, Effect, Exit, Fiber, Option, Stream } from 'effect'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
+import * as Scope from 'effect/Scope'
 import { asEedshError } from '../command/errors'
 import { describeError } from '../command/report'
 import {
@@ -32,7 +34,7 @@ import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../material
 import { composePreflightLayers, type PreflightLayer, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import type { SpawnLike } from '../spawn'
-import { type WatchSession, watchConfigDirectory } from '../watch'
+import { type PathEvent, watchConfigDirectory } from '../watch'
 import {
   COMMAND_NAMES,
   type CompletionCatalogs,
@@ -133,7 +135,8 @@ export interface ReplSessionOptions {
     path: string,
     evaluationNonce?: string,
   ) => Effect.Effect<LoadedConfig, ReplConfigFailure>
-  readonly watch?: (dir: string, onChange: () => void) => Promise<WatchSession>
+  /** The config-directory watcher; the command supplies the invocation's service. */
+  readonly watch?: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>, unknown, Scope.Scope>
   readonly compose?: ComposePlan
   readonly syncPlan?: SyncPlan
   readonly installPreview?: (dir: string) => Promise<void>
@@ -215,7 +218,7 @@ const HELP_LINES = [
   '  .sync [on|off]        publish now, or toggle continuous sync',
   '  .clear                clear the screen in a terminal',
   '  .exit                 end the session',
-  'expressions are TypeScript and may use top-level await; bindings persist',
+  'expressions accept erasable TypeScript (annotations) and top-level await; bindings persist',
 ]
 
 function traceStore(): ResolutionTrace[] {
@@ -238,6 +241,199 @@ function clearTrace(): void {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** The evaluation surface the session binds names into and queries. */
+interface ReplEvaluator {
+  /** The value context; the session assigns its bindings here. */
+  readonly context: Record<string, unknown>
+  /**
+   * Evaluate one line or script and resolve its value. TypeScript annotations
+   * and a top-level `await` are accepted; a runtime failure rejects.
+   * @param code - the expression or script to evaluate.
+   * @returns the script's completion value, awaiting a top-level promise.
+   */
+  evaluate(code: string): Promise<unknown>
+  /**
+   * Complete a top-level identifier from the context and evaluated
+   * declarations. Property paths are not resolved.
+   * @param prefix - the text before the cursor.
+   * @returns matching identifiers, sorted.
+   */
+  complete(prefix: string): readonly string[]
+}
+
+/** Inputs for {@link createEvaluator}. */
+interface EvaluatorOptions {
+  /** The directory `require` and `__dirname` resolve against. */
+  readonly cwd?: string
+}
+
+/** Node's REPL exposes these ambient globals to evaluated scripts. */
+const NODE_GLOBALS = [
+  'AbortController',
+  'AbortSignal',
+  'Buffer',
+  'TextDecoder',
+  'TextEncoder',
+  'URL',
+  'URLSearchParams',
+  'atob',
+  'btoa',
+  'clearImmediate',
+  'clearInterval',
+  'clearTimeout',
+  'console',
+  'crypto',
+  'fetch',
+  'navigator',
+  'performance',
+  'process',
+  'queueMicrotask',
+  'sessionStorage',
+  'setImmediate',
+  'setInterval',
+  'setTimeout',
+  'structuredClone',
+] as const
+
+/** A top-level declaration whose identifier completion should remember. */
+const TOP_LEVEL_DECLARATION =
+  /(?:^|[\n;])\s*(?:export\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g
+
+/** A JavaScript identifier. */
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
+
+/** A syntax error that a top-level `await` explains. */
+function isTopLevelAwait(error: unknown): boolean {
+  if (!(error instanceof SyntaxError)) return false
+  return (
+    error.message.includes('await is only valid') ||
+    error.message.includes("Unexpected reserved word 'await'") ||
+    error.message.includes("Unexpected token 'await'")
+  )
+}
+
+/** Compile one script, or undefined when it is not syntactically valid. */
+function compile(code: string): vm.Script | undefined {
+  try {
+    return new vm.Script(code, { filename: 'eedsh-repl' })
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Strip TypeScript syntax, if the installed Node can. The experimental
+ * warning is contained so a typed line does not print one; a source the
+ * stripper rejects is evaluated unchanged, matching the previous REPL patch.
+ * @param source - the source that did not compile as JavaScript.
+ * @returns the stripped source, or undefined when stripping failed.
+ */
+function stripTypes(source: string): string | undefined {
+  const emitWarning = process.emitWarning
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const message = warning instanceof Error ? warning.message : String(warning)
+    if (message.includes('stripTypeScriptTypes')) return
+    Reflect.apply(emitWarning, process, [warning, ...args])
+  }) as typeof process.emitWarning
+  try {
+    return stripTypeScriptTypes(source, { mode: 'strip' })
+  } catch {
+    return undefined
+  } finally {
+    process.emitWarning = emitWarning
+  }
+}
+
+/** The top-level identifiers a script declares. */
+function declaredNames(code: string): readonly string[] {
+  const names: string[] = []
+  for (const match of code.matchAll(TOP_LEVEL_DECLARATION)) {
+    const name = match[1]
+    if (name !== undefined) names.push(name)
+  }
+  return names
+}
+
+/**
+ * Evaluate an awaited script. A single expression is run directly so its value
+ * is returned; anything else runs as an async function body. Declarations made
+ * inside the async body are local to that one evaluation.
+ */
+async function evaluateAwait(context: vm.Context, code: string): Promise<unknown> {
+  const expression = `(async () => (\n${code.replace(/[\s;]+$/, '')}\n))()`
+  const asExpression = compile(expression)
+  if (asExpression !== undefined) return await asExpression.runInContext(context)
+  const statements = new vm.Script(`(async () => {\n${code}\n})()`, {
+    filename: 'eedsh-repl',
+  })
+  return await statements.runInContext(context)
+}
+
+/**
+ * Create one evaluator over a fresh Node context.
+ * @param options - the directory `require` resolves against.
+ * @returns the context, evaluator, and identifier completion.
+ */
+function createEvaluator(options: EvaluatorOptions = {}): ReplEvaluator {
+  const cwd = options.cwd ?? process.cwd()
+  const hostGlobals = globalThis as unknown as Record<string, unknown>
+  const sandbox: Record<string, unknown> = {}
+  for (const name of NODE_GLOBALS) sandbox[name] = hostGlobals[name]
+  const moduleShim: { exports: Record<string, unknown> } = { exports: {} }
+  sandbox.__dirname = cwd
+  sandbox.__filename = join(cwd, 'eedsh-repl.ts')
+  sandbox.exports = moduleShim.exports
+  sandbox.module = moduleShim
+  sandbox.require = createRequire(join(cwd, 'eedsh-repl.cjs'))
+  const context = vm.createContext(sandbox)
+  const declared = new Set<string>()
+  const builtins = new Set<string>()
+  try {
+    const names = vm.runInContext('Object.getOwnPropertyNames(globalThis)', context)
+    if (Array.isArray(names)) {
+      for (const name of names) if (typeof name === 'string') builtins.add(name)
+    }
+  } catch {
+    // Completion degrades to the bindings assigned by the session.
+  }
+
+  return {
+    context: context as Record<string, unknown>,
+    evaluate: async (source) => {
+      let code = source
+      let script = compile(source)
+      if (script === undefined) {
+        const stripped = stripTypes(source)
+        if (stripped !== undefined && stripped !== source) {
+          code = stripped
+          script = compile(code)
+        }
+      }
+      if (script === undefined) {
+        // Recompile so the caller receives the real SyntaxError, not a
+        // swallowed compile probe.
+        let error: unknown
+        try {
+          new vm.Script(code, { filename: 'eedsh-repl' })
+        } catch (caught) {
+          error = caught
+        }
+        if (isTopLevelAwait(error)) return await evaluateAwait(context, code)
+        throw error
+      }
+      const value = script.runInContext(context)
+      for (const name of declaredNames(code)) declared.add(name)
+      return value
+    },
+    complete: (prefix) => {
+      const names = new Set<string>(builtins)
+      for (const name of Object.getOwnPropertyNames(context)) names.add(name)
+      for (const name of declared) names.add(name)
+      return [...names].filter((name) => IDENTIFIER.test(name) && name.startsWith(prefix)).sort()
+    },
+  }
 }
 
 /** Whether a path exists; an inspection failure counts as missing. */
@@ -375,62 +571,6 @@ async function loadAuthoringModule(
   }
 }
 
-async function createEvaluator(): Promise<{
-  server: REPLServer
-  evaluate: (code: string) => Promise<unknown>
-}> {
-  await import('tsx/patch-repl')
-  const repl = await import('node:repl')
-  const input = new PassThrough()
-  const output = new PassThrough()
-  const server = repl.start({
-    input,
-    output,
-    terminal: false,
-    prompt: '',
-    useColors: false,
-    breakEvalOnSigint: false,
-  })
-  const evaluate = (code: string): Promise<unknown> =>
-    new Promise((resolvePromise, reject) => {
-      const target = server as unknown as {
-        eval: (
-          code: string,
-          context: unknown,
-          filename: string,
-          callback: (error: Error | null, result: unknown) => void,
-        ) => void
-        _handleError?: (error: unknown) => unknown
-      }
-      const originalHandleError = target._handleError
-      let settled = false
-      const finish = (error: unknown, result?: unknown): void => {
-        if (settled) return
-        settled = true
-        if (originalHandleError === undefined) delete target._handleError
-        else target._handleError = originalHandleError
-        if (error === null || error === undefined) resolvePromise(result)
-        else reject(error)
-      }
-      // Node's REPL reports runtime errors through _handleError instead of the
-      // eval callback. Capture that path so one-shot evaluation and the prompt
-      // both receive the failure and keep the session alive.
-      target._handleError = (error: unknown) => {
-        finish(error)
-        return 'handled'
-      }
-      const fn = target.eval
-      try {
-        fn.call(server, code, server.context, 'eedsh', (error, result) => {
-          finish(error, result)
-        })
-      } catch (error) {
-        finish(error)
-      }
-    })
-  return { server, evaluate }
-}
-
 function profileDirectory(name: string, env: Record<string, string | undefined>): string {
   return resolveProfileDir(name, resolveDshHome(undefined, env))
 }
@@ -549,7 +689,7 @@ export class ReplSession {
   private readonly installPreview: ((dir: string) => Promise<void>) | undefined
   private readonly cacheRoot: string
   private readonly now: () => number
-  private server!: REPLServer
+  private evaluator!: ReplEvaluator
   private evaluateRaw!: (code: string) => Promise<unknown>
   private config!: EedshConfig
   private plan!: ProfilePlan
@@ -562,7 +702,8 @@ export class ReplSession {
   private previewSpecs: PreviewSpec[] = []
   private retainedPreviewDir: string | undefined
   private pausedFingerprint: string | undefined
-  private watcher: WatchSession | undefined
+  private watcherFiber: Fiber.Fiber<void> | undefined
+  private watcherScope: Scope.Closeable | undefined
   private reloadQueue: Promise<void> = Promise.resolve()
   private evaluationNonce = 0
   private catalogVersion = 0
@@ -672,9 +813,8 @@ export class ReplSession {
       const dshHome = this.env.DSH_HOME
       if (dshHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = dshHome
-      const evaluator = await createEvaluator()
-      this.server = evaluator.server
-      this.evaluateRaw = evaluator.evaluate
+      this.evaluator = createEvaluator({ cwd: this.configDir })
+      this.evaluateRaw = this.evaluator.evaluate
       if (this.options.oneShot !== true) {
         this.stdout(
           `eedsh repl (profile selection: ${this.options.profile === undefined ? 'config default' : JSON.stringify(this.options.profile)}; sync: ${this.syncEnabled ? 'on' : 'off'})`,
@@ -700,7 +840,7 @@ export class ReplSession {
   }
 
   private bind(): void {
-    const context = this.server.context as Record<string, unknown>
+    const context = this.evaluator.context
     for (const name of VIEW_BINDINGS) {
       if (Object.hasOwn(this.authoring.module, name)) {
         throw new ReplSessionError({
@@ -996,7 +1136,7 @@ export class ReplSession {
 
   /**
    * Complete one line against the current evaluation's catalogs. Resolution
-   * traces produced by completion are drained so Tab never prints provenance.
+   * traces produced by completion are drained so completion never prints provenance.
    * @param line - the text before the cursor.
    * @returns the token start and hits.
    */
@@ -1010,36 +1150,16 @@ export class ReplSession {
   }
 
   /**
-   * Fall back to the hidden evaluator's JavaScript completion.
+   * Fall back to top-level identifier completion from the evaluator context.
    * @param line - the text before the cursor.
    * @returns the filtered hits and the completed-on token.
    */
   async completeGeneric(line: string): Promise<readonly [string[], string]> {
-    const server = this.server as unknown as {
-      complete?: (
-        text: string,
-        callback: (error: unknown, result?: [string[], string]) => void,
-      ) => void
+    try {
+      return [filterCompletionHits(this.evaluator.complete(line)), line]
+    } catch {
+      return [[], line]
     }
-    const run = server.complete
-    if (typeof run !== 'function') return [[], line]
-    return await new Promise<readonly [string[], string]>((resolve) => {
-      let settled = false
-      const finish = (error: unknown, result?: [string[], string]): void => {
-        if (settled) return
-        settled = true
-        if ((error !== null && error !== undefined) || result === undefined) {
-          resolve([[], line])
-          return
-        }
-        resolve([filterCompletionHits(result[0]), result[1]])
-      }
-      try {
-        run.call(server, line, finish)
-      } catch {
-        resolve([[], line])
-      }
-    })
   }
 
   private async loadCandidate(): Promise<{
@@ -1168,15 +1288,29 @@ export class ReplSession {
   }
 
   private async startWatching(): Promise<void> {
+    const dir = this.configDir
+    const watch = this.options.watch ?? ((path: string) => watchConfigDirectory(path))
+    const reload = (): void => void this.enqueueReload()
+    const reportWatchFailure = (cause: Cause.Cause<unknown>): void => {
+      this.reportFailure('watch failed', Cause.squash(cause))
+    }
+    const scope = await Effect.runPromise(Scope.make())
     try {
-      this.watcher =
-        this.options.watch === undefined
-          ? await watchConfigDirectory({
-              dir: this.configDir,
-              onChange: () => void this.enqueueReload(),
-            })
-          : await this.options.watch(this.configDir, () => void this.enqueueReload())
+      // Acquire the watcher first: it is ready (or its start failure is real)
+      // before the session reports itself initialized. The scope owns the
+      // subscription; close() interrupts the consumer and closes the scope.
+      const events = await Effect.runPromise(Effect.provideService(watch(dir), Scope.Scope, scope))
+      this.watcherScope = scope
+      this.watcherFiber = await Effect.runPromise(
+        events.pipe(
+          Stream.debounce('150 millis'),
+          Stream.runForEach(() => Effect.sync(reload)),
+          Effect.catchCause((cause) => Effect.sync(() => reportWatchFailure(cause))),
+          Effect.forkDetach,
+        ),
+      )
     } catch (cause) {
+      await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined))).catch(() => undefined)
       throw new ReplSessionError({
         code: 'repl.watch_failed',
         message: `cannot watch ${this.configDir}: ${messageOf(cause)}`,
@@ -1473,9 +1607,15 @@ export class ReplSession {
 
   /** Stop watching, close the evaluator, and restore the process environment. */
   async close(): Promise<void> {
-    await this.watcher?.close().catch(() => undefined)
-    this.watcher = undefined
-    if (this.server !== undefined) this.server.close()
+    if (this.watcherFiber !== undefined) {
+      await Effect.runPromise(Fiber.interrupt(this.watcherFiber))
+      this.watcherFiber = undefined
+    }
+    if (this.watcherScope !== undefined) {
+      const scope = this.watcherScope
+      this.watcherScope = undefined
+      await Effect.runPromise(Scope.close(scope, Exit.succeed(undefined))).catch(() => undefined)
+    }
     this.clearPreviewEnv()
     if (this.previousEnv.anchor === undefined) delete process.env.EEDSH_DSH_ANCHOR
     else process.env.EEDSH_DSH_ANCHOR = this.previousEnv.anchor

@@ -1,4 +1,4 @@
-import { Effect, Sink, Stream } from 'effect'
+import { Deferred, Effect, Queue, Sink, Stream } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
@@ -7,7 +7,9 @@ import type {
   PackageManagerShape,
   PreflightShape,
   SyncLockShape,
+  WatcherShape,
 } from '../../src/internal/effect/services'
+import type { PathEvent } from '../../src/watch'
 
 /** A stat result carrying only the type these tests inspect. */
 function fileInfo(type: FileSystem.File.Type): FileSystem.File.Info {
@@ -232,4 +234,81 @@ export function fakeChildProcessSpawner(
     return Effect.succeed(handle)
   })
   return { spawner, calls }
+}
+
+/** A fixed stream or a controllable queue-backed subscription for {@link fakeWatcher}. */
+export interface FakeWatcherOptions {
+  /** A fixed stream returned by every subscription instead of the queue. */
+  readonly stream?: Stream.Stream<PathEvent>
+  /** Hold a subscription's readiness until this deferred completes. */
+  readonly ready?: Deferred.Deferred<void>
+  /** Fail the subscription before it is ready, as a watcher start failure. */
+  readonly fail?: unknown
+  /** Called with the directory once a subscription is ready. */
+  readonly onAcquire?: (dir: string) => void
+  /** Called with the directory when a subscription's scope closes. */
+  readonly onClose?: (dir: string) => void
+}
+
+/** A controllable watcher service plus the observations a test asserts on. */
+export interface FakeWatcher {
+  readonly shape: WatcherShape
+  readonly watchCalls: string[]
+  readonly closes: string[]
+  /** Offer one path event to the queue-backed subscription. */
+  emit(event: PathEvent): void
+  /** Offer one change event, for tests that only care about a batch. */
+  notify(): void
+}
+
+/**
+ * A watcher whose subscription is a queue: `emit` offers an event on demand,
+ * `ready` delays acquisition, and `closes` records every released scope.
+ */
+export function fakeWatcher(options: FakeWatcherOptions = {}): FakeWatcher {
+  const watchCalls: string[] = []
+  const closes: string[] = []
+  const queue = Effect.runSync(Queue.unbounded<PathEvent>())
+  const shape: WatcherShape = {
+    watch: (dir) =>
+      Effect.gen(function* () {
+        watchCalls.push(dir)
+        if (options.fail !== undefined) {
+          return yield* Effect.fail(
+            PlatformError.systemError({
+              _tag: 'Unknown',
+              module: 'Watcher',
+              method: 'watch',
+              description:
+                options.fail instanceof Error ? options.fail.message : String(options.fail),
+              cause: options.fail,
+            }),
+          )
+        }
+        if (options.ready !== undefined) yield* Deferred.await(options.ready)
+        const events = options.stream ?? Stream.fromQueue(queue)
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            options.onAcquire?.(dir)
+          }),
+          () =>
+            Effect.sync(() => {
+              closes.push(dir)
+              options.onClose?.(dir)
+            }),
+        )
+        return events
+      }),
+  }
+  return {
+    shape,
+    watchCalls,
+    closes,
+    emit: (event) => {
+      Queue.offerUnsafe(queue, event)
+    },
+    notify: () => {
+      Queue.offerUnsafe(queue, { kind: 'change', path: 'config.ts' })
+    },
+  }
 }

@@ -1,11 +1,11 @@
 /**
  * Watch mode: turn file changes into repeated sync passes over the selected
- * profiles. The watcher is a service, and the stop request is the invocation's
- * interruption seam until the watcher becomes a stream.
+ * profiles. The watcher is a scoped stream, and interrupting the invocation is
+ * the stop request.
  * @module @eedsh/cli/command/watch
  */
 import { dirname } from 'node:path'
-import { Cause, Effect, Exit, Queue } from 'effect'
+import { Cause, Duration, Effect, Exit, Stream } from 'effect'
 import type * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import { ConfigError } from '../config'
@@ -18,7 +18,6 @@ import {
   Output,
   type OutputShape,
   Watcher,
-  type WatcherShape,
 } from '../internal/effect/services'
 import { messageOf } from '../internal/error-message'
 import { selectSyncProfiles } from '../selection'
@@ -36,12 +35,7 @@ export interface WatchContext {
 }
 
 /** The services one watch pass needs. */
-type WatchServices =
-  | ConfigLoaderShape
-  | OutputShape
-  | EnvironmentShape
-  | MaterializeServices
-  | WatcherShape
+type WatchServices = ConfigLoaderShape | OutputShape | EnvironmentShape | MaterializeServices
 
 /** Run one watch pass over the currently selected profile set. */
 export function runWatchSelection(
@@ -119,47 +113,19 @@ export function syncWatch(
   provisioning: ProvisioningMode,
 ): Effect.Effect<void, ConfigError, CliServices> {
   const dir = dirname(context.configPath)
+  const run = () => runWatchSelection(context, strict, explain, adoptOwnership, provisioning)
   const program = Effect.gen(function* () {
     const watcher = yield* Watcher
-    const output = yield* Output
-    const changes = yield* Effect.acquireRelease(Queue.sliding<void>(1), (queue) =>
-      Queue.shutdown(queue),
-    )
-    yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () =>
-          watcher.watch(dir, () => {
-            Queue.offerUnsafe(changes, undefined)
-          }),
-        catch: (cause) => watchFailure(context.configPath, cause),
-      }),
-      (session) =>
-        Effect.tryPromise({
-          try: () => session.close(),
-          catch: (cause) => cause,
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.sync(() => {
-              for (const line of describeError(asEedshError(error))) {
-                output.stderr(`eedsh: warning: ${line}`)
-              }
-            }),
-          ),
-        ),
-    )
-
-    const loop = Effect.gen(function* () {
-      while (true) {
-        yield* Queue.take(changes)
-        yield* runWatchSelection(context, strict, explain, adoptOwnership, provisioning)
-      }
-    })
-
-    yield* Effect.race(
-      runWatchSelection(context, strict, explain, adoptOwnership, provisioning).pipe(
-        Effect.andThen(loop),
-      ),
-      watcher.stop,
+    const events = yield* watcher
+      .watch(dir)
+      .pipe(Effect.mapError((cause) => watchFailure(context.configPath, cause)))
+    // The watcher is ready; run the initial sync before draining changes. The
+    // subscription queues anything observed meanwhile, so a change during this
+    // pass produces exactly one debounced follow-up.
+    yield* run()
+    yield* events.pipe(
+      Stream.debounce(Duration.millis(150)),
+      Stream.runForEach(() => run()),
     )
   })
   return Effect.scoped(program)

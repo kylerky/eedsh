@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
 import {
   defineConfig,
   PresetDefinitionError,
@@ -10,11 +9,12 @@ import {
   takeResolutionTrace,
 } from '@eedsh/config'
 import type { EedshConfig, ProfilePlan } from '@eedsh/plan'
-import { Effect } from 'effect'
+import { type Cause, Effect, Option, Queue, Ref, Stream } from 'effect'
 import * as Result from 'effect/Result'
+import * as Terminal from 'effect/Terminal'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../../src/config'
-import { runReplLoop } from '../../src/repl/prompt'
+import { type ReplLoopState, runReplLoop } from '../../src/repl/prompt'
 import {
   type ReplConfigFailure,
   ReplSession,
@@ -22,6 +22,7 @@ import {
   type SyncOutcome,
 } from '../../src/repl/session'
 import { defaultSpawn } from '../../src/spawn'
+import type { PathEvent } from '../../src/watch'
 import { waitFor } from '../support/async'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
 import { realFileSystemValue } from '../support/cli'
@@ -82,6 +83,60 @@ const authoring = {
   version: '0.0.0',
 }
 
+/** A Terminal whose readLine drains a fixed list and then quits. */
+function fakeTerminal(lines: readonly string[], prompts: string[] = []): Terminal.Terminal {
+  const remaining = [...lines]
+  return Terminal.make({
+    columns: Effect.succeed(80),
+    rows: Effect.succeed(24),
+    readInput: Effect.die(new Error('readInput is not part of the line loop')),
+    readLine: Effect.suspend(() => {
+      const line = remaining.shift()
+      return line === undefined ? Effect.fail(new Terminal.QuitError({})) : Effect.succeed(line)
+    }),
+    display: (text) =>
+      Effect.sync(() => {
+        prompts.push(text)
+      }),
+  })
+}
+
+/** One scripted key event for the TTY editor. */
+function keyEvent(
+  name: string,
+  options: { readonly ctrl?: boolean; readonly input?: string } = {},
+): Terminal.UserInput {
+  return {
+    input: options.input === undefined ? Option.none() : Option.some(options.input),
+    key: { name, ctrl: options.ctrl ?? false, meta: false, shift: false },
+  }
+}
+
+/** The key events that type a string, one printable character at a time. */
+function typed(text: string): Terminal.UserInput[] {
+  return [...text].map((character) => keyEvent(character, { input: character }))
+}
+
+/** A Terminal whose readInput drains scripted key events and then ends. */
+function ttyTerminal(
+  events: readonly Terminal.UserInput[],
+  displayed: string[],
+): Terminal.Terminal {
+  const input = Effect.runSync(Queue.unbounded<Terminal.UserInput, Cause.Done>())
+  for (const event of events) Queue.offerUnsafe(input, event)
+  Queue.endUnsafe(input)
+  return Terminal.make({
+    columns: Effect.succeed(80),
+    rows: Effect.succeed(24),
+    readInput: Effect.succeed(input),
+    readLine: Effect.die(new Error('readLine is not part of the interactive editor')),
+    display: (text) =>
+      Effect.sync(() => {
+        displayed.push(text)
+      }),
+  })
+}
+
 interface Harness {
   session: ReplSession
   out: string[]
@@ -98,7 +153,7 @@ async function session(
     profile?: string
     sync?: boolean
     syncPlan?: (plan: ProfilePlan) => Promise<SyncOutcome>
-    watch?: (dir: string, onChange: () => void) => Promise<{ close(): Promise<void> }>
+    watch?: (dir: string) => Effect.Effect<Stream.Stream<PathEvent>>
     installPreview?: (dir: string) => Promise<void>
     watchConfig?: boolean
     authoringModule?: Record<string, unknown>
@@ -507,22 +562,19 @@ describe('session sync', () => {
   })
 
   it('runs the same reload and sync path from the watcher', async () => {
-    let onChange: (() => void) | undefined
     let calls = 0
+    const events = Effect.runSync(Queue.unbounded<PathEvent>())
     const h = await session({
       sync: true,
       watchConfig: true,
-      watch: async (_dir, callback) => {
-        onChange = callback
-        return { close: async () => {} }
-      },
+      watch: () => Effect.succeed(Stream.fromQueue(events)),
       syncPlan: async () => {
         calls += 1
         return { changed: true, generationId: 'abcdef0123456789' }
       },
     })
     h.setConfig(configWith(['a', 'b']))
-    onChange?.()
+    Queue.offerUnsafe(events, { kind: 'change', path: join(work, 'config.ts') })
     expect(await waitFor(() => calls === 1)).toBe(true)
     expect(h.out.join('\n')).toContain('+ row "b"')
   })
@@ -653,6 +705,9 @@ describe('shell commands', () => {
     for (const token of ['config', 'selectedProfile', 'plan', '.profile', 'Tab']) {
       expect(help).toContain(token)
     }
+    expect(help).toContain('erasable TypeScript')
+    expect(help).toContain('top-level await')
+    expect(help).toContain('bindings persist')
   })
 
   it('lists commands, rejects unknown dot words, and exits', async () => {
@@ -667,10 +722,7 @@ describe('shell commands', () => {
 
   it('runs a non-TTY loop without prompts', async () => {
     const out: string[] = []
-    const input = new PassThrough()
-    const output = new PassThrough()
-    const chunks: string[] = []
-    output.on('data', (chunk: Buffer) => chunks.push(chunk.toString()))
+    const prompts: string[] = []
     const configured = await ReplSession.create({
       configPath: join(work, 'config.ts'),
       env: { DSH_HOME: join(work, 'home') },
@@ -684,11 +736,64 @@ describe('shell commands', () => {
       watchConfig: false,
     })
     sessions.push(configured)
-    const running = runReplLoop(configured, { input, output })
-    input.write('.help\n.exit\n')
-    await running
+    await Effect.runPromise(
+      runReplLoop(configured, { prompt: '' }).pipe(
+        Effect.provideService(Terminal.Terminal, fakeTerminal(['.help', '.exit'], prompts)),
+      ),
+    )
     expect(out.join('\n')).toContain('.reload')
-    expect(chunks.join('')).not.toContain('eedsh>')
+    expect(prompts.join('')).not.toContain('eedsh>')
+  })
+
+  it('writes the prompt before every read and stops at .exit', async () => {
+    const h = await session()
+    const prompts: string[] = []
+    await Effect.runPromise(
+      runReplLoop(h.session, { prompt: 'eedsh> ' }).pipe(
+        Effect.provideService(Terminal.Terminal, fakeTerminal(['1 + 1', '.exit'], prompts)),
+      ),
+    )
+    expect(prompts).toEqual(['eedsh> ', 'eedsh> '])
+    expect(h.out.join('\n')).toContain('2')
+  })
+
+  it('completes and evaluates a domain binding through the TTY editor', async () => {
+    const h = await session()
+    const displayed: string[] = []
+    const events = [...typed('selectedPro'), keyEvent('tab'), keyEvent('return', { input: '\r' })]
+    await Effect.runPromise(
+      runReplLoop(h.session, { tty: true, prompt: 'eedsh> ' }).pipe(
+        Effect.provideService(Terminal.Terminal, ttyTerminal(events, displayed)),
+      ),
+    )
+    expect(displayed.join('')).toContain('selectedProfile')
+    expect(h.out.join('\n')).toContain("name: 'work'")
+  })
+
+  it('renders an evaluation failure and keeps the loop running', async () => {
+    const h = await session()
+    await Effect.runPromise(
+      runReplLoop(h.session, { prompt: '' }).pipe(
+        Effect.provideService(Terminal.Terminal, fakeTerminal(['missingName', '.exit'])),
+      ),
+    )
+    expect(h.out.join('\n')).toContain('error: ')
+    expect(h.out.join('\n')).toContain('missingName is not defined')
+    expect(await h.session.evaluate('1 + 1')).toBe(2)
+  })
+
+  it('treats end of input as a normal exit and records it in the Ref', async () => {
+    const h = await session()
+    const state = await Effect.runPromise(
+      Ref.make<ReplLoopState>({ running: true, prompting: false }),
+    )
+    await Effect.runPromise(
+      runReplLoop(h.session, { prompt: '', state }).pipe(
+        Effect.provideService(Terminal.Terminal, fakeTerminal(['.help'])),
+      ),
+    )
+    expect(await Effect.runPromise(Ref.get(state))).toEqual({ running: false, prompting: false })
+    expect(h.out.join('\n')).toContain('.reload')
   })
 })
 describe('completion catalogs', () => {

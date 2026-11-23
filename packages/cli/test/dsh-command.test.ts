@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import type { InstallationAnchorStore } from '../src/installation-anchor'
@@ -17,7 +17,8 @@ import {
   captureOutput,
   fakeBundleResolver,
   fakeDshDiscovery,
-  fakeWatcher,
+  forkCli,
+  interruptCli,
   realFileSystem,
   runCli,
 } from './support/cli'
@@ -26,6 +27,7 @@ import {
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
+  fakeWatcher,
   memoryFileSystem,
 } from './support/fakes'
 import { fakeSpawner } from './support/process'
@@ -76,6 +78,14 @@ function harness(env: Record<string, string | undefined>, options: Partial<CliOv
     run: (argv: readonly string[], extra: RunExtras = {}) => {
       const { env: envOverride, cwd, ...rest } = extra
       return runCli(argv, {
+        ...overrides,
+        ...rest,
+        environment: { env: envOverride ?? baseEnv, cwd: cwd ?? root },
+      })
+    },
+    fork: (argv: readonly string[], extra: RunExtras = {}) => {
+      const { env: envOverride, cwd, ...rest } = extra
+      return forkCli(argv, {
         ...overrides,
         ...rest,
         environment: { env: envOverride ?? baseEnv, cwd: cwd ?? root },
@@ -287,24 +297,20 @@ export default defineConfig()
         }),
       },
     )
-    let onChange: (() => void) | undefined
-    const watch = async (_dir: string, callback: () => void) => {
-      onChange = callback
-      return { close: async () => {} }
-    }
-    const controller = new AbortController()
-    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
-      watcher: fakeWatcher({ watch, signal: controller.signal }),
+    const watcher = fakeWatcher()
+    const running = h.fork(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: watcher.shape,
     })
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
     expect(discoveries).toBe(1)
-    onChange?.()
+    watcher.notify()
     await delay(100)
     expect(discoveries).toBe(1)
-    controller.abort()
-    expect(await running).toBe(0)
+    const exit = await interruptCli(running)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
   })
 })
+
 describe('command DSH failure reporting', () => {
   function countOf(text: string, needle: string): number {
     return text.split('\n').filter((line) => line.includes(needle)).length

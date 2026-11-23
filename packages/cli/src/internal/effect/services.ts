@@ -16,7 +16,9 @@ import type * as Path from 'effect/Path'
 import type * as PlatformError from 'effect/PlatformError'
 import type { ChildProcessSpawner } from 'effect/process'
 import type * as Result from 'effect/Result'
+import type * as Scope from 'effect/Scope'
 import type * as Stdio from 'effect/Stdio'
+import type * as Stream from 'effect/Stream'
 import type * as Terminal from 'effect/Terminal'
 import type { CommandOptions, CommandResult } from '../../command-runner'
 import type { ConfigLoadFailure, LoadedConfig } from '../../config'
@@ -24,7 +26,6 @@ import type { BootstrapInput, BootstrappedDsh } from '../../dsh-bootstrap'
 import type { DiscoverDshOptions, DiscoveredDshInstallation } from '../../dsh-discovery'
 import type { GeneratedBundle } from '../../materialize/generated-bundle'
 import type { SpawnLike } from '../../spawn'
-import type { WatchSession } from '../../watch'
 import type {
   DshFailure,
   DshResolveFailure,
@@ -106,12 +107,22 @@ export interface BundleResolverShape {
 /** Bundle resolver service tag. */
 export const BundleResolver = Context.Service<BundleResolverShape>('eedsh/BundleResolver')
 
-/** The config-directory watcher and the invocation's stop request. */
+/** One observed change below a watched config directory. */
+export interface PathEvent {
+  readonly kind: 'add' | 'change' | 'unlink'
+  readonly path: string
+}
+
+/** The config-directory watcher and its scoped subscription. */
 export interface WatcherShape {
-  /** Watch a directory; resolves once the watcher is ready. */
-  watch(dir: string, onChange: () => void): Promise<WatchSession>
-  /** Completes when the current watch session should stop. */
-  readonly stop: Effect.Effect<void>
+  /**
+   * Subscribe to a directory. The effect completes once the watcher is ready;
+   * the returned stream carries every observed change, and the scope owns the
+   * subscription (closing it once).
+   */
+  watch(
+    dir: string,
+  ): Effect.Effect<Stream.Stream<PathEvent>, PlatformError.PlatformError, Scope.Scope>
 }
 
 /** Watcher service tag. */

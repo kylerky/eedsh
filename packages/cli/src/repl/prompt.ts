@@ -1,28 +1,27 @@
 /**
- * The interactive prompt around a ReplSession. Commands and values use the
- * session's line sinks; the prompt is written only for a terminal, so a piped
- * or test session stays free of control characters.
+ * The interactive prompt around a ReplSession. Lines come from the `Terminal`
+ * service: its line stream for piped input, or the key-driven line editor for a
+ * TTY. Commands and values use the session's sinks; completion output uses the
+ * terminal display so ambiguous candidates can be listed above a redrawn
+ * prompt. The loop's running/prompting state lives in a `Ref`, never in a
+ * mutable local or session field.
  * @module @eedsh/cli/repl/prompt
  */
-import { createInterface } from 'node:readline'
+import { Effect, Ref, Stream } from 'effect'
+import * as Terminal from 'effect/Terminal'
 import type { CompletionResult } from './completion'
+import { readLines, readLinesInteractive } from './input'
 import { formatSessionError, isDotCommand, type ReplSession } from './session'
 
-/** Streams an interactive session reads from and writes to. */
-export interface ReplStreams {
-  readonly input: NodeJS.ReadableStream
-  readonly output: NodeJS.WritableStream
-}
-
-/** The completion surface the readline adapter needs. */
+/** The completion surface the pure adapter needs. */
 export interface CompletingSession {
   complete(line: string): Promise<CompletionResult>
   completeGeneric(line: string): Promise<readonly [string[], string]>
 }
 
 /**
- * Adapt one readline completion request: use the domain engine first, then the
- * hidden evaluator's JavaScript completion, and contain every failure.
+ * Adapt one completion request: use the domain engine first, then the
+ * evaluator's JavaScript completion, and contain every failure.
  * @param session - the session whose catalogs and evaluator supply hits.
  * @param line - the text before the cursor.
  * @returns the hits and the token to replace.
@@ -41,83 +40,86 @@ export async function completeShellLine(
   }
 }
 
-/** The callback-shaped completer `node:readline` expects. */
-export type ReplCompleter = (
-  line: string,
-  callback: (error: Error | null, result: [string[], string]) => void,
-) => void
+/** The interactive state one loop owns. */
+export interface ReplLoopState {
+  /** Whether the loop should keep reading lines. */
+  readonly running: boolean
+  /** Whether the loop is waiting for input rather than handling a line. */
+  readonly prompting: boolean
+}
 
-/**
- * Adapt the async completion surface to readline's callback completer. The
- * public readline wrapper only preserves a completer whose function length is
- * two; a one-argument async completer is wrapped and its Promise reaches the
- * callback instead of the hits.
- * @param session - the session whose catalogs and evaluator supply hits.
- * @returns a callback completer for `createInterface`.
- */
-export function createCompletionCompleter(session: CompletingSession): ReplCompleter {
-  return (line, callback) => {
-    completeShellLine(session, line).then(
-      (result) => callback(null, result),
-      () => callback(null, [[], line]),
-    )
-  }
+/** Inputs for {@link runReplLoop}. */
+export interface ReplLoopOptions {
+  /**
+   * Read key events with the TTY line editor instead of whole lines. Completion
+   * is only meaningful for an interactive terminal, so a piped input stream
+   * leaves this false.
+   */
+  readonly tty?: boolean
+  /** The prompt written before each read; empty suppresses prompting. */
+  readonly prompt?: string
+  /** The invocation program's loop state; a fresh Ref is created when omitted. */
+  readonly state?: Ref.Ref<ReplLoopState>
 }
 
 /**
- * Run the interactive loop until .exit, EOF, or an interrupt.
+ * Run the interactive loop until .exit, end of input, or a quit key. Either
+ * input path ends with `Terminal.QuitError`; this loop treats that as a normal
+ * exit, while an evaluation or command failure stays in the error channel for
+ * the command edge to report.
  * @param session - an initialized session.
- * @param streams - input and output streams.
+ * @param options - TTY mode, prompt text, and the loop state Ref.
+ * @returns an effect that completes when the session exits.
  */
-export async function runReplLoop(session: ReplSession, streams: ReplStreams): Promise<void> {
-  const terminal =
-    (streams.input as NodeJS.ReadStream).isTTY === true &&
-    (streams.output as NodeJS.WriteStream).isTTY === true
-  const rl = createInterface({
-    input: streams.input,
-    output: streams.output,
-    terminal,
-    prompt: 'eedsh> ',
-    completer: createCompletionCompleter(session),
-  })
-  const prompt = (): void => {
-    if (terminal) rl.prompt()
-  }
-  const writeError = (error: unknown): void => {
-    for (const line of formatSessionError(error)) streams.output.write(`error: ${line}\n`)
-  }
-
-  let closed = false
-  rl.on('close', () => {
-    closed = true
-  })
-  rl.on('SIGINT', () => {
-    streams.output.write('\n')
-    rl.close()
-  })
-  prompt()
-  for await (const line of rl) {
-    const trimmed = line.trim()
-    if (trimmed === '') {
-      prompt()
-      continue
+export function runReplLoop(
+  session: ReplSession,
+  options: ReplLoopOptions = {},
+): Effect.Effect<void, unknown, Terminal.Terminal> {
+  return Effect.gen(function* () {
+    const terminal = yield* Terminal.Terminal
+    const state =
+      options.state ?? (yield* Ref.make<ReplLoopState>({ running: true, prompting: false }))
+    const prompt = options.prompt ?? ''
+    const lines =
+      options.tty === true
+        ? readLinesInteractive(terminal, prompt, (line) => completeShellLine(session, line))
+        : readLines(terminal, prompt)
+    const writeError = (error: unknown): void => {
+      for (const line of formatSessionError(error)) session.stdout(`error: ${line}`)
     }
-    if (terminal) rl.pause()
-    if (isDotCommand(trimmed)) {
-      const exit = await session.command(trimmed)
-      if (exit) {
-        rl.close()
-        break
-      }
-    } else {
-      const outcome = await session.evaluateOutcome(trimmed)
-      if (outcome.ok) session.printValue(outcome.value)
-      else writeError(outcome.error)
-    }
-    if (terminal && !closed) {
-      rl.resume()
-      prompt()
-    }
-  }
-  rl.close()
+    const stop = Ref.update(state, (current) => ({
+      ...current,
+      running: false,
+      prompting: false,
+    }))
+    yield* Ref.update(state, (current) => ({ ...current, running: true, prompting: true }))
+    yield* lines.pipe(
+      Stream.runForEachWhile((line) =>
+        Effect.gen(function* () {
+          const trimmed = line.trim()
+          if (trimmed === '') return true
+          yield* Ref.update(state, (current) => ({ ...current, prompting: false }))
+          if (isDotCommand(trimmed)) {
+            const exit = yield* Effect.promise(() => session.command(trimmed))
+            if (exit) {
+              yield* stop
+              return false
+            }
+          } else {
+            const outcome = yield* Effect.promise(() => session.evaluateOutcome(trimmed))
+            yield* Effect.sync(() => {
+              if (outcome.ok) session.printValue(outcome.value)
+              else writeError(outcome.error)
+            })
+          }
+          yield* Ref.update(state, (current) => ({ ...current, prompting: true }))
+          return true
+        }),
+      ),
+      Effect.catchIf(
+        (error) => Terminal.isQuitError(error),
+        () => stop,
+      ),
+    )
+  })
 }
