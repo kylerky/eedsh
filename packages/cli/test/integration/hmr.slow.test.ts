@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ProfilePlan } from '@eedsh/plan'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -69,7 +70,11 @@ describe('slow Web HMR integration', () => {
     if (matrixDir !== undefined && matrixDir !== '') {
       const nested = join(matrixDir, 'node_modules', '@deepseek-ai', 'dsh')
       const explicit = existsSync(nested) ? nested : matrixDir
-      const discovered = discoverDshInstallation({ explicit, env: {}, cwd: root })
+      const discovered = await Effect.runPromise(
+        discoverDshInstallation({ explicit, env: {}, cwd: root }).pipe(
+          Effect.provide(NodeServices.layer),
+        ),
+      )
       if (Result.isFailure(discovered)) throw discovered.failure
       installation = discovered.success
       clearDshBridge()

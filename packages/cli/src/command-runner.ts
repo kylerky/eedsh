@@ -3,10 +3,16 @@
  * anchor validation and the pnpm/npm bootstrap. Discovery itself never calls
  * it for package metadata. Commands are fixed-argument, read-only, bounded, and
  * captured; Windows `.cmd`/`.bat` launchers go through `cmd.exe` so paths with
- * spaces still resolve.
+ * spaces still resolve. Every run goes through the child-process spawner, so
+ * the runner is one Effect service and a test replaces the spawner instead of
+ * the runner.
  * @module @eedsh/cli/command-runner
  */
-import { spawnSync } from 'node:child_process'
+import { Effect, Stream } from 'effect'
+import * as Duration from 'effect/Duration'
+import { ChildProcess, type ChildProcessSpawner } from 'effect/process'
+import type { CommandRunnerShape } from './internal/effect/services'
+import { messageOf } from './internal/error-message'
 
 /** Captured result of one fixed-argument command. */
 export interface CommandResult {
@@ -23,13 +29,6 @@ export interface CommandOptions {
   /** Environment to run under; defaults to the process environment. */
   readonly env?: Record<string, string | undefined> | undefined
 }
-
-/** Runs one command with fixed arguments and no interactive input. */
-export type CommandRunner = (
-  command: string,
-  args: readonly string[],
-  options?: CommandOptions,
-) => CommandResult
 
 /** The default bound for setup commands. */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 5000
@@ -88,28 +87,57 @@ export function pnpmInvocation(
   return { command: 'pnpm', args: [...args] }
 }
 
+/** The message a timed-out command reports in place of its empty output. */
+function timeoutMessage(timeoutMs: number): string {
+  return `command timed out after ${timeoutMs}ms`
+}
+
 /**
- * Run one command synchronously with a bound. The default runner is the only
- * production code that spawns for an anchor setup step.
+ * Run one command through the child-process spawner with a bound. The child is
+ * scoped, so interruption and timeout close the scope and kill it. A failed
+ * spawn, non-start, or timeout yields a null status with the failure message in
+ * stderr, matching the captured shape the synchronous runner produced.
  * @param command - the executable or launcher path.
  * @param args - fixed arguments.
- * @param options - timeout override.
+ * @param options - bound and environment override.
  * @returns the captured result.
  */
-export const defaultCommandRunner: CommandRunner = (command, args, options) => {
+export function boundedCommandRunner(
+  command: string,
+  args: readonly string[],
+  options?: CommandOptions,
+): Effect.Effect<CommandResult, never, ChildProcessSpawner.ChildProcessSpawner> {
   const invocation = commandInvocation(command, args)
-  const result = spawnSync(invocation.command, [...invocation.args], {
-    encoding: 'utf8',
-    timeout: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-    windowsHide: true,
-    shell: false,
-    ...(options?.env === undefined ? {} : { env: options.env }),
-  })
-  return {
-    status: result.status,
-    stdout: typeof result.stdout === 'string' ? result.stdout : '',
-    stderr: typeof result.stderr === 'string' ? result.stderr : '',
-  }
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* ChildProcess.make(invocation.command, [...invocation.args], {
+        ...(options?.env === undefined ? {} : { env: options.env }),
+        stdout: 'pipe',
+        stderr: 'pipe',
+        windowsHide: true,
+        shell: false,
+      })
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          handle.stdout.pipe(Stream.decodeText(), Stream.mkString),
+          handle.stderr.pipe(Stream.decodeText(), Stream.mkString),
+          handle.exitCode,
+        ],
+        { concurrency: 'unbounded' },
+      )
+      return { status: Number(exitCode), stdout, stderr }
+    }),
+  ).pipe(
+    Effect.timeout(Duration.millis(timeoutMs)),
+    Effect.catch((cause) =>
+      Effect.succeed({
+        status: null,
+        stdout: '',
+        stderr: cause._tag === 'TimeoutError' ? timeoutMessage(timeoutMs) : messageOf(cause),
+      }),
+    ),
+  )
 }
 
 /**
@@ -128,30 +156,32 @@ export function parseVersionOutput(output: string): string | undefined {
  * @param runner - the command runner seam.
  * @param launcher - absolute launcher path.
  * @param timeoutMs - probe bound.
+ * @param env - environment override for the probe.
  * @returns the exact version, or undefined.
  */
 export function probeLauncherVersion(
-  runner: CommandRunner,
+  runner: CommandRunnerShape,
   launcher: string,
   timeoutMs: number = DEFAULT_VERSION_PROBE_TIMEOUT_MS,
   env?: Record<string, string | undefined>,
-): string | undefined {
-  const result = runner(launcher, ['--version'], {
+): Effect.Effect<string | undefined> {
+  return runner(launcher, ['--version'], {
     timeoutMs,
     ...(env === undefined ? {} : { env }),
-  })
-  if (result.status !== 0) return undefined
-  return parseVersionOutput(result.stdout)
+  }).pipe(
+    Effect.map((result) => (result.status === 0 ? parseVersionOutput(result.stdout) : undefined)),
+  )
 }
 
 /**
  * Bind a launcher version probe to one runner.
  * @param runner - the command runner seam.
+ * @param env - environment override for the probe.
  * @returns a probe suitable for discovery.
  */
 export function versionProbe(
-  runner: CommandRunner,
+  runner: CommandRunnerShape,
   env?: Record<string, string | undefined>,
-): (launcher: string) => string | undefined {
+): (launcher: string) => Effect.Effect<string | undefined> {
   return (launcher) => probeLauncherVersion(runner, launcher, undefined, env)
 }

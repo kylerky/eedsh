@@ -54,6 +54,7 @@ export function main(argv: readonly string[]): Effect.Effect<number, never, CliS
       return EXIT_USAGE
     }
 
+    const version = yield* cliVersion()
     const exitCode = yield* Ref.make<number>(EXIT_OK)
     const record = <E, R>(program: Effect.Effect<number, E, R>) =>
       program.pipe(Effect.flatMap((code) => Ref.set(exitCode, code)))
@@ -113,7 +114,7 @@ export function main(argv: readonly string[]): Effect.Effect<number, never, CliS
     )
 
     const parsedArgs = split.args.length === 0 ? ['--help'] : split.args
-    const program = Command.runWith(rootCommand, { version: cliVersion() })(parsedArgs).pipe(
+    const program = Command.runWith(rootCommand, { version })(parsedArgs).pipe(
       Effect.provideService(Console.Console, cliConsole(output.stdout, output.stderr)),
     )
     yield* program.pipe(

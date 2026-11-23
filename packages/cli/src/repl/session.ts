@@ -4,7 +4,6 @@
  * Formatting lives here so the command, tests, and non-TTY runs share it.
  * @module @eedsh/cli/repl/session
  */
-import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, relative } from 'node:path'
 import type { REPLServer } from 'node:repl'
@@ -15,6 +14,7 @@ import { activeDshBridge, type ConfigProvenance, bundle as defaultBundle } from 
 import { canonicalJson, type EedshConfig, type ProfilePlan } from '@eedsh/plan'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Cause, Effect, Exit, Option } from 'effect'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import { asEedshError } from '../command/errors'
 import { describeError } from '../command/report'
@@ -31,6 +31,7 @@ import { classifyGenerationRecord, type GenerationLookup } from '../materialize/
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
 import { composePreflightLayers, type PreflightLayer, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
+import type { SpawnLike } from '../spawn'
 import { type WatchSession, watchConfigDirectory } from '../watch'
 import {
   COMMAND_NAMES,
@@ -53,6 +54,7 @@ import {
 import {
   type CompositionSnapshot,
   ConfigView,
+  PackageView,
   type ProfileSnapshot,
   type ProfileView,
   type PublishedSnapshot,
@@ -123,6 +125,10 @@ export interface ReplSessionOptions {
   readonly env?: Record<string, string | undefined>
   readonly stdout?: LineSink
   readonly stderr?: LineSink
+  /** The file-system service for config, snapshot, and preview reads. */
+  readonly fileSystem: FileSystem.FileSystem
+  /** The child-process spawn seam the preview installer uses. */
+  readonly spawner: SpawnLike
   readonly loadConfig?: (
     path: string,
     evaluationNonce?: string,
@@ -234,6 +240,15 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Whether a path exists; an inspection failure counts as missing. */
+async function pathExists(fileSystem: FileSystem.FileSystem, path: string): Promise<boolean> {
+  try {
+    return await Effect.runPromise(fileSystem.exists(path))
+  } catch {
+    return false
+  }
+}
+
 /** Render a caught value with the CLI's one diagnostic vocabulary. */
 function errorLines(error: unknown): string[] {
   return describeError(asEedshError(error))
@@ -275,13 +290,18 @@ function selectedPlan(
   return { name: selection.success.name, plan: selection.success.plan.success }
 }
 
-function declaresAuthoring(configDir: string): boolean {
+async function declaresAuthoring(
+  fileSystem: FileSystem.FileSystem,
+  configDir: string,
+): Promise<boolean> {
   let dir = configDir
   while (true) {
     const manifestPath = join(dir, 'package.json')
-    if (existsSync(manifestPath)) {
+    if (await pathExists(fileSystem, manifestPath)) {
       try {
-        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+        const manifest = JSON.parse(
+          await Effect.runPromise(fileSystem.readFileString(manifestPath)),
+        ) as Record<string, unknown>
         for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
           const value = manifest[section]
           if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
@@ -298,13 +318,19 @@ function declaresAuthoring(configDir: string): boolean {
   }
 }
 
-function authoringPackage(configPath: string): AuthoringPackage {
+async function authoringPackage(
+  fileSystem: FileSystem.FileSystem,
+  configPath: string,
+): Promise<AuthoringPackage> {
   const configDir = dirname(configPath)
   const require = createRequire(join(configDir, 'package.json'))
   const localPackage = join(configDir, 'node_modules', '@eedsh', 'config', 'package.json')
   let packagePath: string
   let entryPath: string
-  if (!existsSync(localPackage) && !declaresAuthoring(configDir)) {
+  if (
+    !(await pathExists(fileSystem, localPackage)) &&
+    !(await declaresAuthoring(fileSystem, configDir))
+  ) {
     throw new ReplSessionError({
       code: 'repl.authoring_package_missing',
       message: `the config project at ${configDir} has not installed @eedsh/config (no node_modules/@eedsh/config and no declaring package.json)`,
@@ -321,7 +347,9 @@ function authoringPackage(configPath: string): AuthoringPackage {
   }
   let version = 'unknown'
   try {
-    const manifest = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown }
+    const manifest = JSON.parse(
+      await Effect.runPromise(fileSystem.readFileString(packagePath)),
+    ) as { version?: unknown }
     if (typeof manifest.version === 'string') version = manifest.version
   } catch {
     // The package resolved; a missing version only weakens the banner.
@@ -502,6 +530,8 @@ export class ReplSession {
   readonly authoring: AuthoringPackage
 
   private readonly options: ReplSessionOptions
+  private readonly fileSystem: FileSystem.FileSystem
+  private readonly spawner: SpawnLike
   private readonly env: Record<string, string | undefined>
   private readonly previousEnv: {
     anchor: string | undefined
@@ -547,8 +577,13 @@ export class ReplSession {
     this.stdout = options.stdout ?? ((line) => console.log(line))
     this.stderr = options.stderr ?? ((line) => console.error(line))
     this.env = options.env ?? process.env
+    this.fileSystem = options.fileSystem
+    this.spawner = options.spawner
     this.authoring = authoring
-    this.loadConfig = options.loadConfig ?? defaultLoadConfig
+    this.loadConfig =
+      options.loadConfig ??
+      ((path, evaluationNonce) =>
+        defaultLoadConfig(path, evaluationNonce).pipe(Effect.provide(NodeServices.layer)))
     this.runDoctor = options.doctor ?? ((profileDir) => defaultDoctor(profileDir, this.env))
     this.syncPlan = options.syncPlan
     this.installPreview = options.installPreview
@@ -591,7 +626,7 @@ export class ReplSession {
   static async create(options: ReplSessionOptions): Promise<ReplSession> {
     let authoring = options.authoring
     if (authoring === undefined) {
-      const info = authoringPackage(options.configPath)
+      const info = await authoringPackage(options.fileSystem, options.configPath)
       authoring = { ...info, module: await loadAuthoringModule(info) }
     }
     const session = new ReplSession(options, authoring)
@@ -651,7 +686,9 @@ export class ReplSession {
           'commands: .profile <name>, .help, .resolve, .sync, .reload; Tab completes commands and names (a second Tab lists ambiguous matches)',
         )
         if (this.options.cacheRoot === undefined) {
-          await cleanupPreviews(this.cacheRoot, { now: this.now }).catch(() => undefined)
+          await cleanupPreviews(this.cacheRoot, this.fileSystem, { now: this.now }).catch(
+            () => undefined,
+          )
         }
       }
       await this.loadAndSelect()
@@ -738,29 +775,36 @@ export class ReplSession {
         }
       }
       const published = await this.publishedSnapshot(profileDir)
-      snapshots.set(name, { profileDir, composition, published })
+      const packages = await PackageView.read(plan, profileDir, published.manifest, this.fileSystem)
+      snapshots.set(name, { profileDir, composition, published, packages })
     }
     return snapshots
   }
 
   private async publishedSnapshot(profileDir: string): Promise<PublishedSnapshot> {
-    const exists = profileDir !== '' && existsSync(profileDir)
-    const manifest = exists ? this.readJsonRecord(join(profileDir, 'package.json')) : undefined
+    const exists = profileDir !== '' && (await pathExists(this.fileSystem, profileDir))
+    const manifest = exists
+      ? await this.readJsonRecord(join(profileDir, 'package.json'))
+      : undefined
     let generation: GenerationLookup | undefined
     let record: GenerationRecord | undefined
     let plan: unknown
     let planPath: string | undefined
     if (exists) {
       const recordPath = join(profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
-      if (existsSync(recordPath)) {
+      if (await pathExists(this.fileSystem, recordPath)) {
         try {
-          const parsed = JSON.parse(readFileSync(recordPath, 'utf8')) as unknown
+          const parsed = JSON.parse(
+            await Effect.runPromise(this.fileSystem.readFileString(recordPath)),
+          ) as unknown
           generation = classifyGenerationRecord(parsed, recordPath)
           if (generation._tag === 'valid') {
             record = generation.record
             planPath = join(profileDir, GENERATED_DIRNAME, 'plans', `${record.generationId}.json`)
-            if (existsSync(planPath)) {
-              plan = JSON.parse(readFileSync(planPath, 'utf8')) as unknown
+            if (await pathExists(this.fileSystem, planPath)) {
+              plan = JSON.parse(
+                await Effect.runPromise(this.fileSystem.readFileString(planPath)),
+              ) as unknown
             }
           }
         } catch {
@@ -791,10 +835,12 @@ export class ReplSession {
     }
   }
 
-  private readJsonRecord(path: string): Record<string, unknown> | undefined {
+  private async readJsonRecord(path: string): Promise<Record<string, unknown> | undefined> {
     try {
-      if (!existsSync(path)) return undefined
-      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+      if (!(await pathExists(this.fileSystem, path))) return undefined
+      const parsed = JSON.parse(
+        await Effect.runPromise(this.fileSystem.readFileString(path)),
+      ) as unknown
       return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : undefined
@@ -807,13 +853,13 @@ export class ReplSession {
     this.catalogVersion += 1
   }
 
-  private completionCatalogs(): CompletionCatalogs {
+  private async completionCatalogs(): Promise<CompletionCatalogs> {
     if (this.catalogCache?.version === this.catalogVersion) return this.catalogCache.catalogs
     const catalogs: CompletionCatalogs = {
       commands: COMMAND_NAMES,
       profiles: this.configView?.profiles().map((profile) => profile.name) ?? [],
-      bundles: this.catalogBundles(),
-      packages: this.catalogPackages(),
+      bundles: await this.catalogBundles(),
+      packages: await this.catalogPackages(),
       rows: (bundle, root) => this.catalogRows(bundle, root),
       presets: (bundle, root) => this.catalogPresets(bundle, root),
     }
@@ -865,32 +911,23 @@ export class ReplSession {
     }
   }
 
-  private catalogBundles(): readonly string[] {
+  private async catalogBundles(): Promise<readonly string[]> {
     const names = new Set<string>()
     for (const item of this.plan?.bundles ?? []) {
       if (item.kind === 'bundle') names.add(item.name)
     }
-    for (const name of this.manifestBundles()) names.add(name)
-    for (const name of this.activeBundles()) names.add(name)
+    for (const name of await this.manifestBundles()) names.add(name)
+    for (const name of await this.activeBundles()) names.add(name)
     for (const spec of this.previewSpecs) names.add(spec.name)
     return [...names].sort()
   }
 
-  private profileManifest(): Record<string, unknown> | undefined {
-    try {
-      const path = join(this.effectiveProfileDir(), 'package.json')
-      if (!existsSync(path)) return undefined
-      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
-      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : undefined
-    } catch {
-      return undefined
-    }
+  private async profileManifest(): Promise<Record<string, unknown> | undefined> {
+    return await this.readJsonRecord(join(this.effectiveProfileDir(), 'package.json'))
   }
 
-  private manifestBundles(): readonly string[] {
-    const manifest = this.profileManifest()
+  private async manifestBundles(): Promise<readonly string[]> {
+    const manifest = await this.profileManifest()
     const dsh = manifest?.dsh
     const profile =
       dsh !== null && typeof dsh === 'object' ? (dsh as Record<string, unknown>).profile : undefined
@@ -903,9 +940,9 @@ export class ReplSession {
       : []
   }
 
-  private catalogPackages(): readonly string[] {
+  private async catalogPackages(): Promise<readonly string[]> {
     const names = new Set<string>(Object.keys(this.plan?.packages ?? {}))
-    const manifest = this.profileManifest()
+    const manifest = await this.profileManifest()
     if (manifest !== undefined) {
       for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
         const value = manifest[section]
@@ -916,12 +953,14 @@ export class ReplSession {
     return [...names].sort()
   }
 
-  private activeBundles(): readonly string[] {
+  private async activeBundles(): Promise<readonly string[]> {
     const bridge = activeDshBridge()
     if (bridge === undefined) return []
     const anchor = bridge.installation.installAnchor
     try {
-      const manifest = JSON.parse(readFileSync(anchor, 'utf8')) as Record<string, unknown>
+      const manifest = JSON.parse(
+        await Effect.runPromise(this.fileSystem.readFileString(anchor)),
+      ) as Record<string, unknown>
       const names: string[] = []
       for (const section of ['dependencies', 'optionalDependencies']) {
         const dependencies = manifest[section]
@@ -933,7 +972,7 @@ export class ReplSession {
           continue
         }
         for (const name of Object.keys(dependencies)) {
-          if (this.declaresBundle(anchor, name)) names.push(name)
+          if (await this.declaresBundle(anchor, name)) names.push(name)
         }
       }
       return names
@@ -942,10 +981,12 @@ export class ReplSession {
     }
   }
 
-  private declaresBundle(anchor: string, name: string): boolean {
+  private async declaresBundle(anchor: string, name: string): Promise<boolean> {
     try {
       const path = createRequire(anchor).resolve(`${name}/package.json`)
-      const manifest = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      const manifest = JSON.parse(
+        await Effect.runPromise(this.fileSystem.readFileString(path)),
+      ) as Record<string, unknown>
       const dsh = manifest.dsh
       return dsh !== null && typeof dsh === 'object' && 'bundle' in dsh
     } catch {
@@ -962,7 +1003,7 @@ export class ReplSession {
   async complete(line: string): Promise<CompletionResult> {
     takeTrace()
     try {
-      return completeLine({ line, cursor: line.length, catalogs: this.completionCatalogs() })
+      return completeLine({ line, cursor: line.length, catalogs: await this.completionCatalogs() })
     } finally {
       takeTrace()
     }
@@ -1305,16 +1346,19 @@ export class ReplSession {
     specs = [...merged.values()]
     let prepared: PreparedPreview
     try {
-      prepared = await preparePreview({
-        profileName: this.profileName,
-        profileDir,
-        dshVersion: activeDshVersion(),
-        specs,
-        env: this.env,
-        ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),
-        ...(this.installPreview === undefined ? {} : { install: this.installPreview }),
-        now: this.now,
-      })
+      prepared = await preparePreview(
+        {
+          profileName: this.profileName,
+          profileDir,
+          dshVersion: activeDshVersion(),
+          specs,
+          env: this.env,
+          ...(this.options.cacheRoot === undefined ? {} : { cacheRoot: this.options.cacheRoot }),
+          ...(this.installPreview === undefined ? {} : { install: this.installPreview }),
+          now: this.now,
+        },
+        { fileSystem: this.fileSystem, spawner: this.spawner },
+      )
     } catch (error) {
       this.reportFailure('preview not ready', error)
       return
@@ -1396,7 +1440,7 @@ export class ReplSession {
     try {
       const loaded = await this.loadCandidate()
       if (canonicalJson(loaded.plan) === canonicalJson(published)) {
-        await removePreview(preview.dir)
+        await removePreview(preview.dir, this.fileSystem)
         this.preview = undefined
         this.previewSpecs = []
         this.retainedPreviewDir = undefined

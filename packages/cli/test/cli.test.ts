@@ -23,6 +23,7 @@ import {
   fakeConfigLoader,
   fakeDshDiscovery,
   fakeWatcher,
+  realFileSystem,
   runCli,
 } from './support/cli'
 import {
@@ -99,10 +100,13 @@ interface HarnessOptions {
 /** The environment every harness invocation reads unless a test overrides it. */
 const harnessEnv = { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg' }
 
+/** `check` inspects real project files, so its runs use the live filesystem. */
+const realFiles = { extra: [realFileSystem] }
+
 /** The installation anchor every harness invocation reads, without touching the machine. */
 const harnessAnchor: NonNullable<CliOverrides['anchor']> = {
-  read: () => undefined,
-  write: () => ({ ok: true }),
+  read: () => Effect.succeed(undefined),
+  write: () => Effect.succeed({ ok: true } as const),
 }
 
 /** Widen one test layer that provides a single CLI service to the full service type. */
@@ -146,11 +150,13 @@ function harness(options: HarnessOptions = {}) {
     options.discoveryFails === true
       ? fakeDshDiscovery(devDshInstallation(), {
           discover: () =>
-            Result.fail(
-              new DshFailure({
-                code: 'dsh.not_found',
-                message: 'cannot resolve a DSH installation for this invocation',
-              }),
+            Effect.succeed(
+              Result.fail(
+                new DshFailure({
+                  code: 'dsh.not_found',
+                  message: 'cannot resolve a DSH installation for this invocation',
+                }),
+              ),
             ),
         })
       : fakeDshDiscovery(devDshInstallation())
@@ -293,9 +299,9 @@ export default defineConfig()
   }
 
   it('loads config.ts from XDG_CONFIG_HOME instead of the working directory', async () => {
-    const h = harness()
     const home = await xdgHome()
     const configPath = await writeXdgConfig(home)
+    const h = harness({ files: { [configPath]: source } })
     const cwd = await tempDir('xdg-cwd-')
     await writeFile(join(cwd, 'eedsh.config.ts'), source)
 
@@ -310,10 +316,11 @@ export default defineConfig()
 
   it('falls back to ~/.config when XDG_CONFIG_HOME is unset or relative', async () => {
     for (const value of [undefined, 'relative/dir']) {
-      const h = harness()
       const home = await tempDir('xdg-fallback-home-')
       await mkdir(join(home, '.config', 'eedsh'), { recursive: true })
-      await writeFile(join(home, '.config', 'eedsh', 'config.ts'), source)
+      const fallbackConfig = join(home, '.config', 'eedsh', 'config.ts')
+      await writeFile(fallbackConfig, source)
+      const h = harness({ files: { [fallbackConfig]: source } })
       const code = await h.run(['sync'], {
         environment: { env: { ...harnessEnv, HOME: home, XDG_CONFIG_HOME: value }, cwd: root },
       })
@@ -651,7 +658,10 @@ export default defineConfig()
     const h = harness()
     const configPath = await writeConfig(defaultsSource)
     const { calls, spawn } = fakeSpawner({ exitCode: 0 })
-    const code = await h.run(['run', '--config', configPath, '--no-sync'], { spawner: spawn })
+    const code = await h.run(['run', '--config', configPath, '--no-sync'], {
+      spawner: spawn,
+      ...realFiles,
+    })
     expect(code).toBe(0)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.args.slice(1)).toEqual(['--profile', 'home'])
@@ -775,7 +785,10 @@ export default defineConfig()
     const h = harness()
     const configPath = await writeConfig(withoutDefault)
     const { calls, spawn } = fakeSpawner()
-    const code = await h.run(['run', '--config', configPath, '--no-sync'], { spawner: spawn })
+    const code = await h.run(['run', '--config', configPath, '--no-sync'], {
+      spawner: spawn,
+      ...realFiles,
+    })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('work')
@@ -801,6 +814,7 @@ export default defineConfig()
     const { calls, spawn } = fakeSpawner()
     const code = await h.run(['check', '--profile', 'work', '--config', fixture('basic')], {
       spawner: spawn,
+      ...realFiles,
     })
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
@@ -1866,6 +1880,7 @@ describe('eedsh check', () => {
         Effect.die(new Error('eedsh check must not evaluate the config')),
       ),
       spawner: spawn,
+      ...realFiles,
     })
     expect(code).toBe(0)
     const text = h.out.join('\n')
@@ -1894,7 +1909,7 @@ describe('eedsh check', () => {
       stderr: 'error TS2322',
       listing: `${configPath}\n`,
     })
-    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn, ...realFiles })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('check failed')
@@ -1905,7 +1920,7 @@ describe('eedsh check', () => {
   it('forwards a failed file listing without a check failure code', async () => {
     const h = harness()
     const { spawn } = fakeSpawner({ listingExit: 2, stderr: 'listing failed', listing: '' })
-    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn, ...realFiles })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('cannot list the project files')
@@ -1928,6 +1943,7 @@ describe('eedsh check failures', () => {
     const { calls, spawn } = fakeSpawner()
     const code = await h.run(['check', '--config', join(root, 'nope/config.ts')], {
       spawner: spawn,
+      ...realFiles,
     })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('config.not_found')
@@ -1938,7 +1954,7 @@ describe('eedsh check failures', () => {
     const configPath = await externalProject('export default {}\n')
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn, ...realFiles })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.tsconfig_missing')
     expect(h.err.join('\n')).toContain('tsconfig.json')
@@ -1949,7 +1965,7 @@ describe('eedsh check failures', () => {
     const configPath = await externalProject('export default {}\n', '{}\n')
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn, ...realFiles })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.typescript_missing')
     expect(h.err.join('\n')).toContain('install')
@@ -1959,7 +1975,10 @@ describe('eedsh check failures', () => {
   it('fails with check.config_not_in_project when the tsconfig excludes the config', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner({ listing: '/home/project/src/index.ts\n' })
-    const code = await h.run(['check', '--config', fixture('basic')], { spawner: spawn })
+    const code = await h.run(['check', '--config', fixture('basic')], {
+      spawner: spawn,
+      ...realFiles,
+    })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.config_not_in_project')
     expect(h.err.join('\n')).toContain(join(root, 'tsconfig.json'))

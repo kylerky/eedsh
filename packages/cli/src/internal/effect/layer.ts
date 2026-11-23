@@ -7,9 +7,10 @@
  */
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer, Stream } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
-import { defaultCommandRunner, pnpmInvocation } from '../../command-runner'
+import { boundedCommandRunner, pnpmInvocation, versionProbe } from '../../command-runner'
 import { loadConfig } from '../../config'
 import { resolveBundleLayers } from '../../dsh'
 import { bootstrapDshInstallation } from '../../dsh-bootstrap'
@@ -170,17 +171,44 @@ export const environmentLayer: Layer.Layer<EnvironmentShape> = Layer.succeed(Env
   cwd: process.cwd(),
 })
 
-/** Discovery, bootstrap, and validation of the selected DSH installation. */
-export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape> = Layer.succeed(DshDiscovery, {
-  discover: (input) => discoverDshInstallation(input),
-  bootstrap: (input) => bootstrapDshInstallation(input),
-  validate: (installation) => validateDshVersion(installation),
-})
+/**
+ * Discovery, bootstrap, and validation of the selected DSH installation. The
+ * layer captures the command runner so discovery's methods carry only the
+ * FileSystem requirement; the default probe is bound to the invocation's
+ * environment.
+ */
+export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape, never, CommandRunnerShape> =
+  Layer.effect(
+    DshDiscovery,
+    Effect.gen(function* () {
+      const runner = yield* CommandRunner
+      return {
+        discover: (input) =>
+          discoverDshInstallation({
+            ...input,
+            runner,
+            probeVersion: input.probeVersion ?? versionProbe(runner, input.env),
+          }),
+        bootstrap: (input) => bootstrapDshInstallation({ ...input, runner }),
+        validate: (installation) => validateDshVersion(installation),
+      }
+    }),
+  )
 
 /** Evaluation of the config module through tsx. */
-export const configLoaderLayer: Layer.Layer<ConfigLoaderShape> = Layer.succeed(ConfigLoader, {
-  load: (configPath, evaluationNonce) => loadConfig(configPath, evaluationNonce),
-})
+export const configLoaderLayer: Layer.Layer<ConfigLoaderShape, never, FileSystem.FileSystem> =
+  Layer.effect(
+    ConfigLoader,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      return {
+        load: (configPath, evaluationNonce) =>
+          loadConfig(configPath, evaluationNonce).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+          ),
+      }
+    }),
+  )
 
 /**
  * The kept `Result` → Effect seams. `Result` is the return type of pure
@@ -221,10 +249,26 @@ export const installationAnchorLayer: Layer.Layer<InstallationAnchorShape> = Lay
   defaultInstallationAnchorStore,
 )
 
-/** The bounded, fixed-argument command runner used by setup paths. */
-export const commandRunnerLayer: Layer.Layer<CommandRunnerShape> = Layer.succeed(
+/**
+ * The bounded, fixed-argument command runner used by setup paths. The layer
+ * yields the child-process spawner once and provides it to every bounded run,
+ * so the runner shape itself stays requirement-free.
+ */
+export const commandRunnerLayer: Layer.Layer<
+  CommandRunnerShape,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Layer.effect(
   CommandRunner,
-  defaultCommandRunner,
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    return (command, args, options) =>
+      Effect.provideService(
+        boundedCommandRunner(command, args, options),
+        ChildProcessSpawner.ChildProcessSpawner,
+        spawner,
+      )
+  }),
 )
 
 /** The streaming launcher spawn. */
@@ -237,15 +281,21 @@ export const livePreflightLayer: Layer.Layer<PreflightShape> = preflightLayer.pi
 
 const platformLayer = NodeServices.layer
 
+/** The production command runner, bound to the platform's child-process spawner. */
+const processCommandRunnerLayer = commandRunnerLayer.pipe(Layer.provide(platformLayer))
+
+/** Live discovery over the production runner. */
+const processDshDiscoveryLayer = dshDiscoveryLayer.pipe(Layer.provide(processCommandRunnerLayer))
+
 const domainLayer = Layer.mergeAll(
   outputLayer,
   environmentLayer,
-  dshDiscoveryLayer,
-  configLoaderLayer,
+  processDshDiscoveryLayer,
+  configLoaderLayer.pipe(Layer.provide(platformLayer)),
   bundleResolverLayer,
   watcherLayer,
   installationAnchorLayer,
-  commandRunnerLayer,
+  processCommandRunnerLayer,
   spawnerLayer,
   syncLockLayer(),
 )

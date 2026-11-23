@@ -1,6 +1,9 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import { Effect } from 'effect'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
@@ -12,7 +15,7 @@ import {
   installationFromSelection,
   readInstallationAnchorSnapshot,
   validateRecordedInstallation,
-  writeInstallationAnchorSync,
+  writeInstallationAnchor,
 } from '../src/installation-anchor'
 import type { DshFailure } from '../src/internal/effect/errors'
 
@@ -47,7 +50,15 @@ async function writePackage(
   return { dir, anchor }
 }
 
-function failureOf(result: Result.Result<unknown, DshFailure>): DshFailure {
+/** Run one anchor effect over the process filesystem, as the live store does. */
+function run<A>(effect: Effect.Effect<A, never, FileSystem.FileSystem>): Promise<A> {
+  return Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)))
+}
+
+async function failureOf(
+  effect: Effect.Effect<Result.Result<unknown, DshFailure>, never, FileSystem.FileSystem>,
+): Promise<DshFailure> {
+  const result = await run(effect)
   if (Result.isSuccess(result)) throw new Error('expected a failure')
   return result.failure
 }
@@ -82,7 +93,7 @@ describe('CLI installation anchor validation', () => {
       installAnchor: installation.anchor,
       version: '0.2.1-rc.2',
     }
-    const validated = validateRecordedInstallation(record)
+    const validated = await run(validateRecordedInstallation(record))
     expect(Result.isSuccess(validated)).toBe(true)
     if (Result.isSuccess(validated)) {
       expect(validated.success.version).toBe('0.2.1-rc.2')
@@ -94,7 +105,7 @@ describe('CLI installation anchor validation', () => {
 
   it('rejects a record whose anchor does not exist', async () => {
     const home = await tempDir('anchor-missing-')
-    const failure = failureOf(
+    const failure = await failureOf(
       validateRecordedInstallation({
         format: 1,
         installAnchor: join(home, 'missing', 'package.json'),
@@ -108,7 +119,7 @@ describe('CLI installation anchor validation', () => {
   it('rejects a record whose anchor is another package', async () => {
     const home = await tempDir('anchor-other-')
     const other = await writePackage(home, 'other', 'other', '1.0.0')
-    const failure = failureOf(
+    const failure = await failureOf(
       validateRecordedInstallation({ format: 1, installAnchor: other.anchor, version: '1.0.0' }),
     )
     expect(failure.code).toBe('dsh.anchor_invalid')
@@ -118,7 +129,7 @@ describe('CLI installation anchor validation', () => {
   it('rejects an unsupported package version with the range', async () => {
     const home = await tempDir('anchor-unsupported-')
     const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.3.0')
-    const failure = failureOf(
+    const failure = await failureOf(
       validateRecordedInstallation({
         format: 1,
         installAnchor: installation.anchor,
@@ -133,7 +144,7 @@ describe('CLI installation anchor validation', () => {
   it('rejects a record version that disagrees with the manifest', async () => {
     const home = await tempDir('anchor-version-')
     const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.2.1-rc.2')
-    const failure = failureOf(
+    const failure = await failureOf(
       validateRecordedInstallation({
         format: 1,
         installAnchor: installation.anchor,
@@ -288,7 +299,7 @@ describe('CLI installation anchor snapshots', () => {
     const home = await tempDir('anchor-snapshot-')
     const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.2.1-rc.2')
     const env = { DSH_HOME: home }
-    expect(readInstallationAnchorSnapshot(env).record).toBeUndefined()
+    expect((await run(readInstallationAnchorSnapshot(env))).record).toBeUndefined()
 
     const record = anchorForInstallation(
       {
@@ -297,8 +308,8 @@ describe('CLI installation anchor snapshots', () => {
       },
       { recordedBy: 'sync', manager: 'pnpm', launcher: join(home, 'bin', 'dsh') },
     )
-    expect(writeInstallationAnchorSync(env, record)).toEqual({ ok: true })
-    const snapshot = readInstallationAnchorSnapshot(env)
+    expect(await run(writeInstallationAnchor(env, record))).toEqual({ ok: true })
+    const snapshot = await run(readInstallationAnchorSnapshot(env))
     expect(snapshot.record).toEqual(record)
     expect(snapshot.problem).toBeUndefined()
   })
@@ -314,7 +325,7 @@ describe('CLI installation anchor snapshots', () => {
       { installAnchor: installation.anchor, version: '0.2.1-rc.2' },
       { recordedBy: 'sync' },
     )
-    expect(writeInstallationAnchorSync(env, record)).toEqual({ ok: true })
+    expect(await run(writeInstallationAnchor(env, record))).toEqual({ ok: true })
     expect(existsSync(join(home, '.eedsh'))).toBe(false)
     expect(existsSync(join(home, '.local', 'state', 'installation.json'))).toBe(true)
   })
@@ -331,7 +342,7 @@ describe('CLI installation anchor snapshots', () => {
       { installAnchor: installation.anchor, version: '0.2.1-rc.2' },
       { recordedBy: 'sync' },
     )
-    expect(writeInstallationAnchorSync(env, record)).toEqual({ ok: true })
+    expect(await run(writeInstallationAnchor(env, record))).toEqual({ ok: true })
     expect(existsSync(join(home, '.eedsh', 'installation.json'))).toBe(false)
     expect(existsSync(join(home, '.eedsh', 'keep.txt'))).toBe(true)
   })
@@ -342,7 +353,7 @@ describe('CLI installation anchor snapshots', () => {
     await mkdir(join(home, '.local', 'state'), { recursive: true })
     const { writeFile } = await import('node:fs/promises')
     await writeFile(join(home, '.local', 'state', 'installation.json'), '{ nope', 'utf8')
-    const snapshot = readInstallationAnchorSnapshot(env)
+    const snapshot = await run(readInstallationAnchorSnapshot(env))
     expect(snapshot.record).toBeUndefined()
     expect(snapshot.problem).toBeDefined()
     expect(snapshot.problem).not.toContain('ENOENT')
@@ -353,18 +364,18 @@ describe('CLI explicit installation selection', () => {
   it('accepts a package directory and rejects a non-DSH path', async () => {
     const home = await tempDir('anchor-selection-')
     const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.2.1-rc.2')
-    const selected = installationFromSelection(installation.dir, home)
+    const selected = await run(installationFromSelection(installation.dir, home))
     expect(Result.isSuccess(selected)).toBe(true)
 
     const other = await writePackage(home, 'other', 'other', '1.0.0')
-    const failure = failureOf(installationFromSelection(other.dir, home))
+    const failure = await failureOf(installationFromSelection(other.dir, home))
     expect(failure.code).toBe('dsh.anchor_invalid')
   })
 
   it('rejects an unsupported explicit installation when support is required', async () => {
     const home = await tempDir('anchor-selection-range-')
     const installation = await writePackage(home, 'dsh', '@deepseek-ai/dsh', '0.3.0')
-    const failure = failureOf(
+    const failure = await failureOf(
       installationFromSelection(installation.dir, home, { requireSupported: true }),
     )
     expect(failure.code).toBe('dsh.unsupported_version')
@@ -392,8 +403,8 @@ describe('CLI package manifest launcher resolution', () => {
     return { dir, anchor }
   }
 
-  function launcherOf(anchor: string): string {
-    const validated = installationFromManifestAnchor(anchor, anchor)
+  async function launcherOf(anchor: string): Promise<string> {
+    const validated = await run(installationFromManifestAnchor(anchor, anchor))
     if (Result.isFailure(validated)) throw validated.failure
     return validated.success.binPath
   }
@@ -402,7 +413,7 @@ describe('CLI package manifest launcher resolution', () => {
     const fixture = await writeManifest('manifest-string-bin-', { bin: './custom/bin.js' }, [
       join('custom', 'bin.js'),
     ])
-    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
+    expect(await launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
   })
 
   it('uses the dsh entry of an object bin', async () => {
@@ -411,19 +422,19 @@ describe('CLI package manifest launcher resolution', () => {
       { bin: { dsh: './custom/bin.js' } },
       [join('custom', 'bin.js')],
     )
-    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
+    expect(await launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
   })
 
   it('falls back to main for a malformed bin', async () => {
     const fixture = await writeManifest('manifest-main-', { bin: { dsh: 5 }, main: './main.js' }, [
       'main.js',
     ])
-    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'main.js'))
+    expect(await launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'main.js'))
   })
 
   it('falls back to lib/bin.js for a malformed main', async () => {
     const fixture = await writeManifest('manifest-lib-bin-', { main: 7 }, [join('lib', 'bin.js')])
-    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'lib', 'bin.js'))
+    expect(await launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'lib', 'bin.js'))
   })
 
   it('reports invalid JSON and a non-object document as an unreadable manifest', async () => {
@@ -433,7 +444,7 @@ describe('CLI package manifest launcher resolution', () => {
       await mkdir(dir, { recursive: true })
       const anchor = join(dir, 'package.json')
       writeFileSync(anchor, content)
-      const failure = failureOf(installationFromManifestAnchor(anchor, anchor))
+      const failure = await failureOf(installationFromManifestAnchor(anchor, anchor))
       expect(failure.code, content).toBe('dsh.anchor_invalid')
       expect(failure.message, content).toContain('cannot read a DSH manifest')
     }
@@ -441,11 +452,11 @@ describe('CLI package manifest launcher resolution', () => {
 })
 
 describe('CLI installation anchor store seam', () => {
-  it('is the documented default shape', () => {
+  it('is the documented default shape', async () => {
     const store = {
-      read: () => undefined,
-      write: () => ({ ok: true }),
+      read: () => Effect.succeed(undefined),
+      write: () => Effect.succeed({ ok: true } as const),
     } satisfies InstallationAnchorStore
-    expect(store.read()).toBeUndefined()
+    expect(await Effect.runPromise(store.read())).toBeUndefined()
   })
 })

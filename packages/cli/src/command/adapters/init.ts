@@ -34,19 +34,18 @@ export function runInitCommand(input: InitInput): Effect.Effect<number, never, C
     const { env, cwd } = yield* Environment
     let anchorRecord: InstallationAnchor | undefined
     if (Option.isSome(input.dsh)) {
-      const selected = installationFromSelection(input.dsh.value, cwd, {
+      const selected = yield* installationFromSelection(input.dsh.value, cwd, {
         requireSupported: true,
       })
       if (Result.isFailure(selected)) return yield* Effect.fail(selected.failure)
       anchorRecord = anchorForInstallation(selected.success, { recordedBy: 'init' })
     }
-    const specs = resolveInitDependencySpecs()
-    if (Result.isFailure(specs)) return yield* Effect.fail(specs.failure)
+    const specs = yield* resolveInitDependencySpecs()
     const configDir = configDirectory(env)
     const anchorPath = installationAnchorPathForEnv(env)
     const result = yield* runInit({
       configDir,
-      specs: specs.success,
+      specs,
       install: !input.noInstall,
       stdout: output.stdout,
       anchorPath,

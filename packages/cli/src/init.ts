@@ -5,7 +5,6 @@
  * pnpm. It never initializes a repository and needs no DSH installation.
  * @module @eedsh/cli/init
  */
-import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
@@ -46,14 +45,30 @@ export class InitError extends Data.TaggedError('InitError')<{
 /** The services init needs: file access and package installation. */
 export type InitService = FileSystem.FileSystem | PackageManagerShape
 
-function readManifest(path: string): Result.Result<Record<string, unknown>, InitError> {
-  return Result.try({
-    try: () => JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>,
-    catch: (cause) =>
-      new InitError({
-        code: 'init.manifest_unreadable',
-        message: `cannot read ${path}: ${messageOf(cause)}`,
-      }),
+function readManifest(
+  path: string,
+): Effect.Effect<Record<string, unknown>, InitError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(path).pipe(
+      Effect.mapError(
+        (cause) =>
+          new InitError({
+            code: 'init.manifest_unreadable',
+            message: `cannot read ${path}: ${messageOf(cause)}`,
+          }),
+      ),
+    )
+    const parsed = Result.try({
+      try: () => JSON.parse(text) as Record<string, unknown>,
+      catch: (cause) =>
+        new InitError({
+          code: 'init.manifest_unreadable',
+          message: `cannot read ${path}: ${messageOf(cause)}`,
+        }),
+    })
+    if (Result.isFailure(parsed)) return yield* Effect.fail(parsed.failure)
+    return parsed.success
   })
 }
 
@@ -65,42 +80,46 @@ function readManifest(path: string): Result.Result<Record<string, unknown>, Init
  * {@link TYPESCRIPT_SPEC}.
  * @returns the specs, or a resolution failure.
  */
-export function resolveInitDependencySpecs(): Result.Result<InitDependencySpecs, InitError> {
-  const require = createRequire(import.meta.url)
-  const paths = Result.try({
-    try: () => ({
-      config: require.resolve('@eedsh/config/package.json'),
-      effect: require.resolve('effect/package.json'),
-    }),
-    catch: (cause) =>
-      new InitError({
-        code: 'init.dependencies_unresolved',
-        message: `cannot resolve the CLI's dependency manifests: ${messageOf(cause)}`,
+export function resolveInitDependencySpecs(): Effect.Effect<
+  InitDependencySpecs,
+  InitError,
+  FileSystem.FileSystem
+> {
+  return Effect.gen(function* () {
+    const require = createRequire(import.meta.url)
+    const paths = Result.try({
+      try: () => ({
+        config: require.resolve('@eedsh/config/package.json'),
+        effect: require.resolve('effect/package.json'),
       }),
-  })
-  if (Result.isFailure(paths)) return Result.fail(paths.failure)
+      catch: (cause) =>
+        new InitError({
+          code: 'init.dependencies_unresolved',
+          message: `cannot resolve the CLI's dependency manifests: ${messageOf(cause)}`,
+        }),
+    })
+    if (Result.isFailure(paths)) return yield* Effect.fail(paths.failure)
 
-  const configManifest = readManifest(paths.success.config)
-  if (Result.isFailure(configManifest)) return Result.fail(configManifest.failure)
-  const effectManifest = readManifest(paths.success.effect)
-  if (Result.isFailure(effectManifest)) return Result.fail(effectManifest.failure)
+    const configManifest = yield* readManifest(paths.success.config)
+    const effectManifest = yield* readManifest(paths.success.effect)
 
-  const configVersion = readVersion(configManifest.success.version)
-  const effectVersion = readVersion(effectManifest.success.version)
-  if (Option.isNone(configVersion) || Option.isNone(effectVersion)) {
-    return Result.fail(
-      new InitError({
-        code: 'init.dependencies_unresolved',
-        message: 'the CLI dependency manifests declare no version',
-      }),
-    )
-  }
+    const configVersion = readVersion(configManifest.version)
+    const effectVersion = readVersion(effectManifest.version)
+    if (Option.isNone(configVersion) || Option.isNone(effectVersion)) {
+      return yield* Effect.fail(
+        new InitError({
+          code: 'init.dependencies_unresolved',
+          message: 'the CLI dependency manifests declare no version',
+        }),
+      )
+    }
 
-  const local = configVersion.value === '0.0.0'
-  return Result.succeed({
-    config: local ? `link:${dirname(paths.success.config)}` : configVersion.value,
-    effect: local ? `link:${dirname(paths.success.effect)}` : effectVersion.value,
-    typescript: TYPESCRIPT_SPEC,
+    const local = configVersion.value === '0.0.0'
+    return {
+      config: local ? `link:${dirname(paths.success.config)}` : configVersion.value,
+      effect: local ? `link:${dirname(paths.success.effect)}` : effectVersion.value,
+      typescript: TYPESCRIPT_SPEC,
+    }
   })
 }
 
@@ -263,7 +282,7 @@ export function runInit(
         if (Result.isSuccess(read)) {
           const decoded = decodeInstallationAnchor(read.success)
           if (decoded.ok) {
-            const validated = validateRecordedInstallation(decoded.anchor)
+            const validated = yield* validateRecordedInstallation(decoded.anchor)
             if (Result.isSuccess(validated)) existingAnchor = decoded.anchor
           }
         }

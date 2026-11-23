@@ -6,7 +6,6 @@
  * nearest tsconfig.
  * @module @eedsh/cli/config
  */
-import { statSync } from 'node:fs'
 import { dirname, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -17,6 +16,7 @@ import {
 } from '@eedsh/config'
 import { type EedshConfig, validateConfigValue } from '@eedsh/plan'
 import { Data, Effect, Option } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { CONFIG_FILENAME } from './config-path'
@@ -204,12 +204,15 @@ function importEnvironment(configPath: string): () => void {
 export function loadConfig(
   configPath: string,
   evaluationNonce?: string,
-): Effect.Effect<LoadedConfig, ConfigLoadFailure> {
+): Effect.Effect<LoadedConfig, ConfigLoadFailure, FileSystem.FileSystem> {
   return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
     const pathResult = validateConfigPath(configPath)
     if (Result.isFailure(pathResult)) return yield* Effect.fail(pathResult.failure)
 
-    const tsconfig = findTsconfigPath(configPath)
+    const tsconfig = yield* findTsconfigPath(configPath).pipe(
+      Effect.orElseSucceed(() => Option.none<string>()),
+    )
     const selection: TsxConfigSelection = Option.isSome(tsconfig) ? tsconfig.value : false
     const loaded = yield* Effect.promise(() => ensureTsxLoader(selection))
     if (Result.isFailure(loaded)) {
@@ -221,11 +224,13 @@ export function loadConfig(
       )
     }
 
-    const stamp = yield* Effect.try({
-      try: () => statSync(configPath).mtimeMs,
-      catch: (cause) =>
-        new ConfigError('config.not_found', `cannot read ${configPath}: ${errorMessage(cause)}`),
-    })
+    const stamp = yield* fs.stat(configPath).pipe(
+      Effect.map((info) => Option.getOrElse(info.mtime, () => new Date(0)).getTime()),
+      Effect.mapError(
+        (cause) =>
+          new ConfigError('config.not_found', `cannot read ${configPath}: ${errorMessage(cause)}`),
+      ),
+    )
 
     const url = pathToFileURL(configPath)
     let evaluation = evaluationNonce

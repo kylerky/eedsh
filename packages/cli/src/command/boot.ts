@@ -2,8 +2,8 @@
  * Boot the discovered DSH launcher as a child of the CLI process.
  * @module @eedsh/cli/command/boot
  */
-import { existsSync } from 'node:fs'
 import { Effect } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import type { DiscoveredDshInstallation } from '../dsh'
 import { EXIT_FAILURE } from '../exit'
 import { SpawnFailure } from '../internal/effect/errors'
@@ -89,15 +89,18 @@ export function spawnDsh(
   context: CommandContext,
   installation: DiscoveredDshInstallation,
   dshArgs: readonly string[],
-): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape> {
+): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const spawnFn = yield* Spawner
+    const fs = yield* FileSystem.FileSystem
     const { env, cwd } = yield* Environment
     const launch = resolveLaunch(
       {
         launcher: installation.launcher,
         binPath: installation.binPath,
-        launcherExists: existsSync(installation.launcher),
+        launcherExists: yield* fs
+          .exists(installation.launcher)
+          .pipe(Effect.orElseSucceed(() => false)),
       },
       ['--profile', context.plan.profile.name, ...dshArgs],
     )
@@ -121,6 +124,6 @@ export function runBoot(
   context: CommandContext,
   installation: DiscoveredDshInstallation,
   dshArgs: readonly string[],
-): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape> {
+): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape | FileSystem.FileSystem> {
   return spawnDsh(context, installation, dshArgs)
 }

@@ -6,7 +6,7 @@
 import { dirname } from 'node:path'
 import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
-import { Cause, Effect, Exit } from 'effect'
+import { Cause, Effect, Exit, FileSystem } from 'effect'
 import * as Option from 'effect/Option'
 import { EXIT_FAILURE, EXIT_OK } from '../../exit'
 import {
@@ -14,6 +14,7 @@ import {
   ConfigLoader,
   Environment,
   Output,
+  Spawner,
   Watcher,
 } from '../../internal/effect/services'
 import { runReplLoop } from '../../repl/prompt'
@@ -47,6 +48,8 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
     const installation = yield* requireDsh(input.dsh)
     const loader = yield* ConfigLoader
     const watcher = yield* Watcher
+    const fileSystem = yield* FileSystem.FileSystem
+    const spawner = yield* Spawner
     const services = yield* Effect.context<CliServices>()
     const profile = Option.getOrUndefined(input.profile)
     const configDir = dirname(configPath.value)
@@ -93,6 +96,8 @@ export function runReplCommand(input: ReplInput): Effect.Effect<number, never, C
           loadConfig: (path, evaluationNonce) => loader.load(path, evaluationNonce),
           watch: (dir, onChange) => watcher.watch(dir, onChange),
           syncPlan,
+          fileSystem,
+          spawner,
           watchConfig: Option.isNone(input.eval),
           oneShot: Option.isSome(input.eval),
         }),

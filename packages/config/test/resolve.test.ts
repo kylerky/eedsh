@@ -220,8 +220,33 @@ export default defineConfig()
   .build()
 `,
     )
-    const { Effect } = await import('effect')
-    await Effect.runPromise(loadConfig(configPath))
+    const { Effect, Layer, Option } = await import('effect')
+    const FileSystem = await import('effect/FileSystem')
+    const ByteSize = await import('effect/ByteSize')
+    // The loader only needs file metadata here; the module itself is imported by tsx.
+    const fileSystem = Layer.succeed(
+      FileSystem.FileSystem,
+      FileSystem.makeNoop({
+        stat: () =>
+          Effect.succeed({
+            type: 'File' as const,
+            mtime: Option.some(new Date(0)),
+            atime: Option.none(),
+            birthtime: Option.none(),
+            dev: 0n,
+            ino: Option.none(),
+            mode: 0o644,
+            nlink: Option.none(),
+            uid: Option.none(),
+            gid: Option.none(),
+            rdev: Option.none(),
+            size: ByteSize.fromInputUnsafe(0),
+            blksize: Option.none(),
+            blocks: Option.none(),
+          }),
+      }),
+    )
+    await Effect.runPromise(loadConfig(configPath).pipe(Effect.provide(fileSystem)))
     expect(await readFile(marker, 'utf8')).toBe(fixture.anchor)
     expect(process.env.EEDSH_DSH_ANCHOR).toBeUndefined()
     expect(process.env.EEDSH_CONFIG_DIR).toBeUndefined()

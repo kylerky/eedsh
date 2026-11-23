@@ -3,21 +3,12 @@
  * against the format contract with effect/Schema, validate the referenced
  * package, and write it atomically. Discovery,
  * `init --dsh`, and the sync bootstrap all go through this module so the path
- * and schema have one home. Nothing here reads or writes the config project.
+ * and schema have one home. Every filesystem read and write runs through the
+ * FileSystem service, so the store seam is effectful. Nothing here reads or
+ * writes the config project.
  * @module @eedsh/cli/installation-anchor
  */
 import { randomUUID } from 'node:crypto'
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   cleanupRetiredInstallationAnchorSync,
@@ -27,7 +18,8 @@ import {
   type InstallationAnchorManager,
   installationAnchorPath,
 } from '@eedsh/runtime/installation-anchor'
-import { Option, Schema } from 'effect'
+import { Effect, Option, Schema } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import type * as SchemaIssue from 'effect/SchemaIssue'
 import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
@@ -75,12 +67,14 @@ export type InstallationAnchorWrite =
  */
 export interface InstallationAnchorStore {
   /** Read the valid record for an environment, or undefined. */
-  read(env: Record<string, string | undefined>): InstallationAnchor | undefined
+  read(
+    env: Record<string, string | undefined>,
+  ): Effect.Effect<InstallationAnchor | undefined, never, FileSystem.FileSystem>
   /** Atomically write the record for an environment. */
   write(
     env: Record<string, string | undefined>,
     anchor: InstallationAnchor,
-  ): InstallationAnchorWrite
+  ): Effect.Effect<InstallationAnchorWrite, never, FileSystem.FileSystem>
 }
 
 /** Build one tagged discovery failure. */
@@ -263,22 +257,19 @@ export function decodeInstallationAnchor(text: string): InstallationAnchorDecode
 /**
  * Read and decode the anchor snapshot for an environment.
  * @param env - environment mapping.
- * @param readText - text reader seam; defaults to the Node file system.
  * @returns the snapshot, reporting missing or malformed records as a problem.
  */
 export function readInstallationAnchorSnapshot(
   env: Record<string, string | undefined>,
-  readText: (path: string) => string = (path) => readFileSync(path, 'utf8'),
-): InstallationAnchorSnapshot {
-  const path = installationAnchorPathForEnv(env)
-  let text: string
-  try {
-    text = readText(path)
-  } catch {
-    return { path, problem: 'no installation anchor is recorded' }
-  }
-  const decoded = decodeInstallationAnchor(text)
-  return decoded.ok ? { path, record: decoded.anchor } : { path, problem: decoded.reason }
+): Effect.Effect<InstallationAnchorSnapshot, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = installationAnchorPathForEnv(env)
+    const text = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => undefined))
+    if (text === undefined) return { path, problem: 'no installation anchor is recorded' }
+    const decoded = decodeInstallationAnchor(text)
+    return decoded.ok ? { path, record: decoded.anchor } : { path, problem: decoded.reason }
+  })
 }
 
 /** A DSH package manifest is a foreign JSON object; its fields are read as leaves. */
@@ -289,36 +280,47 @@ const launcherBinSchema = Schema.Union([Schema.String, Schema.Struct({ dsh: Sche
 
 /**
  * Read one package manifest as a foreign JSON object, or undefined when it
- * cannot be parsed or is not a JSON object.
+ * cannot be read, parsed, or is not a JSON object.
  * @param anchor - absolute package.json path.
  * @returns the manifest record, or undefined.
  */
-export function readPackageManifest(anchor: string): Record<string, unknown> | undefined {
-  const parsed = Result.try({
-    try: () => JSON.parse(readFileSync(anchor, 'utf8')) as unknown,
-    catch: () => undefined,
+export function readPackageManifest(
+  anchor: string,
+): Effect.Effect<Record<string, unknown> | undefined, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(anchor).pipe(Effect.orElseSucceed(() => undefined))
+    if (text === undefined) return undefined
+    const parsed = Result.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: () => undefined,
+    })
+    if (Result.isFailure(parsed)) return undefined
+    const decoded = Schema.decodeUnknownOption(manifestSchema)(parsed.success)
+    return Option.isSome(decoded) ? decoded.value : undefined
   })
-  if (Result.isFailure(parsed)) return undefined
-  const decoded = Schema.decodeUnknownOption(manifestSchema)(parsed.success)
-  return Option.isSome(decoded) ? decoded.value : undefined
 }
 
 function resolveLauncherEntry(
   manifest: Record<string, unknown>,
   packageDir: string,
-): string | undefined {
-  const bin = Schema.decodeUnknownOption(launcherBinSchema)(manifest.bin)
-  let relative: string | undefined
-  if (Option.isSome(bin)) {
-    relative = typeof bin.value === 'string' ? bin.value : bin.value.dsh
-  }
-  if (relative === undefined) {
-    const main = readOptionalString(manifest.main)
-    if (Option.isSome(main)) relative = main.value
-  }
-  const candidate =
-    relative === undefined ? join(packageDir, DSH_LAUNCHER) : resolve(packageDir, relative)
-  return existsSync(candidate) ? candidate : undefined
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const bin = Schema.decodeUnknownOption(launcherBinSchema)(manifest.bin)
+    let relative: string | undefined
+    if (Option.isSome(bin)) {
+      relative = typeof bin.value === 'string' ? bin.value : bin.value.dsh
+    }
+    if (relative === undefined) {
+      const main = readOptionalString(manifest.main)
+      if (Option.isSome(main)) relative = main.value
+    }
+    const candidate =
+      relative === undefined ? join(packageDir, DSH_LAUNCHER) : resolve(packageDir, relative)
+    const exists = yield* fs.exists(candidate).pipe(Effect.orElseSucceed(() => false))
+    return exists ? candidate : undefined
+  })
 }
 
 /**
@@ -332,66 +334,64 @@ export function installationFromManifestAnchor(
   anchor: string,
   pathShown: string,
   options: { requireSupported?: boolean } = {},
-): Result.Result<ValidatedInstallation, DshFailure> {
-  let physical = anchor
-  try {
-    physical = realpathSync(anchor)
-  } catch {
-    physical = anchor
-  }
-  const manifest = readPackageManifest(physical)
-  if (manifest === undefined) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `cannot read a DSH manifest at ${pathShown}: expected a package.json`,
-      }),
-    )
-  }
-  const name = readOptionalString(manifest.name)
-  if (Option.isNone(name) || name.value !== DSH_PACKAGE_NAME) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `${pathShown} is not a ${DSH_PACKAGE_NAME} package (found ${JSON.stringify(manifest.name)})`,
-      }),
-    )
-  }
-  const version = readNonEmptyString(manifest.version)
-  if (Option.isNone(version)) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `${pathShown} declares no DSH version`,
-      }),
-    )
-  }
-  if (options.requireSupported === true && !supportsDshVersion(version.value)) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.unsupported_version',
-        path: pathShown,
-        version: version.value,
-        range: SUPPORTED_DSH_RANGE,
-        message: `DSH ${version.value} is outside eedsh's supported range ${SUPPORTED_DSH_RANGE}`,
-      }),
-    )
-  }
-  const packageDir = dirname(physical)
-  const binPath = resolveLauncherEntry(manifest, packageDir)
-  if (binPath === undefined) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: pathShown,
-        message: `${pathShown} declares no resolvable launcher entry`,
-      }),
-    )
-  }
-  return Result.succeed({ version: version.value, installAnchor: physical, packageDir, binPath })
+): Effect.Effect<Result.Result<ValidatedInstallation, DshFailure>, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const physical = yield* fs.realPath(anchor).pipe(Effect.orElseSucceed(() => anchor))
+    const manifest = yield* readPackageManifest(physical)
+    if (manifest === undefined) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: pathShown,
+          message: `cannot read a DSH manifest at ${pathShown}: expected a package.json`,
+        }),
+      )
+    }
+    const name = readOptionalString(manifest.name)
+    if (Option.isNone(name) || name.value !== DSH_PACKAGE_NAME) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: pathShown,
+          message: `${pathShown} is not a ${DSH_PACKAGE_NAME} package (found ${JSON.stringify(manifest.name)})`,
+        }),
+      )
+    }
+    const version = readNonEmptyString(manifest.version)
+    if (Option.isNone(version)) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: pathShown,
+          message: `${pathShown} declares no DSH version`,
+        }),
+      )
+    }
+    if (options.requireSupported === true && !supportsDshVersion(version.value)) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.unsupported_version',
+          path: pathShown,
+          version: version.value,
+          range: SUPPORTED_DSH_RANGE,
+          message: `DSH ${version.value} is outside eedsh's supported range ${SUPPORTED_DSH_RANGE}`,
+        }),
+      )
+    }
+    const packageDir = dirname(physical)
+    const binPath = yield* resolveLauncherEntry(manifest, packageDir)
+    if (binPath === undefined) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: pathShown,
+          message: `${pathShown} declares no resolvable launcher entry`,
+        }),
+      )
+    }
+    return Result.succeed({ version: version.value, installAnchor: physical, packageDir, binPath })
+  })
 }
 
 /**
@@ -405,14 +405,27 @@ export function installationFromSelection(
   input: string,
   cwd: string,
   options: { requireSupported?: boolean } = {},
-): Result.Result<ValidatedInstallation, DshFailure> {
-  const absolute = isAbsolute(input) ? input : resolve(cwd, input)
-  let anchor: string
-  try {
-    const stats = statSync(absolute)
-    if (stats.isDirectory()) anchor = join(absolute, 'package.json')
-    else if (basename(absolute) === 'package.json') anchor = absolute
-    else {
+): Effect.Effect<Result.Result<ValidatedInstallation, DshFailure>, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const absolute = isAbsolute(input) ? input : resolve(cwd, input)
+    const stats = yield* Effect.result(fs.stat(absolute))
+    if (Result.isFailure(stats)) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: input,
+          message: `cannot read the DSH installation at ${input}`,
+          cause: stats.failure,
+        }),
+      )
+    }
+    let anchor: string
+    if (stats.success.type === 'Directory') {
+      anchor = join(absolute, 'package.json')
+    } else if (basename(absolute) === 'package.json') {
+      anchor = absolute
+    } else {
       return Result.fail(
         dshFailure({
           code: 'dsh.anchor_invalid',
@@ -421,17 +434,8 @@ export function installationFromSelection(
         }),
       )
     }
-  } catch (cause) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: input,
-        message: `cannot read the DSH installation at ${input}`,
-        cause,
-      }),
-    )
-  }
-  return installationFromManifestAnchor(anchor, input, options)
+    return yield* installationFromManifestAnchor(anchor, input, options)
+  })
 }
 
 /**
@@ -443,24 +447,28 @@ export function installationFromSelection(
  */
 export function validateRecordedInstallation(
   record: InstallationAnchor,
-): Result.Result<ValidatedInstallation, DshFailure> {
-  const validated = installationFromManifestAnchor(record.installAnchor, record.installAnchor, {
-    requireSupported: true,
-  })
-  if (Result.isFailure(validated)) return validated
-  if (record.version !== undefined && record.version !== validated.success.version) {
-    return Result.fail(
-      dshFailure({
-        code: 'dsh.anchor_invalid',
-        path: record.installAnchor,
-        version: validated.success.version,
-        message:
-          `the recorded anchor version ${record.version} does not match the installed DSH ` +
-          `${validated.success.version} at ${record.installAnchor}`,
-      }),
+): Effect.Effect<Result.Result<ValidatedInstallation, DshFailure>, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const validated = yield* installationFromManifestAnchor(
+      record.installAnchor,
+      record.installAnchor,
+      { requireSupported: true },
     )
-  }
-  return validated
+    if (Result.isFailure(validated)) return validated
+    if (record.version !== undefined && record.version !== validated.success.version) {
+      return Result.fail(
+        dshFailure({
+          code: 'dsh.anchor_invalid',
+          path: record.installAnchor,
+          version: validated.success.version,
+          message:
+            `the recorded anchor version ${record.version} does not match the installed DSH ` +
+            `${validated.success.version} at ${record.installAnchor}`,
+        }),
+      )
+    }
+    return validated
+  })
 }
 
 /** Provenance supplied when a command records an installation. */
@@ -497,49 +505,49 @@ export function anchorForInstallation(
 }
 
 /**
- * Atomically write the anchor below the environment's DSH home. The write is
- * synchronous because discovery runs before the command's Effect services are
- * built; failures are returned rather than thrown.
- * A successful write also removes the retired `.eedsh/installation.json`
- * location.
+ * Atomically write the anchor below the environment's DSH home. Failures are
+ * returned rather than raised. A successful write also removes the retired
+ * `.eedsh/installation.json` location.
  * @param env - environment mapping.
  * @param anchor - the record to write.
  * @returns whether the record was written.
  */
-export function writeInstallationAnchorSync(
+export function writeInstallationAnchor(
   env: Record<string, string | undefined>,
   anchor: InstallationAnchor,
-): InstallationAnchorWrite {
-  const home = resolveDshHome(undefined, env)
-  const path = installationAnchorPath(home)
-  const directory = dirname(path)
-  let temp: string | undefined
-  try {
-    mkdirSync(directory, { recursive: true, mode: 0o700 })
-    temp = join(directory, `.installation.json.${process.pid}.${randomUUID()}.tmp`)
-    writeFileSync(temp, encodeInstallationAnchor(anchor), { encoding: 'utf8', mode: 0o600 })
-    renameSync(temp, path)
-  } catch (cause) {
-    if (temp !== undefined) {
-      try {
-        rmSync(temp, { force: true })
-      } catch {
+): Effect.Effect<InstallationAnchorWrite, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const home = resolveDshHome(undefined, env)
+    const path = installationAnchorPath(home)
+    const directory = dirname(path)
+    let temp: string | undefined
+    const written = yield* Effect.result(
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 })
+        temp = join(directory, `.installation.json.${process.pid}.${randomUUID()}.tmp`)
+        yield* fs.writeFileString(temp, encodeInstallationAnchor(anchor), { mode: 0o600 })
+        yield* fs.rename(temp, path)
+      }),
+    )
+    if (Result.isFailure(written)) {
+      const failedTemp = temp
+      if (failedTemp !== undefined) {
         // The target record is untouched; cleanup is best effort.
+        yield* fs.remove(failedTemp, { force: true }).pipe(Effect.orElseSucceed(() => undefined))
       }
+      return { ok: false, error: messageOf(written.failure) }
     }
-    return { ok: false, error: messageOf(cause) }
-  }
-  try {
-    chmodSync(path, 0o600)
-  } catch {
     // Windows has no POSIX mode bits; the owner-only intent is best effort there.
-  }
-  cleanupRetiredInstallationAnchorSync(home)
-  return { ok: true }
+    yield* fs.chmod(path, 0o600).pipe(Effect.orElseSucceed(() => undefined))
+    cleanupRetiredInstallationAnchorSync(home)
+    return { ok: true }
+  })
 }
 
 /** The default anchor store: the machine-local record below the DSH home. */
 export const defaultInstallationAnchorStore: InstallationAnchorStore = {
-  read: (env) => readInstallationAnchorSnapshot(env).record,
-  write: (env, anchor) => writeInstallationAnchorSync(env, anchor),
+  read: (env) =>
+    readInstallationAnchorSnapshot(env).pipe(Effect.map((snapshot) => snapshot.record)),
+  write: (env, anchor) => writeInstallationAnchor(env, anchor),
 }

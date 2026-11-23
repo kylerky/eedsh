@@ -6,7 +6,6 @@ import { isSafeProfileName } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
-import { versionProbe } from '../../command-runner'
 import { doctor, doctorExitCode, formatDoctorReport } from '../../doctor'
 import type { DiscoveredDshInstallation } from '../../dsh'
 import { EXIT_FAILURE, EXIT_USAGE } from '../../exit'
@@ -14,10 +13,8 @@ import { resolveDshHome } from '../../internal/dsh-home'
 import {
   BundleResolver,
   type CliServices,
-  CommandRunner,
   DshDiscovery,
   Environment,
-  InstallationAnchor,
   Output,
 } from '../../internal/effect/services'
 import { selectProfile } from '../../selection'
@@ -47,15 +44,11 @@ export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, neve
       output.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
-    const store = yield* InstallationAnchor
-    const runner = yield* CommandRunner
     const discovery = yield* DshDiscovery
-    const discovered = discovery.discover({
+    const discovered = yield* discovery.discover({
       ...(Option.isSome(input.dsh) ? { explicit: input.dsh.value } : {}),
       env,
       cwd,
-      readAnchor: () => store.read(env),
-      probeVersion: versionProbe(runner, env),
     })
     let doctorDsh: DiscoveredDshInstallation | undefined
     if (Result.isSuccess(discovered)) {

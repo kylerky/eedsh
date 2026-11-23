@@ -2,7 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ReplSession } from '../../src/repl/session'
+import { defaultSpawn } from '../../src/spawn'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
+import { realFileSystemValue } from '../support/cli'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -79,6 +81,8 @@ export default defineConfig()
       env: { DSH_HOME: join(work, 'home') },
       stdout: (line) => out.push(line),
       stderr: (line) => err.push(line),
+      fileSystem: await realFileSystemValue(),
+      spawner: defaultSpawn,
       installPreview,
       cacheRoot: join(work, 'cache'),
       watchConfig: false,

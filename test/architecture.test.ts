@@ -390,12 +390,10 @@ describe('installation anchor boundaries', () => {
       .filter(({ specifier }) => specifier.endsWith('/command-runner'))
       .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
       .sort()
-    // The setup path and the doctor adapter hold the runner seam; the services
-    // module names its type. Discovery and bootstrap select an installation,
-    // and the repl preview and live layer use the shared invocation helper.
+    // Discovery and bootstrap hold the runner seam; the services module names
+    // its type. The live layer binds the runner to the child-process spawner,
+    // and the repl preview uses the shared invocation helper.
     expect(importers).toEqual([
-      'packages/cli/src/command/adapters/doctor.ts',
-      'packages/cli/src/command/prepare.ts',
       'packages/cli/src/dsh-bootstrap.ts',
       'packages/cli/src/dsh-discovery.ts',
       'packages/cli/src/internal/effect/layer.ts',

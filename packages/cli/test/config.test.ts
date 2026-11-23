@@ -6,11 +6,16 @@ import * as Schema from 'effect/Schema'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   ConfigError,
-  loadConfig,
+  loadConfig as loadConfigUnprovided,
   unsupportedConfigExtensionError,
   validateConfigPath,
 } from '../src/config'
 import { CONFIG_FILENAME, configHome, defaultConfigPath } from '../src/config-path'
+
+const loadConfig = (configPath: string) =>
+  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { clearTestBridge, installTestBridge } from './support/bridge'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
@@ -117,7 +122,6 @@ export default defineConfig()
 
 const localRefSource = `
 import { defineConfig } from '@eedsh/config'
-
 export default defineConfig()
   .profile('work', (profile) => {
     profile

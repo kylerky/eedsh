@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { Effect } from 'effect'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
@@ -18,6 +19,7 @@ import {
   fakeDshDiscovery,
   fakeWatcher,
   liveTestDshDiscovery,
+  realFileSystem,
   runCli,
 } from './support/cli'
 import {
@@ -125,7 +127,12 @@ describe('command surface characterization', () => {
   it('runs check through the compiler seam without materializing', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner({ listing: `${fixture('basic')}\n` })
-    expect(await h.run(['check', '--config', fixture('basic')], { spawner: spawn })).toBe(0)
+    expect(
+      await h.run(['check', '--config', fixture('basic')], {
+        spawner: spawn,
+        extra: [realFileSystem],
+      }),
+    ).toBe(0)
     expect(calls).toHaveLength(2)
     expect(calls[0]?.args).toContain('--listFilesOnly')
     expect(calls[1]?.options.stdio).toBe('inherit')
@@ -194,7 +201,7 @@ describe('command surface characterization', () => {
         env: { DSH_HOME: home, PATH: bin, XDG_CONFIG_HOME: join(home, 'xdg') },
         cwd: root,
       },
-      commandRunner: () => ({ status: 1, stdout: '', stderr: '' }),
+      commandRunner: () => Effect.succeed({ status: 1, stdout: '', stderr: '' }),
       discovery: liveTestDshDiscovery(),
     })
     expect(code).toBe(1)

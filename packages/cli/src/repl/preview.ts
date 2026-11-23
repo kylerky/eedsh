@@ -4,14 +4,14 @@
  * installed in the XDG cache and never written into the profile.
  * @module @eedsh/cli/repl/preview
  */
-import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { type Dirent, existsSync } from 'node:fs'
-import { copyFile, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { canonicalJson } from '@eedsh/plan'
+import { Effect, Option, PlatformError } from 'effect'
+import type * as FileSystem from 'effect/FileSystem'
 import { pnpmInvocation } from '../command-runner'
+import type { SpawnLike } from '../spawn'
 
 /** One exact package request for a preview. */
 export interface PreviewSpec {
@@ -36,6 +36,14 @@ export interface PreparePreviewInput {
   readonly now?: () => number
   /** Age after which an unused preview is removed. */
   readonly maxAgeMs?: number
+}
+
+/** The services preview preparation reads and installs through. */
+export interface PreviewServices {
+  /** The file-system service used for every preview read and write. */
+  readonly fileSystem: FileSystem.FileSystem
+  /** The child-process seam used by the default pnpm installer. */
+  readonly spawner: SpawnLike
 }
 
 /** A ready preview directory and the profile override that selects it. */
@@ -75,12 +83,42 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function optionalFile(path: string): Promise<string | undefined> {
+/** Read a file, or undefined when it is missing or unreadable. */
+async function optionalFile(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+): Promise<string | undefined> {
   try {
-    return await readFile(path, 'utf8')
+    return await Effect.runPromise(fileSystem.readFileString(path))
   } catch {
     return undefined
   }
+}
+
+/** Whether a path exists; an inspection failure counts as missing. */
+async function pathExists(fileSystem: FileSystem.FileSystem, path: string): Promise<boolean> {
+  try {
+    return await Effect.runPromise(fileSystem.exists(path))
+  } catch {
+    return false
+  }
+}
+
+/** The reported modification time, in milliseconds, or zero when unavailable. */
+function modifiedTime(info: FileSystem.File.Info): number {
+  return Option.match(info.mtime, {
+    onNone: () => 0,
+    onSome: (date) => date.getTime(),
+  })
+}
+
+/** The reported creation time, in milliseconds, or zero when unavailable. */
+function createdTime(info: FileSystem.File.Info): number {
+  const birthtime = Option.match(info.birthtime, {
+    onNone: () => 0,
+    onSome: (date) => date.getTime(),
+  })
+  return birthtime || modifiedTime(info)
 }
 
 function normalizeSpecs(specs: readonly PreviewSpec[]): PreviewSpec[] {
@@ -91,12 +129,20 @@ function normalizeSpecs(specs: readonly PreviewSpec[]): PreviewSpec[] {
     .map(([name, version]) => ({ name, version }))
 }
 
-/** Compute the cache key from the copied inputs and requested exact specs. */
-export async function previewKey(input: PreparePreviewInput): Promise<string> {
+/**
+ * Compute the cache key from the copied inputs and requested exact specs.
+ * @param input - profile, selected DSH version, and requested specs.
+ * @param fileSystem - the file-system service.
+ * @returns the hash-keyed cache directory name.
+ */
+export async function previewKey(
+  input: PreparePreviewInput,
+  fileSystem: FileSystem.FileSystem,
+): Promise<string> {
   const manifestPath = join(input.profileDir, 'package.json')
   let manifest: string
   try {
-    manifest = await readFile(manifestPath, 'utf8')
+    manifest = await Effect.runPromise(fileSystem.readFileString(manifestPath))
   } catch (cause) {
     throw new PreviewError({
       code: 'preview.profile_missing',
@@ -104,8 +150,10 @@ export async function previewKey(input: PreparePreviewInput): Promise<string> {
       message: `cannot prepare a preview: profile ${JSON.stringify(input.profileName)} has no manifest at ${manifestPath}: ${messageOf(cause)}`,
     })
   }
-  const workspace = (await optionalFile(join(input.profileDir, 'pnpm-workspace.yaml'))) ?? null
-  const lockfile = (await optionalFile(join(input.profileDir, 'pnpm-lock.yaml'))) ?? null
+  const workspace =
+    (await optionalFile(fileSystem, join(input.profileDir, 'pnpm-workspace.yaml'))) ?? null
+  const lockfile =
+    (await optionalFile(fileSystem, join(input.profileDir, 'pnpm-lock.yaml'))) ?? null
   const material = canonicalJson({
     profile: input.profileName,
     manifest,
@@ -124,9 +172,14 @@ interface PreviewMarker {
   readonly createdAt: number
 }
 
-async function readMarker(dir: string): Promise<PreviewMarker | undefined> {
+async function readMarker(
+  fileSystem: FileSystem.FileSystem,
+  dir: string,
+): Promise<PreviewMarker | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(join(dir, '.eedsh-preview.json'), 'utf8')) as unknown
+    const parsed = JSON.parse(
+      await Effect.runPromise(fileSystem.readFileString(join(dir, '.eedsh-preview.json'))),
+    ) as unknown
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
     const record = parsed as Record<string, unknown>
     if (record.key !== basename(dir)) return undefined
@@ -151,38 +204,51 @@ async function readMarker(dir: string): Promise<PreviewMarker | undefined> {
   }
 }
 
-async function packageInstalled(dir: string, name: string): Promise<boolean> {
-  return existsSync(join(dir, 'node_modules', ...name.split('/'), 'package.json'))
+async function packageInstalled(
+  fileSystem: FileSystem.FileSystem,
+  dir: string,
+  name: string,
+): Promise<boolean> {
+  return await pathExists(fileSystem, join(dir, 'node_modules', ...name.split('/'), 'package.json'))
 }
 
 async function reusable(
+  fileSystem: FileSystem.FileSystem,
   dir: string,
   key: string,
   specs: readonly PreviewSpec[],
   profileName: string,
 ): Promise<boolean> {
-  const marker = await readMarker(dir)
+  const marker = await readMarker(fileSystem, dir)
   if (marker === undefined) return false
   if (marker.key !== key || marker.profile !== profileName) return false
   if (canonicalJson(marker.specs) !== canonicalJson(specs)) return false
   for (const spec of specs) {
-    if (!(await packageInstalled(dir, spec.name))) return false
+    if (!(await packageInstalled(fileSystem, dir, spec.name))) return false
   }
   return true
 }
 
-/** The default installer: pnpm install inside the preview directory. */
-export async function installPreviewWithPnpm(dir: string): Promise<void> {
+/**
+ * The default installer: pnpm install inside the preview directory.
+ * @param dir - the preview directory.
+ * @param spawner - the child-process spawn seam.
+ * @returns a promise that resolves when pnpm exits successfully.
+ */
+export async function installPreviewWithPnpm(dir: string, spawner: SpawnLike): Promise<void> {
   const invocation = pnpmInvocation(['install'])
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(invocation.command, [...invocation.args], {
+    const child = spawner(invocation.command, [...invocation.args], {
       cwd: dir,
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: 'pipe',
       env: process.env,
     })
     let stderr = ''
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString()
+    // The spawn seam pipes all three streams; drain stdout so a chatty installer
+    // cannot block on a full pipe while its output stays suppressed.
+    child.stdout?.on('data', () => {})
+    child.stderr?.on('data', (chunk: unknown) => {
+      stderr += String(chunk)
     })
     child.on('error', (cause) => {
       reject(
@@ -207,9 +273,13 @@ export async function installPreviewWithPnpm(dir: string): Promise<void> {
   })
 }
 
-async function writePreviewManifest(dir: string, specs: readonly PreviewSpec[]): Promise<void> {
+async function writePreviewManifest(
+  fileSystem: FileSystem.FileSystem,
+  dir: string,
+  specs: readonly PreviewSpec[],
+): Promise<void> {
   const path = join(dir, 'package.json')
-  const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
+  const parsed = JSON.parse(await Effect.runPromise(fileSystem.readFileString(path))) as unknown
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new PreviewError({
       code: 'preview.profile_invalid',
@@ -226,17 +296,27 @@ async function writePreviewManifest(dir: string, specs: readonly PreviewSpec[]):
       : {}
   for (const spec of specs) dependencies[spec.name] = spec.version
   manifest.dependencies = dependencies
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`)
+  await Effect.runPromise(
+    fileSystem.writeFileString(path, `${JSON.stringify(manifest, null, 2)}\n`),
+  )
 }
 
-async function copyProfileMetadata(input: PreparePreviewInput, dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true })
-  await copyFile(join(input.profileDir, 'package.json'), join(dir, 'package.json'))
+async function copyProfileMetadata(
+  input: PreparePreviewInput,
+  dir: string,
+  fileSystem: FileSystem.FileSystem,
+): Promise<void> {
+  await Effect.runPromise(fileSystem.makeDirectory(dir, { recursive: true }))
+  await Effect.runPromise(
+    fileSystem.copyFile(join(input.profileDir, 'package.json'), join(dir, 'package.json')),
+  )
   for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
     const source = join(input.profileDir, file)
-    if (existsSync(source)) await copyFile(source, join(dir, file))
+    if (await pathExists(fileSystem, source)) {
+      await Effect.runPromise(fileSystem.copyFile(source, join(dir, file)))
+    }
   }
-  await writePreviewManifest(dir, normalizeSpecs(input.specs))
+  await writePreviewManifest(fileSystem, dir, normalizeSpecs(input.specs))
 }
 
 const inProcessLocks = new Map<string, Promise<void>>()
@@ -261,19 +341,27 @@ async function withInProcessLock<T>(key: string, run: () => Promise<T>): Promise
 const LOCK_TIMEOUT_MS = 30_000
 const STALE_LOCK_MS = 5 * 60_000
 
-async function acquireFileLock(path: string): Promise<() => Promise<void>> {
+async function acquireFileLock(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+): Promise<() => Promise<void>> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS
   while (true) {
     try {
-      const handle = await open(path, 'wx')
-      await handle.writeFile(String(process.pid))
-      await handle.close()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* fileSystem.open(path, { flag: 'wx' })
+            yield* handle.writeAll(new TextEncoder().encode(String(process.pid)))
+          }),
+        ),
+      )
       return async () => {
-        await rm(path, { force: true })
+        await Effect.runPromise(fileSystem.remove(path, { force: true }))
       }
     } catch (cause) {
-      const code = (cause as NodeJS.ErrnoException).code
-      if (code !== 'EEXIST') {
+      const exists = PlatformError.isPlatformError(cause) && cause.reason._tag === 'AlreadyExists'
+      if (!exists) {
         throw new PreviewError({
           code: 'preview.lock_failed',
           path,
@@ -281,9 +369,9 @@ async function acquireFileLock(path: string): Promise<() => Promise<void>> {
         })
       }
       try {
-        const info = await stat(path)
-        if (Date.now() - info.mtimeMs > STALE_LOCK_MS) {
-          await rm(path, { force: true })
+        const info = await Effect.runPromise(fileSystem.stat(path))
+        if (Date.now() - modifiedTime(info) > STALE_LOCK_MS) {
+          await Effect.runPromise(fileSystem.remove(path, { force: true }))
           continue
         }
       } catch {
@@ -305,9 +393,14 @@ async function acquireFileLock(path: string): Promise<() => Promise<void>> {
  * Prepare or reuse a preview for the selected profile. Concurrent sessions
  * with the same key serialize on an in-process chain and a cache lock file.
  * @param input - profile, selected DSH version, specs, and cache/install seams.
+ * @param services - the file-system and spawn services to read and install through.
  * @returns the prepared preview and its profile-root override.
  */
-export async function preparePreview(input: PreparePreviewInput): Promise<PreparedPreview> {
+export async function preparePreview(
+  input: PreparePreviewInput,
+  services: PreviewServices,
+): Promise<PreparedPreview> {
+  const { fileSystem, spawner } = services
   const specs = normalizeSpecs(input.specs)
   if (specs.length === 0) {
     throw new PreviewError({
@@ -315,10 +408,10 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
       message: 'a preview needs at least one exact package spec, such as @acme/x@1.2.3',
     })
   }
-  const key = await previewKey(input)
+  const key = await previewKey(input, fileSystem)
   const cacheRoot = input.cacheRoot ?? previewCacheRoot(input.env)
-  await mkdir(cacheRoot, { recursive: true })
-  await cleanupPreviews(cacheRoot, {
+  await Effect.runPromise(fileSystem.makeDirectory(cacheRoot, { recursive: true }))
+  await cleanupPreviews(cacheRoot, fileSystem, {
     ...(input.now === undefined ? {} : { now: input.now }),
     ...(input.maxAgeMs === undefined ? {} : { maxAgeMs: input.maxAgeMs }),
   }).catch(() => undefined)
@@ -326,9 +419,9 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
   const lockPath = join(cacheRoot, `${key}.lock`)
 
   return withInProcessLock(key, async () => {
-    const release = await acquireFileLock(lockPath)
+    const release = await acquireFileLock(fileSystem, lockPath)
     try {
-      if (await reusable(dir, key, specs, input.profileName)) {
+      if (await reusable(fileSystem, dir, key, specs, input.profileName)) {
         return {
           key,
           dir,
@@ -338,9 +431,10 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
           reused: true,
         }
       }
-      await rm(dir, { recursive: true, force: true })
-      await copyProfileMetadata(input, dir)
-      const install = input.install ?? installPreviewWithPnpm
+      await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
+      await copyProfileMetadata(input, dir, fileSystem)
+      const install =
+        input.install ?? ((installDir: string) => installPreviewWithPnpm(installDir, spawner))
       try {
         await install(dir)
       } catch (cause) {
@@ -353,7 +447,7 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
             })
       }
       for (const spec of specs) {
-        if (!(await packageInstalled(dir, spec.name))) {
+        if (!(await packageInstalled(fileSystem, dir, spec.name))) {
           throw new PreviewError({
             code: 'preview.package_missing',
             path: dir,
@@ -367,7 +461,12 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
         specs,
         createdAt: (input.now ?? Date.now)(),
       }
-      await writeFile(join(dir, '.eedsh-preview.json'), `${JSON.stringify(marker, null, 2)}\n`)
+      await Effect.runPromise(
+        fileSystem.writeFileString(
+          join(dir, '.eedsh-preview.json'),
+          `${JSON.stringify(marker, null, 2)}\n`,
+        ),
+      )
       return {
         key,
         dir,
@@ -382,9 +481,14 @@ export async function preparePreview(input: PreparePreviewInput): Promise<Prepar
   })
 }
 
-/** Remove one preview directory, leaving its lock file alone. */
-export async function removePreview(dir: string): Promise<void> {
-  await rm(dir, { recursive: true, force: true })
+/**
+ * Remove one preview directory, leaving its lock file alone.
+ * @param dir - the preview directory.
+ * @param fileSystem - the file-system service.
+ * @returns a promise that resolves once the directory is gone.
+ */
+export async function removePreview(dir: string, fileSystem: FileSystem.FileSystem): Promise<void> {
+  await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
 }
 
 /** Inputs for {@link cleanupPreviews}. */
@@ -397,37 +501,40 @@ export interface CleanupPreviewsOptions {
  * Remove preview directories older than the maximum age. Markers supply the
  * creation time; a directory without a readable marker falls back to mtime.
  * @param cacheRoot - the preview cache root.
+ * @param fileSystem - the file-system service.
  * @param options - age and clock.
  * @returns the removed directories.
  */
 export async function cleanupPreviews(
   cacheRoot: string,
+  fileSystem: FileSystem.FileSystem,
   options: CleanupPreviewsOptions = {},
 ): Promise<string[]> {
   const maxAge = options.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000
   const now = (options.now ?? Date.now)()
-  let entries: Dirent[]
+  let entries: string[]
   try {
-    entries = await readdir(cacheRoot, { withFileTypes: true })
+    entries = await Effect.runPromise(fileSystem.readDirectory(cacheRoot))
   } catch {
     return []
   }
   const removed: string[] = []
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const dir = join(cacheRoot, entry.name)
+  for (const name of entries) {
+    const dir = join(cacheRoot, name)
     let created = now
-    const marker = await readMarker(dir)
+    const marker = await readMarker(fileSystem, dir)
     if (marker !== undefined) created = marker.createdAt
     else {
       try {
-        created = (await stat(dir)).birthtimeMs || (await stat(dir)).mtimeMs
+        const info = await Effect.runPromise(fileSystem.stat(dir))
+        if (info.type !== 'Directory') continue
+        created = createdTime(info)
       } catch {
         continue
       }
     }
     if (now - created <= maxAge) continue
-    await rm(dir, { recursive: true, force: true })
+    await Effect.runPromise(fileSystem.remove(dir, { recursive: true, force: true }))
     removed.push(dir)
   }
   return removed

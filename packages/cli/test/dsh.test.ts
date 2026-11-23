@@ -3,9 +3,13 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
+  type DiscoverDshOptions,
+  type DiscoveredDshInstallation,
   discoverDshInstallation,
   resolveBundleLayers,
   SUPPORTED_DSH_RANGE,
@@ -74,6 +78,15 @@ async function unmappableLauncher(parent: string): Promise<{ dir: string; launch
 
 const require = createRequire(import.meta.url)
 
+/** Run discovery over the process filesystem, as the live service does. */
+function discover(
+  options: DiscoverDshOptions,
+): Promise<Result.Result<DiscoveredDshInstallation, DshFailure>> {
+  return Effect.runPromise(
+    discoverDshInstallation(options).pipe(Effect.provide(NodeServices.layer)),
+  )
+}
+
 describe('dsh resolution', () => {
   it('returns a tagged failure for a missing bundle', () => {
     const anchor = require.resolve('@deepseek-ai/dsh/package.json')
@@ -118,7 +131,7 @@ describe('DSH discovery precedence', () => {
       EEDSH_DSH_ANCHOR: anchor.anchor,
     }
 
-    const withExplicit = discoverDshInstallation({
+    const withExplicit = await discover({
       explicit: explicit.dir,
       env,
       cwd: project,
@@ -129,14 +142,14 @@ describe('DSH discovery precedence', () => {
       expect(withExplicit.success.source).toBe('explicit')
     }
 
-    const withAnchor = discoverDshInstallation({ env, cwd: project })
+    const withAnchor = await discover({ env, cwd: project })
     expect(Result.isSuccess(withAnchor)).toBe(true)
     if (Result.isSuccess(withAnchor)) {
       expect(withAnchor.success.version).toBe('0.2.1-rc.5')
       expect(withAnchor.success.source).toBe('anchor')
     }
 
-    const withPath = discoverDshInstallation({ env: { PATH: pathDir }, cwd: project })
+    const withPath = await discover({ env: { PATH: pathDir }, cwd: project })
     expect(Result.isSuccess(withPath)).toBe(true)
     if (Result.isSuccess(withPath)) {
       expect(withPath.success.version).toBe('0.2.2-alpha.2')
@@ -146,7 +159,7 @@ describe('DSH discovery precedence', () => {
 
     // Keep discovery hermetic: a machine-level DSH home would supply a record
     // that outranks the project-local installation.
-    const withProject = discoverDshInstallation({
+    const withProject = await discover({
       env: { DSH_HOME: join(rootDir, 'dsh-home') },
       cwd: project,
     })
@@ -161,7 +174,7 @@ describe('DSH discovery precedence', () => {
     const rootDir = await tempDir('discovery-input-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.2.1-rc.2')
     for (const explicit of [installation.dir, installation.anchor]) {
-      const result = discoverDshInstallation({ explicit, env: {}, cwd: rootDir })
+      const result = await discover({ explicit, env: {}, cwd: rootDir })
       expect(Result.isSuccess(result), explicit).toBe(true)
       if (Result.isSuccess(result)) {
         expect(result.success.installAnchor).toBe(installation.anchor)
@@ -185,9 +198,7 @@ describe('DSH discovery precedence', () => {
     )
 
     for (const explicit of [join(rootDir, 'missing'), notDsh]) {
-      const failure = failureOf(
-        discoverDshInstallation({ explicit, env: { PATH: pathDir }, cwd: rootDir }),
-      )
+      const failure = failureOf(await discover({ explicit, env: { PATH: pathDir }, cwd: rootDir }))
       expect(failure.code).toBe('dsh.anchor_invalid')
       expect(failure.message).toContain(explicit)
     }
@@ -196,7 +207,7 @@ describe('DSH discovery precedence', () => {
   it('reports a tagged not-found failure naming every remedy', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'eedsh-discovery-missing-'))
     const failure = failureOf(
-      discoverDshInstallation({ env: { DSH_HOME: join(rootDir, 'dsh-home') }, cwd: rootDir }),
+      await discover({ env: { DSH_HOME: join(rootDir, 'dsh-home') }, cwd: rootDir }),
     )
     expect(failure.code).toBe('dsh.not_found')
     expect(failure.message).toContain('--dsh')
@@ -207,7 +218,7 @@ describe('DSH discovery precedence', () => {
   it('returns one installation object carrying anchor, launcher, version, and source', async () => {
     const rootDir = await tempDir('discovery-shape-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.2.1-rc.2')
-    const result = discoverDshInstallation({ explicit: installation.dir, env: {}, cwd: rootDir })
+    const result = await discover({ explicit: installation.dir, env: {}, cwd: rootDir })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success).toMatchObject({
       version: '0.2.1-rc.2',
@@ -230,7 +241,7 @@ describe('DSH discovery precedence', () => {
     await writeFile(join(rootDir, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
     const launcher = join(binDir, 'dsh.CMD')
     await writeFile(launcher, '@echo off\n')
-    const result = discoverDshInstallation({
+    const result = await discover({
       env: { PATH: binDir, PATHEXT: '.EXE;.CMD' },
       cwd: rootDir,
     })
@@ -249,7 +260,7 @@ describe('DSH version validation', () => {
   it('accepts a supported installation and returns it', async () => {
     const rootDir = await tempDir('discovery-version-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.2.2-alpha.2')
-    const discovered = discoverDshInstallation({
+    const discovered = await discover({
       explicit: installation.dir,
       env: {},
       cwd: rootDir,
@@ -262,7 +273,7 @@ describe('DSH version validation', () => {
   it('rejects an unsupported installation with its version and range', async () => {
     const rootDir = await tempDir('discovery-unsupported-')
     const installation = await writeInstallation(rootDir, 'dsh', '0.3.0')
-    const discovered = discoverDshInstallation({
+    const discovered = await discover({
       explicit: installation.dir,
       env: {},
       cwd: rootDir,
@@ -284,13 +295,13 @@ describe('recorded installation anchor', () => {
     const bin = await unmappableLauncher(rootDir)
     const record = recordedAnchor(installation, { launcher: bin.launcher, manager: 'pnpm' })
     const probes: string[] = []
-    const result = discoverDshInstallation({
+    const result = await discover({
       env: { PATH: bin.dir },
       cwd: rootDir,
-      readAnchor: () => record,
+      readAnchor: () => Effect.succeed(record),
       probeVersion: (launcher) => {
         probes.push(launcher)
-        return '0.2.1-rc.2'
+        return Effect.succeed('0.2.1-rc.2')
       },
     })
     if (Result.isFailure(result)) throw result.failure
@@ -313,21 +324,21 @@ describe('recorded installation anchor', () => {
       throw new Error('the record must not be probed when an explicit selection wins')
     }
 
-    const withExplicit = discoverDshInstallation({
+    const withExplicit = await discover({
       explicit: explicit.dir,
       env: { PATH: bin.dir, EEDSH_DSH_ANCHOR: envAnchor.anchor },
       cwd: rootDir,
-      readAnchor: () => record,
+      readAnchor: () => Effect.succeed(record),
       probeVersion: probe,
     })
     if (Result.isFailure(withExplicit)) throw withExplicit.failure
     expect(withExplicit.success.source).toBe('explicit')
     expect(withExplicit.success.version).toBe('0.2.1-rc.2')
 
-    const withEnvAnchor = discoverDshInstallation({
+    const withEnvAnchor = await discover({
       env: { PATH: bin.dir, EEDSH_DSH_ANCHOR: envAnchor.anchor },
       cwd: rootDir,
-      readAnchor: () => record,
+      readAnchor: () => Effect.succeed(record),
       probeVersion: probe,
     })
     if (Result.isFailure(withEnvAnchor)) throw withEnvAnchor.failure
@@ -339,13 +350,13 @@ describe('recorded installation anchor', () => {
     const rootDir = await tempDir('discovery-recorded-nopath-')
     const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
     let probes = 0
-    const result = discoverDshInstallation({
+    const result = await discover({
       env: {},
       cwd: rootDir,
-      readAnchor: () => recordedAnchor(installation),
+      readAnchor: () => Effect.succeed(recordedAnchor(installation)),
       probeVersion: () => {
         probes += 1
-        return '0.2.1-rc.2'
+        return Effect.succeed('0.2.1-rc.2')
       },
     })
     if (Result.isFailure(result)) throw result.failure
@@ -362,13 +373,13 @@ describe('recorded installation anchor', () => {
     const record = recordedAnchor(installation, { launcher: join(rootDir, 'elsewhere', 'dsh') })
     let probes = 0
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: project,
-        readAnchor: () => record,
+        readAnchor: () => Effect.succeed(record),
         probeVersion: () => {
           probes += 1
-          return '0.2.1-rc.2'
+          return Effect.succeed('0.2.1-rc.2')
         },
       }),
     )
@@ -387,15 +398,16 @@ describe('recorded installation anchor', () => {
     const rootDir = await tempDir('discovery-recorded-missing-')
     const bin = await unmappableLauncher(rootDir)
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: rootDir,
-        readAnchor: () => ({
-          format: 1,
-          installAnchor: join(rootDir, 'gone', 'package.json'),
-          version: '0.2.1-rc.2',
-        }),
-        probeVersion: () => '0.2.1-rc.2',
+        readAnchor: () =>
+          Effect.succeed({
+            format: 1,
+            installAnchor: join(rootDir, 'gone', 'package.json'),
+            version: '0.2.1-rc.2',
+          }),
+        probeVersion: () => Effect.succeed('0.2.1-rc.2'),
       }),
     )
     expect(failure.code).toBe('dsh.launcher_unresolved')
@@ -407,11 +419,11 @@ describe('recorded installation anchor', () => {
     await writeInstallation(join(rootDir, 'node_modules', '@deepseek-ai'), 'dsh', '0.2.1-rc.2')
     const bin = await unmappableLauncher(rootDir)
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: rootDir,
-        readAnchor: () => undefined,
-        probeVersion: () => undefined,
+        readAnchor: () => Effect.succeed(undefined),
+        probeVersion: () => Effect.succeed(undefined),
       }),
     )
     expect(failure.code).toBe('dsh.launcher_unresolved')
@@ -420,10 +432,10 @@ describe('recorded installation anchor', () => {
   it('keeps project-local as the last fallback when no launcher and no record exist', async () => {
     const rootDir = await tempDir('discovery-recorded-project-')
     await writeInstallation(join(rootDir, 'node_modules', '@deepseek-ai'), 'dsh', '0.2.1-rc.2')
-    const result = discoverDshInstallation({
+    const result = await discover({
       env: {},
       cwd: rootDir,
-      readAnchor: () => undefined,
+      readAnchor: () => Effect.succeed(undefined),
       probeVersion: () => {
         throw new Error('no launcher exists to probe')
       },
@@ -437,11 +449,11 @@ describe('recorded installation anchor', () => {
     const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
     const bin = await unmappableLauncher(rootDir)
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: rootDir,
-        readAnchor: () => recordedAnchor(installation, { launcher: bin.launcher }),
-        probeVersion: () => '0.2.1-rc.5',
+        readAnchor: () => Effect.succeed(recordedAnchor(installation, { launcher: bin.launcher })),
+        probeVersion: () => Effect.succeed('0.2.1-rc.5'),
       }),
     )
     expect(failure.code).toBe('dsh.launcher_unresolved')
@@ -454,11 +466,11 @@ describe('recorded installation anchor', () => {
     const installation = await writeInstallation(rootDir, 'install', '0.2.1-rc.2')
     const bin = await unmappableLauncher(rootDir)
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: rootDir,
-        readAnchor: () => recordedAnchor(installation, { launcher: bin.launcher }),
-        probeVersion: () => undefined,
+        readAnchor: () => Effect.succeed(recordedAnchor(installation, { launcher: bin.launcher })),
+        probeVersion: () => Effect.succeed(undefined),
       }),
     )
     expect(failure.code).toBe('dsh.launcher_unresolved')
@@ -470,13 +482,13 @@ describe('recorded installation anchor', () => {
     const bin = await unmappableLauncher(rootDir)
     let probes = 0
     const failure = failureOf(
-      discoverDshInstallation({
+      await discover({
         env: { PATH: bin.dir },
         cwd: rootDir,
-        readAnchor: () => undefined,
+        readAnchor: () => Effect.succeed(undefined),
         probeVersion: () => {
           probes += 1
-          return undefined
+          return Effect.succeed(undefined)
         },
       }),
     )

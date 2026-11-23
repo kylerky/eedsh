@@ -1,13 +1,14 @@
 /**
  * `eedsh check`: run the config project's own TypeScript compiler against its
  * nearest tsconfig and print the exact invocation. The config is never
- * evaluated, nothing is published, and tsc's exit code is the command's.
+ * evaluated, nothing is published, and tsc's exit code is the command's. Every
+ * filesystem read goes through the FileSystem service.
  * @module @eedsh/cli/check
  */
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { Effect, Option, Schema } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import { EXIT_FAILURE } from './exit'
 import { CheckFailure } from './internal/effect/errors'
@@ -50,26 +51,31 @@ export interface CheckInput {
  * @param configDir - directory the config lives in.
  * @returns the installation's version and tsc path, or None when unresolved.
  */
-export function resolveTypeScript(configDir: string): Option.Option<TypeScriptInstallation> {
-  const require = createRequire(join(configDir, 'eedsh-check.cjs'))
-  const resolved = Result.try({
-    try: () => require.resolve('typescript/package.json'),
-    catch: () => undefined,
-  })
-  if (Result.isFailure(resolved)) return Option.none()
-  const manifestPath = resolved.success
-  const parsed = Result.try({
-    try: () =>
-      JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: unknown; bin?: unknown },
-    catch: () => undefined,
-  })
-  if (Result.isFailure(parsed)) return Option.none()
-  const manifest = parsed.success
-  const relative = readPackageBin(manifest.bin)
-  if (Option.isNone(relative)) return Option.none()
-  return Option.some({
-    version: Option.getOrElse(readVersion(manifest.version), () => 'unknown'),
-    binPath: resolve(dirname(manifestPath), relative.value),
+export function resolveTypeScript(
+  configDir: string,
+): Effect.Effect<Option.Option<TypeScriptInstallation>, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const require = createRequire(join(configDir, 'eedsh-check.cjs'))
+    const resolved = Result.try({
+      try: () => require.resolve('typescript/package.json'),
+      catch: () => undefined,
+    })
+    if (Result.isFailure(resolved)) return Option.none()
+    const manifestPath = resolved.success
+    const text = yield* fs.readFileString(manifestPath).pipe(Effect.orElseSucceed(() => undefined))
+    if (text === undefined) return Option.none()
+    const parsed = Result.try({
+      try: () => JSON.parse(text) as { version?: unknown; bin?: unknown },
+      catch: () => undefined,
+    })
+    if (Result.isFailure(parsed)) return Option.none()
+    const relative = readPackageBin(parsed.success.bin)
+    if (Option.isNone(relative)) return Option.none()
+    return Option.some({
+      version: Option.getOrElse(readVersion(parsed.success.version), () => 'unknown'),
+      binPath: resolve(dirname(manifestPath), relative.value),
+    })
   })
 }
 
@@ -77,16 +83,34 @@ function formatCommandLine(parts: readonly string[]): string {
   return parts.map((part) => (/[\s"']/.test(part) ? JSON.stringify(part) : part)).join(' ')
 }
 
-function samePath(left: string, right: string): boolean {
-  const real = Result.try(() => realpathSync(left) === realpathSync(right))
-  return Result.isSuccess(real) ? real.success : resolve(left) === resolve(right)
+/** Whether two paths name the same file, comparing real paths when both resolve. */
+function samePath(
+  fs: FileSystem.FileSystem,
+  left: string,
+  right: string,
+): Effect.Effect<boolean, never> {
+  return Effect.gen(function* () {
+    const a = yield* Effect.result(fs.realPath(left))
+    const b = yield* Effect.result(fs.realPath(right))
+    return Result.isSuccess(a) && Result.isSuccess(b)
+      ? a.success === b.success
+      : resolve(left) === resolve(right)
+  })
 }
 
-function listedFiles(stdout: string, configPath: string): boolean {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .some((line) => line !== '' && samePath(line, configPath))
+function listedFiles(
+  fs: FileSystem.FileSystem,
+  stdout: string,
+  configPath: string,
+): Effect.Effect<boolean, never> {
+  return Effect.gen(function* () {
+    for (const line of stdout.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      if (yield* samePath(fs, trimmed, configPath)) return true
+    }
+    return false
+  })
 }
 
 function writeLines(stderr: (line: string) => void, text: string): void {
@@ -143,9 +167,13 @@ function runInherited(input: CheckInput, command: string, args: string[]): Promi
  * @returns an Effect carrying the compiler's exit code, or a check failure when
  * the check cannot run. A nonzero compiler exit is a successful outcome.
  */
-export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure> {
+export function runCheck(
+  input: CheckInput,
+): Effect.Effect<number, CheckFailure, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    if (!existsSync(input.configPath)) {
+    const fs = yield* FileSystem.FileSystem
+    const configExists = yield* fs.exists(input.configPath).pipe(Effect.orElseSucceed(() => false))
+    if (!configExists) {
       return yield* Effect.fail(
         checkFailure(
           'config.not_found',
@@ -154,7 +182,9 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
       )
     }
 
-    const tsconfigPath = findTsconfigPath(input.configPath)
+    const tsconfigPath = yield* findTsconfigPath(input.configPath).pipe(
+      Effect.orElseSucceed(() => Option.none<string>()),
+    )
     if (Option.isNone(tsconfigPath)) {
       return yield* Effect.fail(
         checkFailure(
@@ -165,7 +195,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
     }
 
     const configDir = dirname(input.configPath)
-    const typescript = resolveTypeScript(configDir)
+    const typescript = yield* resolveTypeScript(configDir)
     if (Option.isNone(typescript)) {
       return yield* Effect.fail(
         checkFailure(
@@ -197,7 +227,7 @@ export function runCheck(input: CheckInput): Effect.Effect<number, CheckFailure>
       input.stderr(`eedsh: cannot list the project files with ${tsconfigPath.value}`)
       return listing.code
     }
-    if (!listedFiles(listing.stdout, input.configPath)) {
+    if (!(yield* listedFiles(fs, listing.stdout, input.configPath))) {
       return yield* Effect.fail(
         checkFailure(
           'check.config_not_in_project',

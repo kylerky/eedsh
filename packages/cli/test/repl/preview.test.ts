@@ -1,16 +1,24 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type * as FileSystem from 'effect/FileSystem'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   cleanupPreviews,
+  installPreviewWithPnpm,
+  type PreparePreviewInput,
   PreviewError,
+  type PreviewServices,
   preparePreview,
   previewCacheRoot,
 } from '../../src/repl/preview'
+import { defaultSpawn } from '../../src/spawn'
+import { realFileSystemValue } from '../support/cli'
+import { fakeSpawner } from '../support/process'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
 let work = ''
+let fileSystem: FileSystem.FileSystem
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(join(path, '..'), { recursive: true })
@@ -41,9 +49,20 @@ function installer(calls: string[]): (dir: string) => Promise<void> {
   }
 }
 
+/** The process service values every preview call runs through. */
+function services(): PreviewServices {
+  return { fileSystem, spawner: defaultSpawn }
+}
+
+/** Prepare a preview against the process service values. */
+async function prepare(input: PreparePreviewInput) {
+  return await preparePreview(input, services())
+}
+
 beforeEach(async () => {
   await mkdir(tempRoot, { recursive: true })
   work = await mkdtemp(join(tempRoot, 'preview-'))
+  fileSystem = await realFileSystemValue()
 })
 
 afterEach(async () => {
@@ -55,7 +74,7 @@ describe('preview cache', () => {
     const profileDir = await profile()
     const calls: string[] = []
     const cacheRoot = join(work, 'cache')
-    const first = await preparePreview({
+    const first = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -73,7 +92,7 @@ describe('preview cache', () => {
     expect(await readFile(join(first.dir, 'pnpm-lock.yaml'), 'utf8')).toContain('lockfileVersion')
     expect(first.override).toEqual({ work: first.dir })
 
-    const second = await preparePreview({
+    const second = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -90,7 +109,7 @@ describe('preview cache', () => {
   it('keys a preview by the selected installation version', async () => {
     const profileDir = await profile()
     const cacheRoot = join(work, 'cache')
-    const first = await preparePreview({
+    const first = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -99,7 +118,7 @@ describe('preview cache', () => {
       cacheRoot,
       install: installer([]),
     })
-    const second = await preparePreview({
+    const second = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.5',
@@ -138,7 +157,7 @@ describe('preview cache', () => {
       cacheRoot,
       install,
     }
-    const [left, right] = await Promise.all([preparePreview(input), preparePreview(input)])
+    const [left, right] = await Promise.all([prepare(input), prepare(input)])
     expect(calls).toBe(1)
     expect(maximum).toBe(1)
     expect(left.dir).toBe(right.dir)
@@ -148,7 +167,7 @@ describe('preview cache', () => {
     const profileDir = await profile()
     const calls: string[] = []
     const cacheRoot = join(work, 'cache')
-    const first = await preparePreview({
+    const first = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -160,7 +179,7 @@ describe('preview cache', () => {
     const markerPath = join(first.dir, '.eedsh-preview.json')
     const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, unknown>
     await writeJson(markerPath, { ...marker, key: 'stale' })
-    const second = await preparePreview({
+    const second = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -172,7 +191,7 @@ describe('preview cache', () => {
     expect(second.reused).toBe(false)
     expect(calls).toHaveLength(2)
     await rm(join(second.dir, 'node_modules', '@acme', 'x'), { recursive: true, force: true })
-    const third = await preparePreview({
+    const third = await prepare({
       profileName: 'work',
       profileDir,
       dshVersion: '0.2.1-rc.2',
@@ -188,7 +207,7 @@ describe('preview cache', () => {
   it('fails structurally when the profile has no manifest', async () => {
     const dir = join(work, 'missing')
     await expect(
-      preparePreview({
+      prepare({
         profileName: 'work',
         profileDir: dir,
         dshVersion: '0.2.1-rc.2',
@@ -216,7 +235,7 @@ describe('preview cache', () => {
       specs: [],
       createdAt: 900,
     })
-    const removed = await cleanupPreviews(cacheRoot, { now: () => 1000, maxAgeMs: 100 })
+    const removed = await cleanupPreviews(cacheRoot, fileSystem, { now: () => 1000, maxAgeMs: 100 })
     expect(removed).toEqual([oldDir])
     expect(await readFile(join(newDir, '.eedsh-preview.json'), 'utf8')).toContain('new')
   })
@@ -226,5 +245,25 @@ describe('preview cache', () => {
       join(work, 'xdg', 'eedsh', 'repl'),
     )
     expect(previewCacheRoot({ HOME: work })).toBe(join(work, '.cache', 'eedsh', 'repl'))
+  })
+})
+
+describe('pnpm installer', () => {
+  it('spawns pnpm install in the preview directory', async () => {
+    const { calls, spawn } = fakeSpawner()
+    const dir = join(work, 'preview')
+    await installPreviewWithPnpm(dir, spawn)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args).toContain('install')
+    expect(calls[0]?.options.cwd).toBe(dir)
+    expect(calls[0]?.options.stdio).toBe('pipe')
+  })
+
+  it('reports a failed install with its captured stderr', async () => {
+    const { spawn } = fakeSpawner({ exitCode: 1, stderr: 'registry unavailable' })
+    await expect(installPreviewWithPnpm(join(work, 'preview'), spawn)).rejects.toMatchObject({
+      code: 'preview.install_failed',
+      message: expect.stringContaining('registry unavailable'),
+    })
   })
 })

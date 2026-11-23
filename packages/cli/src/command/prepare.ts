@@ -5,13 +5,13 @@
  * service, so preparation takes no runtime bag.
  * @module @eedsh/cli/command/prepare
  */
-import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
+import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
-import { versionProbe } from '../command-runner'
 import { type ConfigLoadFailure, type LoadedConfig, validateConfigPath } from '../config'
 import { defaultConfigPath } from '../config-path'
 import type { DiscoveredDshInstallation } from '../dsh'
@@ -22,8 +22,6 @@ import type { DshFailure } from '../internal/effect/errors'
 import {
   BundleResolver,
   type BundleResolverShape,
-  CommandRunner,
-  type CommandRunnerShape,
   ConfigLoader,
   type ConfigLoaderShape,
   DshDiscovery,
@@ -52,9 +50,9 @@ export type PrepareServices =
   | DshDiscoveryShape
   | EnvironmentShape
   | InstallationAnchorShape
-  | CommandRunnerShape
   | BundleResolverShape
   | OutputShape
+  | FileSystem.FileSystem
 
 /**
  * Discover and validate one installation, then load its bridge. Runs before any
@@ -65,19 +63,20 @@ export type PrepareServices =
 export function requireDsh(
   explicit: Option.Option<string>,
   options: { readonly bootstrap?: boolean } = {},
-): Effect.Effect<DiscoveredDshInstallation, DshFailure, PrepareServices> {
+): Effect.Effect<
+  DiscoveredDshInstallation,
+  DshFailure | PlatformError.PlatformError,
+  PrepareServices
+> {
   return Effect.gen(function* () {
     const { env, cwd } = yield* Environment
     const discovery = yield* DshDiscovery
     const store = yield* InstallationAnchor
-    const runner = yield* CommandRunner
     const output = yield* Output
-    const discovered = discovery.discover({
+    const discovered = yield* discovery.discover({
       ...(Option.isSome(explicit) ? { explicit: explicit.value } : {}),
       env,
       cwd,
-      readAnchor: () => store.read(env),
-      probeVersion: versionProbe(runner, env),
     })
 
     let selected: DiscoveredDshInstallation
@@ -94,11 +93,10 @@ export function requireDsh(
         discovered.failure.code === 'dsh.launcher_unresolved' &&
         launcher !== undefined
       if (!canBootstrap) return yield* Effect.fail(discovered.failure)
-      const bootstrapped = discovery.bootstrap({
+      const bootstrapped = yield* discovery.bootstrap({
         env,
         cwd,
         launcher: launcher as string,
-        runner,
       })
       if (Result.isFailure(bootstrapped)) return yield* Effect.fail(bootstrapped.failure)
       selected = {
@@ -106,7 +104,7 @@ export function requireDsh(
         source: 'bootstrapped',
         launcher: bootstrapped.success.launcher,
       }
-      const written = store.write(
+      const written = yield* store.write(
         env,
         anchorForInstallation(selected, {
           recordedBy: 'sync',
@@ -133,7 +131,11 @@ export function requireDsh(
 /** Resolve the config path, reporting an unusable explicit path or a missing default. */
 export function resolveConfigPath(
   requested: Option.Option<string>,
-): Effect.Effect<Option.Option<string>, never, EnvironmentShape | OutputShape> {
+): Effect.Effect<
+  Option.Option<string>,
+  never,
+  EnvironmentShape | OutputShape | FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const output = yield* Output
     if (Option.isSome(requested)) {
@@ -148,8 +150,11 @@ export function resolveConfigPath(
     }
 
     const { env } = yield* Environment
+    const fs = yield* FileSystem.FileSystem
     const configPath = defaultConfigPath(env)
-    if (existsSync(configPath)) return Option.some(configPath)
+    if (yield* fs.exists(configPath).pipe(Effect.orElseSucceed(() => false))) {
+      return Option.some(configPath)
+    }
 
     output.stderr(
       `eedsh: cannot find a config at ${configPath}; run "eedsh init" to create one, or pass --config <path>`,

@@ -6,14 +6,15 @@
  */
 
 import type { DshBridge } from '@eedsh/config'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, type Exit, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import type * as PlatformError from 'effect/PlatformError'
 import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { main } from '../../src/cli'
-import { defaultCommandRunner } from '../../src/command-runner'
-import { loadConfig } from '../../src/config'
+import { boundedCommandRunner } from '../../src/command-runner'
 import type { BootstrapInput, BootstrappedDsh } from '../../src/dsh-bootstrap'
 import { bootstrapDshInstallation } from '../../src/dsh-bootstrap'
 import { loadDshBridge } from '../../src/dsh-bridge'
@@ -29,8 +30,6 @@ import {
   bundleResolverLayer,
   commandRunnerLayer,
   configLoaderLayer,
-  dshDiscoveryLayer,
-  installationAnchorLayer,
   pnpmPackageManagerLayer,
   spawnerLayer,
   syncLockLayer,
@@ -100,6 +99,17 @@ const liveOutput: OutputShape = {
   },
 }
 
+/** A layer fragment that replaces the invocation filesystem with the process filesystem. */
+export const realFileSystem: Layer.Layer<CliServices> =
+  NodeFileSystem.layer as Layer.Layer<CliServices>
+
+/** The process filesystem service value, for callers that are not Effects. */
+export async function realFileSystemValue(): Promise<FileSystem.FileSystem> {
+  return await Effect.runPromise(
+    Effect.service(FileSystem.FileSystem).pipe(Effect.provide(NodeFileSystem.layer)),
+  )
+}
+
 /** Output sinks that record every line into two arrays. */
 export function captureOutput(out: string[], err: string[]): OutputShape {
   return {
@@ -112,31 +122,83 @@ export function captureOutput(out: string[], err: string[]): OutputShape {
   }
 }
 
+/** The process filesystem: the live discovery and anchor store run on it. */
+const processFileSystem: Layer.Layer<FileSystem.FileSystem> = NodeFileSystem.layer
+
+/**
+ * A command runner over the real child-process spawner, for the live defaults
+ * that are not bound to a test's runner override.
+ */
+const processCommandRunner: CommandRunnerShape = (command, args, options) =>
+  boundedCommandRunner(command, args, options).pipe(Effect.provide(NodeServices.layer))
+
 /** A discovery service that selects one installation for every invocation. */
 export function fakeDshDiscovery(
   installation: DiscoveredDshInstallation,
   options: {
-    bootstrap?: (input: BootstrapInput) => Result.Result<BootstrappedDsh, DshFailure>
+    bootstrap?: (
+      input: BootstrapInput,
+    ) => Effect.Effect<
+      Result.Result<BootstrappedDsh, DshFailure>,
+      PlatformError.PlatformError,
+      FileSystem.FileSystem
+    >
     validate?: (
       installation: DiscoveredDshInstallation,
     ) => Result.Result<DiscoveredDshInstallation, DshFailure>
-    discover?: (input: DiscoverDshOptions) => Result.Result<DiscoveredDshInstallation, DshFailure>
+    discover?: (
+      input: DiscoverDshOptions,
+    ) => Effect.Effect<
+      Result.Result<DiscoveredDshInstallation, DshFailure>,
+      PlatformError.PlatformError,
+      FileSystem.FileSystem
+    >
+    /** The command runner the live bootstrap default uses. */
+    runner?: CommandRunnerShape
   } = {},
 ): DshDiscoveryShape {
+  const runner = options.runner ?? processCommandRunner
   return {
-    discover: options.discover ?? (() => Result.succeed(installation)),
-    bootstrap: options.bootstrap ?? ((input) => bootstrapDshInstallation(input)),
+    discover: options.discover ?? (() => Effect.succeed(Result.succeed(installation))),
+    bootstrap:
+      options.bootstrap ??
+      ((input) =>
+        bootstrapDshInstallation({ ...input, runner }).pipe(Effect.provide(processFileSystem))),
     validate: options.validate ?? ((selected) => validateDshVersion(selected)),
   }
 }
 
-/** A discovery service that runs the real discovery against a fixed environment. */
-export function liveTestDshDiscovery(): DshDiscoveryShape {
+/**
+ * A discovery service that runs the real discovery against the process
+ * filesystem, as production does, with the given command runner.
+ */
+export function liveTestDshDiscovery(
+  runner: CommandRunnerShape = processCommandRunner,
+): DshDiscoveryShape {
+  const onProcessFileSystem = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
+    effect.pipe(Effect.provide(processFileSystem))
   return {
-    discover: (input) => discoverDshInstallation(input),
-    bootstrap: (input) => bootstrapDshInstallation(input),
+    discover: (input) => onProcessFileSystem(discoverDshInstallation({ ...input, runner })),
+    bootstrap: (input) => onProcessFileSystem(bootstrapDshInstallation({ ...input, runner })),
     validate: (installation) => validateDshVersion(installation),
   }
+}
+
+/** The live discovery over the command runner in scope. */
+const liveTestDshDiscoveryLayer: Layer.Layer<DshDiscoveryShape, never, CommandRunnerShape> =
+  Layer.effect(
+    DshDiscovery,
+    Effect.gen(function* () {
+      const runner = yield* CommandRunner
+      return liveTestDshDiscovery(runner)
+    }),
+  )
+
+/** The live anchor store over the process filesystem, as production does. */
+export const liveTestInstallationAnchorStore: InstallationAnchorShape = {
+  read: (env) => defaultInstallationAnchorStore.read(env).pipe(Effect.provide(processFileSystem)),
+  write: (env, anchor) =>
+    defaultInstallationAnchorStore.write(env, anchor).pipe(Effect.provide(processFileSystem)),
 }
 
 /** A bundle resolver that supplies fixed profile-bundle patches. */
@@ -199,23 +261,37 @@ export function cliLayer(overrides: CliOverrides = {}): Layer.Layer<CliServices>
       ? bundleResolverLayer
       : Layer.succeed(BundleResolver, overrides.bundleResolver),
   )
+  const spawner: Layer.Layer<CliServices> = asCli(
+    overrides.childProcessSpawner === undefined
+      ? platform
+      : Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, overrides.childProcessSpawner),
+  )
+  const commandRunner: Layer.Layer<CliServices> = asCli(
+    overrides.commandRunner === undefined
+      ? commandRunnerLayer.pipe(Layer.provide(spawner))
+      : Layer.succeed(CommandRunner, overrides.commandRunner),
+  )
   const layers: Array<Layer.Layer<CliServices>> = [
     asCli(platform),
-    asCli(dshDiscoveryLayer),
-    asCli(configLoaderLayer),
-    asCli(installationAnchorLayer),
-    asCli(commandRunnerLayer),
+    commandRunner,
+    asCli(
+      overrides.discovery === undefined
+        ? liveTestDshDiscoveryLayer.pipe(Layer.provide(commandRunner))
+        : Layer.succeed(DshDiscovery, overrides.discovery),
+    ),
     asCli(spawnerLayer),
     resolver,
     asCli(Layer.succeed(Output, overrides.output ?? liveOutput)),
     asCli(
       Layer.succeed(Environment, overrides.environment ?? { env: process.env, cwd: process.cwd() }),
     ),
-    asCli(Layer.succeed(DshDiscovery, overrides.discovery ?? liveTestDshDiscovery())),
-    asCli(Layer.succeed(ConfigLoader, overrides.configLoader ?? { load: loadConfig })),
+    asCli(
+      overrides.configLoader === undefined
+        ? configLoaderLayer.pipe(Layer.provide(platform))
+        : Layer.succeed(ConfigLoader, overrides.configLoader),
+    ),
     asCli(Layer.succeed(Watcher, overrides.watcher ?? fakeWatcher())),
-    asCli(Layer.succeed(InstallationAnchor, overrides.anchor ?? defaultInstallationAnchorStore)),
-    asCli(Layer.succeed(CommandRunner, overrides.commandRunner ?? defaultCommandRunner)),
+    asCli(Layer.succeed(InstallationAnchor, overrides.anchor ?? liveTestInstallationAnchorStore)),
     asCli(Layer.succeed(Spawner, overrides.spawner ?? defaultSpawn)),
     asCli(
       overrides.packageManager === undefined

@@ -1,11 +1,13 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from '../src/config'
+import { loadConfig as loadConfigUnprovided } from '../src/config'
 import {
   initConfigTemplate,
   initPackageManifest,
@@ -16,11 +18,28 @@ import {
 import { type CliOverrides, captureOutput, runCli } from './support/cli'
 import { fakePackageManager, memoryFileSystem } from './support/fakes'
 
+const loadConfig = (configPath: string) =>
+  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
+
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 const configDir = join('/xdg', 'eedsh')
 const configPath = join(configDir, 'config.ts')
 const packagePath = join(configDir, 'package.json')
 const tsconfigPath = join(configDir, 'tsconfig.json')
+
+const require = createRequire(import.meta.url)
+
+/**
+ * The CLI's own dependency manifests, so the init command can resolve its
+ * dependency specs through the invocation's (fake) filesystem.
+ */
+function cliManifestFiles(): Record<string, string> {
+  const paths = [
+    require.resolve('@eedsh/config/package.json'),
+    require.resolve('effect/package.json'),
+  ]
+  return Object.fromEntries(paths.map((path) => [path, readFileSync(path, 'utf8')]))
+}
 
 interface HarnessOptions {
   files?: Record<string, string>
@@ -30,7 +49,8 @@ interface HarnessOptions {
 }
 
 function harness(options: HarnessOptions = {}) {
-  const fs = memoryFileSystem(options.files)
+  const seeded = cliManifestFiles()
+  const fs = memoryFileSystem({ ...seeded, ...options.files })
   const packages = fakePackageManager(options.failInstall === true ? { fail: true } : {})
   const out: string[] = []
   const err: string[] = []
@@ -65,6 +85,8 @@ function harness(options: HarnessOptions = {}) {
     packages,
     out,
     err,
+    /** The files this run wrote, ignoring the CLI's own seeded manifests. */
+    written: () => [...fs.files.keys()].filter((path) => !(path in seeded)),
     overrides,
     run: (argv: readonly string[]) => runCli(argv, overrides),
     text: () => ({ out: out.join('\n'), err: err.join('\n') }),
@@ -101,10 +123,10 @@ describe('init templates', () => {
     )
   })
 
-  it('writes link specs for an unpublished workspace and exact versions otherwise', () => {
-    const specsResult = resolveInitDependencySpecs()
-    if (Result.isFailure(specsResult)) throw new Error(specsResult.failure.message)
-    const specs = specsResult.success
+  it('writes link specs for an unpublished workspace and exact versions otherwise', async () => {
+    const specs = await Effect.runPromise(
+      resolveInitDependencySpecs().pipe(Effect.provide(NodeServices.layer)),
+    )
     expect(specs.config).toMatch(/^link:/)
     expect(specs.effect).toMatch(/^link:/)
     expect(specs.typescript).toBe(TYPESCRIPT_SPEC)
@@ -194,7 +216,7 @@ describe('init behavior', () => {
   it('rejects an unknown init option without writing files', async () => {
     const h = harness()
     expect(await h.run(['init', '--bogus'])).toBe(2)
-    expect(h.fs.files.size).toBe(0)
+    expect(h.written()).toEqual([])
     expect(h.fs.createdDirectories).toEqual([])
   })
 
@@ -305,10 +327,22 @@ function anchorJson(fixture: DshFixture): string {
   )
 }
 
+/** Seed the invocation filesystem with the real fixture package it must validate. */
+function fixtureFiles(fixture: DshFixture): Record<string, string> {
+  return {
+    [fixture.anchor]: JSON.stringify(
+      { name: '@deepseek-ai/dsh', version: fixture.version, bin: { dsh: './lib/bin.js' } },
+      null,
+      2,
+    ),
+    [join(fixture.dir, 'lib', 'bin.js')]: '#!/usr/bin/env node\n',
+  }
+}
+
 describe('init installation anchor', () => {
   it('validates and records an explicit --dsh installation', async () => {
     const fixture = await writeDshFixture()
-    const h = harness({ env: { DSH_HOME: anchorHome } })
+    const h = harness({ env: { DSH_HOME: anchorHome }, files: fixtureFiles(fixture) })
     const code = await h.run(['init', '--no-install', '--dsh', fixture.dir])
     expect(code).toBe(0)
     expect(h.fs.files.has(configPath)).toBe(true)
@@ -332,7 +366,7 @@ describe('init installation anchor', () => {
     const fixture = await writeDshFixture('0.2.1-rc.5')
     const h = harness({
       env: { DSH_HOME: anchorHome },
-      files: { [anchorPath]: anchorJson(fixture) },
+      files: { ...fixtureFiles(fixture), [anchorPath]: anchorJson(fixture) },
     })
     const code = await h.run(['init', '--no-install'])
     expect(code).toBe(0)
@@ -358,7 +392,7 @@ describe('init installation anchor', () => {
     const missing = join(tempRoot, 'missing-dsh')
     const code = await h.run(['init', '--no-install', '--dsh', missing])
     expect(code).toBe(1)
-    expect(h.fs.files.size).toBe(0)
+    expect(h.written()).toEqual([])
     expect(h.fs.createdDirectories).toEqual([])
     expect(h.text().err).toContain('dsh.anchor_invalid')
   })
@@ -366,7 +400,10 @@ describe('init installation anchor', () => {
   it('keeps the project files and refreshes the anchor on a re-run', async () => {
     const first = await writeDshFixture('0.2.1-rc.2')
     const second = await writeDshFixture('0.2.1-rc.5')
-    const h = harness({ env: { DSH_HOME: anchorHome } })
+    const h = harness({
+      env: { DSH_HOME: anchorHome },
+      files: { ...fixtureFiles(first), ...fixtureFiles(second) },
+    })
     expect(await h.run(['init', '--no-install', '--dsh', first.dir])).toBe(0)
     const config = h.fs.files.get(configPath)
     const manifest = h.fs.files.get(packagePath)
@@ -385,6 +422,7 @@ describe('init installation anchor', () => {
     const fixture = await writeDshFixture()
     const h = harness({
       env: { DSH_HOME: anchorHome },
+      files: fixtureFiles(fixture),
       failAnchorWrite: true,
     })
     const code = await h.run(['init', '--no-install', '--dsh', fixture.dir])

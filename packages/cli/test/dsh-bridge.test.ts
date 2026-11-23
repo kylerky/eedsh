@@ -2,6 +2,8 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { activeDshBridge, clearDshBridge, dshVersion } from '@eedsh/config'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { discoverDshInstallation } from '../src/dsh'
@@ -51,11 +53,13 @@ async function fakeInstallation(
 
 async function installationOf(capabilities?: readonly string[], version?: string) {
   const fake = await fakeInstallation(capabilities, version)
-  const discovered = discoverDshInstallation({
-    explicit: fake.packageDir,
-    env: {},
-    cwd: fake.packageDir,
-  })
+  const discovered = await Effect.runPromise(
+    discoverDshInstallation({
+      explicit: fake.packageDir,
+      env: {},
+      cwd: fake.packageDir,
+    }).pipe(Effect.provide(NodeServices.layer)),
+  )
   if (Result.isFailure(discovered)) throw discovered.failure
   return discovered.success
 }

@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import type { CommandRunner } from '../src/command-runner'
 import type { InstallationAnchorStore } from '../src/installation-anchor'
 import { DshFailure } from '../src/internal/effect/errors'
+import type { CommandRunnerShape } from '../src/internal/effect/services'
 import { delay, waitFor } from './support/async'
 import { devDshInstallation } from './support/bridge'
 import {
@@ -17,6 +18,7 @@ import {
   fakeBundleResolver,
   fakeDshDiscovery,
   fakeWatcher,
+  realFileSystem,
   runCli,
 } from './support/cli'
 import {
@@ -187,8 +189,13 @@ describe('command DSH requirements', () => {
     expect(code).toBe(1)
     expect(missing.text().err).toContain('dsh.not_found')
 
+    // The REPL reads the config project's authoring package through the
+    // invocation filesystem, so this run inspects the real project.
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
-    const ok = await h.run(['repl', '--eval', 'selectedProfile.name', '--config', fixture('basic')])
+    const ok = await h.run(
+      ['repl', '--eval', 'selectedProfile.name', '--config', fixture('basic')],
+      { extra: [realFileSystem] },
+    )
     expect(ok).toBe(0)
     expect(h.text().out).toContain("'cli-fixture'")
   })
@@ -275,7 +282,7 @@ export default defineConfig()
         discovery: fakeDshDiscovery(installation, {
           discover: () => {
             discoveries += 1
-            return Result.succeed(installation)
+            return Effect.succeed(Result.succeed(installation))
           },
         }),
       },
@@ -387,7 +394,7 @@ interface BootstrapFixture {
   readonly launcher: string
   readonly installation: string
   readonly calls: { command: string; args: readonly string[]; timeoutMs?: number }[]
-  readonly runner: CommandRunner
+  readonly runner: CommandRunnerShape
   readonly h: ReturnType<typeof harness>
 }
 
@@ -406,30 +413,31 @@ async function fakeBootstrap(options: FakeBootstrapOptions = {}): Promise<Bootst
   await writeFile(launcher, '#!/bin/sh\nexec dsh "$@"\n')
   const calls: { command: string; args: readonly string[]; timeoutMs?: number }[] = []
   const version = options.probeVersion ?? '0.2.1-rc.2'
-  const runner: CommandRunner = (command, args, runOptions) => {
-    calls.push({
-      command,
-      args,
-      ...(runOptions?.timeoutMs === undefined ? {} : { timeoutMs: runOptions.timeoutMs }),
-    })
-    if (args[0] === '--version') return { status: 0, stdout: `${version}\n`, stderr: '' }
-    if (command === 'pnpm') {
-      if (options.pnpm === false) return { status: 1, stdout: '', stderr: 'no pnpm' }
-      return {
-        status: 0,
-        stdout: JSON.stringify([
-          {
-            path: '/pnpm/global',
-            dependencies: {
-              '@deepseek-ai/dsh': { version, path: installation },
+  const runner: CommandRunnerShape = (command, args, runOptions) =>
+    Effect.sync(() => {
+      calls.push({
+        command,
+        args,
+        ...(runOptions?.timeoutMs === undefined ? {} : { timeoutMs: runOptions.timeoutMs }),
+      })
+      if (args[0] === '--version') return { status: 0, stdout: `${version}\n`, stderr: '' }
+      if (command === 'pnpm') {
+        if (options.pnpm === false) return { status: 1, stdout: '', stderr: 'no pnpm' }
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              path: '/pnpm/global',
+              dependencies: {
+                '@deepseek-ai/dsh': { version, path: installation },
+              },
             },
-          },
-        ]),
-        stderr: '',
+          ]),
+          stderr: '',
+        }
       }
-    }
-    return { status: 1, stdout: '', stderr: '' }
-  }
+      return { status: 1, stdout: '', stderr: '' }
+    })
   const h = harness(
     { DSH_HOME: home, PATH: bin, XDG_CONFIG_HOME: join(home, 'xdg') },
     {
@@ -598,8 +606,8 @@ describe('installation bootstrap boundaries', () => {
   it('continues with the validated installation when the anchor write fails', async () => {
     const f = await fakeBootstrap()
     const store: InstallationAnchorStore = {
-      read: () => undefined,
-      write: () => ({ ok: false, error: 'read-only home' }),
+      read: () => Effect.succeed(undefined),
+      write: () => Effect.succeed({ ok: false, error: 'read-only home' } as const),
     }
     const options: CliOverrides = { anchor: store }
     expect(await f.h.run(['sync', '--config', fixture('basic')], options)).toBe(0)

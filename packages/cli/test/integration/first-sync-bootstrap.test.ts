@@ -11,9 +11,10 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import type { CommandRunner } from '../../src/command-runner'
+import type { CommandRunnerShape } from '../../src/internal/effect/services'
 import { type CliOverrides, captureOutput, fakeBundleResolver, runCli } from '../support/cli'
 import {
   fakeChildProcessSpawner,
@@ -58,25 +59,26 @@ describe('first-sync bootstrap integration', () => {
     const home = await tempDir('first-sync-home-')
     const installation = await writeGlobalInstallation(home)
     const calls: { command: string; args: readonly string[] }[] = []
-    const runner: CommandRunner = (command, args) => {
-      calls.push({ command, args })
-      if (args[0] === '--version') return { status: 0, stdout: `${version}\n`, stderr: '' }
-      if (command === 'pnpm' && args[0] === 'list') {
-        return {
-          status: 0,
-          stdout: JSON.stringify([
-            {
-              path: join(home, 'pnpm-global'),
-              dependencies: {
-                '@deepseek-ai/dsh': { version, path: installation.dir },
+    const runner: CommandRunnerShape = (command, args) =>
+      Effect.sync(() => {
+        calls.push({ command, args })
+        if (args[0] === '--version') return { status: 0, stdout: `${version}\n`, stderr: '' }
+        if (command === 'pnpm' && args[0] === 'list') {
+          return {
+            status: 0,
+            stdout: JSON.stringify([
+              {
+                path: join(home, 'pnpm-global'),
+                dependencies: {
+                  '@deepseek-ai/dsh': { version, path: installation.dir },
+                },
               },
-            },
-          ]),
-          stderr: '',
+            ]),
+            stderr: '',
+          }
         }
-      }
-      return { status: 1, stdout: '', stderr: 'unavailable' }
-    }
+        return { status: 1, stdout: '', stderr: 'unavailable' }
+      })
 
     const fs = memoryFileSystem()
     const out: string[] = []

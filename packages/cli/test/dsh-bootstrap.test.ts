@@ -1,11 +1,13 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import type { CommandRunner } from '../src/command-runner'
-import { bootstrapDshInstallation } from '../src/dsh-bootstrap'
+import { type BootstrapInput, bootstrapDshInstallation } from '../src/dsh-bootstrap'
 import type { DshFailure } from '../src/internal/effect/errors'
+import type { CommandRunnerShape } from '../src/internal/effect/services'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -41,6 +43,11 @@ function failureOf(result: Result.Result<unknown, DshFailure>): DshFailure {
   return result.failure
 }
 
+/** Run the bootstrap over the process filesystem, as the live service does. */
+function runBootstrap(input: BootstrapInput & { runner: CommandRunnerShape }) {
+  return Effect.runPromise(bootstrapDshInstallation(input).pipe(Effect.provide(NodeServices.layer)))
+}
+
 interface Call {
   readonly command: string
   readonly args: readonly string[]
@@ -53,16 +60,17 @@ interface RunnerOptions {
   readonly version?: () => { status: number | null; stdout: string; stderr?: string }
 }
 
-function fakeRunner(options: RunnerOptions): { runner: CommandRunner; calls: Call[] } {
+function fakeRunner(options: RunnerOptions): { runner: CommandRunnerShape; calls: Call[] } {
   const calls: Call[] = []
-  const runner: CommandRunner = (command, args, runOptions) => {
-    calls.push({ command, args, timeoutMs: runOptions?.timeoutMs })
-    const empty = { status: 1, stdout: '', stderr: '' }
-    if (command === 'pnpm') return { stderr: '', ...(options.pnpm?.() ?? empty) }
-    if (command === 'npm') return { stderr: '', ...(options.npmRoot?.() ?? empty) }
-    if (args[0] === '--version') return { stderr: '', ...(options.version?.() ?? empty) }
-    return empty
-  }
+  const runner: CommandRunnerShape = (command, args, runOptions) =>
+    Effect.sync(() => {
+      calls.push({ command, args, timeoutMs: runOptions?.timeoutMs })
+      const empty = { status: 1, stdout: '', stderr: '' }
+      if (command === 'pnpm') return { stderr: '', ...(options.pnpm?.() ?? empty) }
+      if (command === 'npm') return { stderr: '', ...(options.npmRoot?.() ?? empty) }
+      if (args[0] === '--version') return { stderr: '', ...(options.version?.() ?? empty) }
+      return empty
+    })
   return { runner, calls }
 }
 
@@ -75,8 +83,8 @@ function pnpmJson(anchor: string, version: string): string {
   ])
 }
 
-function bootstrap(launcher: string, runner: CommandRunner) {
-  return bootstrapDshInstallation({
+function bootstrap(launcher: string, runner: CommandRunnerShape) {
+  return runBootstrap({
     env: { PATH: join(launcher, '..') },
     cwd: root,
     launcher,
@@ -93,7 +101,7 @@ describe('pnpm and npm bootstrap', () => {
       pnpm: () => ({ status: 0, stdout: pnpmJson(installation.dir, '0.2.1-rc.2') }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2\n' }),
     })
-    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    const result = await runBootstrap({ env: {}, cwd: root, launcher, runner })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success.manager).toBe('pnpm')
     expect(result.success.launcher).toBe(launcher)
@@ -129,7 +137,7 @@ describe('pnpm and npm bootstrap', () => {
       npmRoot: () => ({ status: 0, stdout: `${globalRoot}\n` }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.5\n' }),
     })
-    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    const result = await runBootstrap({ env: {}, cwd: root, launcher, runner })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success.manager).toBe('npm')
     expect(result.success.installation.installAnchor).toBe(installation.anchor)
@@ -143,7 +151,7 @@ describe('pnpm and npm bootstrap', () => {
       version: () => ({ status: 0, stdout: '0.2.1-rc.5\n' }),
     })
     const failure = failureOf(
-      bootstrapDshInstallation({
+      await runBootstrap({
         env: {},
         cwd: root,
         launcher: join(home, 'pnpm', 'bin', 'dsh'),
@@ -165,7 +173,7 @@ describe('pnpm and npm bootstrap', () => {
       npmRoot: () => ({ status: 0, stdout: npmRoot }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2\n' }),
     })
-    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    const result = await runBootstrap({ env: {}, cwd: root, launcher, runner })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success.manager).toBe('pnpm')
     expect(result.success.installation.installAnchor).toBe(pnpmInstall.anchor)
@@ -183,7 +191,7 @@ describe('pnpm and npm bootstrap', () => {
       npmRoot: () => ({ status: 0, stdout: npmRoot }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2\n' }),
     })
-    const failure = failureOf(bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner }))
+    const failure = failureOf(await runBootstrap({ env: {}, cwd: root, launcher, runner }))
     expect(failure.code).toBe('dsh.launcher_unresolved')
     expect(failure.message).toContain(pnpmInstall.anchor)
     expect(failure.message).toContain(npmInstall.anchor)
@@ -194,7 +202,7 @@ describe('pnpm and npm bootstrap', () => {
     const home = await tempDir('bootstrap-none-')
     const launcher = join(home, 'bin', 'dsh')
     const { runner } = fakeRunner({ version: () => ({ status: 0, stdout: '0.2.1-rc.2' }) })
-    const failure = failureOf(bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner }))
+    const failure = failureOf(await runBootstrap({ env: {}, cwd: root, launcher, runner }))
     expect(failure.code).toBe('dsh.launcher_unresolved')
     expect(failure.message).toContain('pnpm and npm only')
     expect(failure.message).toContain('EEDSH_DSH_ANCHOR')
@@ -207,7 +215,7 @@ describe('pnpm and npm bootstrap', () => {
       version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
     })
     const failure = failureOf(
-      bootstrapDshInstallation({
+      await runBootstrap({
         env: {},
         cwd: root,
         launcher: join(home, 'bin', 'dsh'),
@@ -225,7 +233,7 @@ describe('pnpm and npm bootstrap', () => {
       version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
     })
     const failure = failureOf(
-      bootstrapDshInstallation({
+      await runBootstrap({
         env: {},
         cwd: root,
         launcher: join(home, 'bin', 'dsh'),
@@ -242,7 +250,7 @@ describe('pnpm and npm bootstrap', () => {
       version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
     })
     const failure = failureOf(
-      bootstrapDshInstallation({
+      await runBootstrap({
         env: {},
         cwd: root,
         launcher: join(home, '.volta', 'bin', 'dsh'),
@@ -269,7 +277,7 @@ describe('pnpm metadata tolerance', () => {
     const launcher = join(home, 'pnpm', 'bin', 'dsh')
     return {
       installation,
-      result: bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner }),
+      result: await runBootstrap({ env: {}, cwd: root, launcher, runner }),
     }
   }
 
@@ -356,7 +364,7 @@ describe('bootstrap boundaries', () => {
       pnpm: () => ({ status: 0, stdout: pnpmJson(installation.dir, '0.2.1-rc.2') }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
     })
-    const result = bootstrapDshInstallation({
+    const result = await runBootstrap({
       env: { DSH_HOME: home },
       cwd: root,
       launcher,
@@ -373,7 +381,7 @@ describe('bootstrap boundaries', () => {
       pnpm: () => ({ status: 0, stdout: pnpmJson(installation.dir, '0.2.1-rc.2') }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
     })
-    const result = bootstrap(join(home, 'bin', 'dsh'), runner)
+    const result = await bootstrap(join(home, 'bin', 'dsh'), runner)
     expect(Result.isSuccess(result)).toBe(true)
     for (const call of calls) {
       expect(call.args).not.toContain('cmd-shim-target')
@@ -393,7 +401,7 @@ describe('windows launchers', () => {
       pnpm: () => ({ status: 0, stdout: pnpmJson(installation.dir, '0.2.1-rc.2') }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.2\r\n' }),
     })
-    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    const result = await runBootstrap({ env: {}, cwd: root, launcher, runner })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success.installation.installAnchor).toBe(installation.anchor)
     expect(result.success.launcher).toBe(launcher)
@@ -416,7 +424,7 @@ describe('windows launchers', () => {
       npmRoot: () => ({ status: 0, stdout: `${globalRoot}\r\n` }),
       version: () => ({ status: 0, stdout: '0.2.1-rc.5\r\n' }),
     })
-    const result = bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner })
+    const result = await runBootstrap({ env: {}, cwd: root, launcher, runner })
     if (Result.isFailure(result)) throw result.failure
     expect(result.success.manager).toBe('npm')
     expect(result.success.installation.installAnchor).toBe(installation.anchor)

@@ -19,7 +19,9 @@ import {
   type PublishedSnapshot,
   ViewError,
 } from '../../src/repl/views'
+import { defaultSpawn } from '../../src/spawn'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
+import { realFileSystemValue } from '../support/cli'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
 let work = ''
@@ -155,6 +157,8 @@ async function makeSession(
     env: { DSH_HOME: join(work, 'home') },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
+    fileSystem: await realFileSystemValue(),
+    spawner: defaultSpawn,
     loadConfig: () =>
       Effect.succeed({ config: current, provenance: options.provenance, configDir: work }),
     ...(options.useDefaultCompose === true
@@ -296,13 +300,14 @@ describe('package views', () => {
         },
       }),
     )
-    const view = new PackageView(
+    const view = await PackageView.read(
       outcome.success,
       profileDir,
       JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as Record<
         string,
         unknown
       >,
+      await realFileSystemValue(),
     )
     expect(view.declared).toEqual({ '@scope/plugin': 'link:../plugin' })
     expect(view.managed).toEqual(['@eedsh/generated', '@eedsh/runtime', '@scope/plugin'])

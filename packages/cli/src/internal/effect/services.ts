@@ -58,9 +58,21 @@ export const Environment = Context.Service<EnvironmentShape>('eedsh/Environment'
 /** Discovering, bootstrapping, and validating the selected DSH installation. */
 export interface DshDiscoveryShape {
   /** Find one installation with the explicit precedence of discovery. */
-  discover(input: DiscoverDshOptions): Result.Result<DiscoveredDshInstallation, DshFailure>
+  discover(
+    input: DiscoverDshOptions,
+  ): Effect.Effect<
+    Result.Result<DiscoveredDshInstallation, DshFailure>,
+    PlatformError.PlatformError,
+    FileSystem.FileSystem
+  >
   /** Bootstrap an unresolved PATH launcher through pnpm or npm. */
-  bootstrap(input: BootstrapInput): Result.Result<BootstrappedDsh, DshFailure>
+  bootstrap(
+    input: BootstrapInput,
+  ): Effect.Effect<
+    Result.Result<BootstrappedDsh, DshFailure>,
+    PlatformError.PlatformError,
+    FileSystem.FileSystem
+  >
   /** Reject an installation outside the supported range. */
   validate(
     installation: DiscoveredDshInstallation,
@@ -108,12 +120,18 @@ export const Watcher = Context.Service<WatcherShape>('eedsh/Watcher')
 /** The machine-local installation anchor record. */
 export interface InstallationAnchorShape {
   /** Read the valid record for an environment, or undefined. */
-  read(env: Record<string, string | undefined>): InstallationAnchorRecord | undefined
+  read(
+    env: Record<string, string | undefined>,
+  ): Effect.Effect<InstallationAnchorRecord | undefined, never, FileSystem.FileSystem>
   /** Atomically write the record for an environment. */
   write(
     env: Record<string, string | undefined>,
     anchor: InstallationAnchorRecord,
-  ): { readonly ok: true } | { readonly ok: false; readonly error: string }
+  ): Effect.Effect<
+    { readonly ok: true } | { readonly ok: false; readonly error: string },
+    never,
+    FileSystem.FileSystem
+  >
 }
 
 /** Installation anchor service tag. */
@@ -121,12 +139,16 @@ export const InstallationAnchor = Context.Service<InstallationAnchorShape>(
   'eedsh/InstallationAnchor',
 )
 
-/** The bounded, fixed-argument command runner used by setup paths. */
+/**
+ * The bounded, fixed-argument command runner used by setup paths. Every run is
+ * an Effect; the live layer captures the child-process spawner so the shape
+ * itself carries no requirement.
+ */
 export type CommandRunnerShape = (
   command: string,
   args: readonly string[],
   options?: CommandOptions,
-) => CommandResult
+) => Effect.Effect<CommandResult, never>
 
 /** Command runner service tag. */
 export const CommandRunner = Context.Service<CommandRunnerShape>('eedsh/CommandRunner')

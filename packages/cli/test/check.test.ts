@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Option } from 'effect'
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import { Effect, Option } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { resolveTypeScript } from '../src/check'
 import { findTsconfigPath } from '../src/internal/tsconfig'
@@ -20,14 +21,22 @@ describe('tsconfig discovery', () => {
     await writeFile(tsconfigPath, '{}\n')
     const configPath = join(nested, 'config.ts')
     await writeFile(configPath, 'export default {}\n')
-    expect(findTsconfigPath(configPath)).toEqual(Option.some(tsconfigPath))
+    expect(
+      await Effect.runPromise(
+        findTsconfigPath(configPath).pipe(Effect.provide(NodeServices.layer)),
+      ),
+    ).toEqual(Option.some(tsconfigPath))
   })
 
   it('returns none when no tsconfig is found', async () => {
     const dir = await tempProject()
     const configPath = join(dir, 'config.ts')
     await writeFile(configPath, 'export default {}\n')
-    expect(findTsconfigPath(configPath)).toEqual(Option.none())
+    expect(
+      await Effect.runPromise(
+        findTsconfigPath(configPath).pipe(Effect.provide(NodeServices.layer)),
+      ),
+    ).toEqual(Option.none())
   })
 })
 
@@ -41,13 +50,15 @@ describe('TypeScript resolution', () => {
       JSON.stringify({ version: '5.9.0', bin: { tsc: 'bin/tsc' } }),
     )
     await writeFile(join(packageDir, 'bin', 'tsc'), '')
-    expect(resolveTypeScript(dir)).toEqual(
-      Option.some({ version: '5.9.0', binPath: join(packageDir, 'bin', 'tsc') }),
-    )
+    expect(
+      await Effect.runPromise(resolveTypeScript(dir).pipe(Effect.provide(NodeServices.layer))),
+    ).toEqual(Option.some({ version: '5.9.0', binPath: join(packageDir, 'bin', 'tsc') }))
   })
 
   it('returns none when the project has no TypeScript', async () => {
     const dir = await tempProject()
-    expect(resolveTypeScript(dir)).toEqual(Option.none())
+    expect(
+      await Effect.runPromise(resolveTypeScript(dir).pipe(Effect.provide(NodeServices.layer))),
+    ).toEqual(Option.none())
   })
 })

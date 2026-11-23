@@ -9,6 +9,11 @@ import type {
   SyncLockShape,
 } from '../../src/internal/effect/services'
 
+/** A stat result carrying only the type these tests inspect. */
+function fileInfo(type: FileSystem.File.Type): FileSystem.File.Info {
+  return { type } as FileSystem.File.Info
+}
+
 function notFound(method: string, path: string): PlatformError.PlatformError {
   return PlatformError.systemError({
     _tag: 'NotFound',
@@ -45,6 +50,16 @@ export function memoryFileSystem(
       writeOrder.push(path)
       files.set(path, content)
       return Effect.void
+    },
+    stat: (path) => {
+      if (files.has(path)) return Effect.succeed(fileInfo('File'))
+      if (directories.has(path)) return Effect.succeed(fileInfo('Directory'))
+      // A path with content below it is a directory even when it was never
+      // created through this fake, so a test can seed a bare file map.
+      const nested =
+        [...files.keys()].some((file) => file.startsWith(`${path}/`)) ||
+        [...directories].some((directory) => directory.startsWith(`${path}/`))
+      return nested ? Effect.succeed(fileInfo('Directory')) : Effect.fail(notFound('stat', path))
     },
     makeDirectory: (path) => {
       if (!directories.has(path)) createdDirectories.push(path)
@@ -157,25 +172,57 @@ export function fakePreflight(options: { fail?: boolean; warnings?: string[] } =
 
 /**
  * Child-process spawner that records the commands it is asked to run and
- * exits with a fixed code, without starting a process.
+ * exits with a fixed code, without starting a process. A per-invocation
+ * override lets a test answer a probe and a metadata command differently, and
+ * a spawn error models a launcher that cannot start.
  */
-export function fakeChildProcessSpawner(options: { exitCode?: number; stderr?: string } = {}) {
-  const calls: { command: string; args: ReadonlyArray<string>; cwd: string | undefined }[] = []
+export function fakeChildProcessSpawner(
+  options: {
+    exitCode?: number
+    stdout?: string
+    stderr?: string
+    /** Fail the spawn itself instead of returning a handle. */
+    spawnError?: PlatformError.PlatformError
+    /** Answer one invocation differently from the defaults. */
+    resultFor?: (
+      command: string,
+      args: ReadonlyArray<string>,
+    ) => { stdout?: string; stderr?: string; exitCode?: number } | undefined
+  } = {},
+) {
+  const calls: {
+    command: string
+    args: ReadonlyArray<string>
+    cwd: string | undefined
+    env: Record<string, string | undefined> | undefined
+  }[] = []
   const spawner = ChildProcessSpawner.make((command) => {
-    if (ChildProcess.isStandardCommand(command)) {
-      calls.push({ command: command.command, args: command.args, cwd: command.options?.cwd })
+    const standard = ChildProcess.isStandardCommand(command)
+    if (standard) {
+      calls.push({
+        command: command.command,
+        args: command.args,
+        cwd: command.options?.cwd,
+        env: command.options?.env,
+      })
     }
+    if (standard && options.spawnError !== undefined) return Effect.fail(options.spawnError)
+    const override = standard ? options.resultFor?.(command.command, command.args) : undefined
+    const stdoutText = override?.stdout ?? options.stdout
+    const stderrText = override?.stderr ?? options.stderr
+    const stdout =
+      stdoutText === undefined ? Stream.empty : Stream.make(new TextEncoder().encode(stdoutText))
     const stderr =
-      options.stderr === undefined
-        ? Stream.empty
-        : Stream.make(new TextEncoder().encode(options.stderr))
+      stderrText === undefined ? Stream.empty : Stream.make(new TextEncoder().encode(stderrText))
     const handle = ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(4242),
-      exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(options.exitCode ?? 0)),
+      exitCode: Effect.succeed(
+        ChildProcessSpawner.ExitCode(override?.exitCode ?? options.exitCode ?? 0),
+      ),
       isRunning: Effect.succeed(false),
       kill: () => Effect.void,
       stdin: Sink.drain,
-      stdout: Stream.empty,
+      stdout,
       stderr,
       all: Stream.empty,
       getInputFd: () => Sink.drain,

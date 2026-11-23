@@ -1,12 +1,16 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../../src/config'
+import { loadConfig as loadConfigUnprovided } from '../../src/config'
 import { buildGeneratedBundle } from '../../src/materialize/generated-bundle'
 import { composePreflightLayers, parseGeneratedLayers } from '../../src/preflight'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
+
+const loadConfig = (configPath: string) =>
+  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')

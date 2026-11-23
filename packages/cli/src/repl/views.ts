@@ -7,7 +7,6 @@
  * successful sync.
  * @module @eedsh/cli/repl/views
  */
-import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   type BundleQuery,
@@ -18,6 +17,8 @@ import {
   type Row,
 } from '@eedsh/config'
 import type { EedshConfig, PlanLayer, ProfilePlan } from '@eedsh/plan'
+import { Effect } from 'effect'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Result from 'effect/Result'
 import type * as Schema from 'effect/Schema'
 import type { DoctorFinding } from '../doctor'
@@ -170,16 +171,53 @@ function stringRecord(value: unknown): Record<string, string> {
   return out
 }
 
-function installedVersion(profileDir: string, name: string): string | undefined {
+/**
+ * Read one installed package version, or undefined when it is not installed.
+ * @param fileSystem - the file-system service.
+ * @param profileDir - the profile directory to inspect; empty means none.
+ * @param name - the package name.
+ * @returns the installed version, when the manifest is readable and valid.
+ */
+async function installedVersion(
+  fileSystem: FileSystem.FileSystem,
+  profileDir: string,
+  name: string,
+): Promise<string | undefined> {
   if (profileDir === '') return undefined
   try {
     const path = join(profileDir, 'node_modules', ...name.split('/'), 'package.json')
-    if (!existsSync(path)) return undefined
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { version?: unknown }
+    if (!(await Effect.runPromise(fileSystem.exists(path)))) return undefined
+    const parsed = JSON.parse(await Effect.runPromise(fileSystem.readFileString(path))) as {
+      version?: unknown
+    }
     return typeof parsed.version === 'string' ? parsed.version : undefined
   } catch {
     return undefined
   }
+}
+
+/** The dependency specifications one profile manifest declares. */
+function manifestPackageSpecs(
+  manifest: Record<string, unknown> | undefined,
+): Record<string, string> {
+  return {
+    ...stringRecord(manifest?.dependencies),
+    ...stringRecord(manifest?.devDependencies),
+    ...stringRecord(manifest?.optionalDependencies),
+  }
+}
+
+/** The package names a profile view reports, sorted. */
+function packageNames(
+  plan: ProfilePlan | undefined,
+  manifest: Record<string, unknown> | undefined,
+): string[] {
+  const managed = new Set([
+    ...Object.keys(plan?.packages ?? {}),
+    RUNTIME_PACKAGE_NAME,
+    GENERATED_PACKAGE_NAME,
+  ])
+  return [...new Set([...managed, ...Object.keys(manifestPackageSpecs(manifest))])].sort()
 }
 
 /** Declared, managed, and installed package information for one profile. */
@@ -194,26 +232,19 @@ export class PackageView {
 
   constructor(
     plan: ProfilePlan | undefined,
-    profileDir: string,
     manifest: Record<string, unknown> | undefined,
+    installed: Readonly<Record<string, string>> = {},
   ) {
     this.declared = { ...(plan?.packages ?? {}) }
-    const manifestSpecs = {
-      ...stringRecord(manifest?.dependencies),
-      ...stringRecord(manifest?.devDependencies),
-      ...stringRecord(manifest?.optionalDependencies),
-    }
+    const manifestSpecs = manifestPackageSpecs(manifest)
     const managed = new Set([
       ...Object.keys(this.declared),
       RUNTIME_PACKAGE_NAME,
       GENERATED_PACKAGE_NAME,
     ])
-    const names = [...new Set([...managed, ...Object.keys(manifestSpecs)])].sort()
-    const installed: Record<string, string> = {}
     const infos: PackageInfo[] = []
-    for (const name of names) {
-      const version = installedVersion(profileDir, name)
-      if (version !== undefined) installed[name] = version
+    for (const name of packageNames(plan, manifest)) {
+      const version = installed[name]
       infos.push({
         name,
         spec: this.declared[name] ?? manifestSpecs[name],
@@ -224,6 +255,28 @@ export class PackageView {
     this.managed = [...managed].sort()
     this.installed = installed
     this.infos = infos
+  }
+
+  /**
+   * Read one profile's package view, including the installed versions.
+   * @param plan - the profile plan, when the profile is valid.
+   * @param profileDir - the profile directory to inspect; empty means none.
+   * @param manifest - the profile manifest, when readable.
+   * @param fileSystem - the file-system service.
+   * @returns the declared, managed, and installed package information.
+   */
+  static async read(
+    plan: ProfilePlan | undefined,
+    profileDir: string,
+    manifest: Record<string, unknown> | undefined,
+    fileSystem: FileSystem.FileSystem,
+  ): Promise<PackageView> {
+    const installed: Record<string, string> = {}
+    for (const name of packageNames(plan, manifest)) {
+      const version = await installedVersion(fileSystem, profileDir, name)
+      if (version !== undefined) installed[name] = version
+    }
+    return new PackageView(plan, manifest, installed)
   }
 
   /** Every known package, sorted by name. */
@@ -315,6 +368,8 @@ export interface ProfileSnapshot {
   readonly composition: CompositionSnapshot | undefined
   /** The published-state snapshot. */
   readonly published: PublishedSnapshot
+  /** Package information read when the snapshot was taken, when available. */
+  readonly packages?: PackageView
 }
 
 function emptyPublished(dir: string): PublishedSnapshot {
@@ -397,10 +452,12 @@ export class ProfileView {
 
   /** Declared, managed, and installed package information. */
   packages(): PackageView {
-    return new PackageView(
-      Result.isSuccess(this.outcome) ? this.outcome.success : undefined,
-      this.snapshot.profileDir,
-      this.snapshot.published.manifest,
+    return (
+      this.snapshot.packages ??
+      new PackageView(
+        Result.isSuccess(this.outcome) ? this.outcome.success : undefined,
+        this.snapshot.published.manifest,
+      )
     )
   }
 

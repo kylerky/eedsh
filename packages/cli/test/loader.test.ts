@@ -1,8 +1,12 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from '../src/config'
+import { loadConfig as loadConfigUnprovided } from '../src/config'
+
+const loadConfig = (configPath: string) =>
+  loadConfigUnprovided(configPath).pipe(Effect.provide(NodeServices.layer))
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -127,7 +131,6 @@ export default defineConfig()
       configPath,
       `import { defineConfig } from '@eedsh/config'
 import { profileName } from './helper'
-
 export default defineConfig()
   .profile(profileName, () => undefined)
   .build()

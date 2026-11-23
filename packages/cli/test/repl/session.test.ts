@@ -21,8 +21,10 @@ import {
   ReplSessionError,
   type SyncOutcome,
 } from '../../src/repl/session'
+import { defaultSpawn } from '../../src/spawn'
 import { waitFor } from '../support/async'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
+import { realFileSystemValue } from '../support/cli'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -115,6 +117,8 @@ async function session(
     env: { DSH_HOME: join(work, 'home') },
     stdout: (line) => out.push(line),
     stderr: (line) => err.push(line),
+    fileSystem: await realFileSystemValue(),
+    spawner: defaultSpawn,
     loadConfig: () => {
       loadCount += 1
       return failure === undefined ? Effect.succeed(loaded(current)) : Effect.fail(failure)
@@ -207,6 +211,8 @@ describe('session evaluation', () => {
         env: { DSH_HOME: join(work, 'home') },
         stdout: () => {},
         stderr: () => {},
+        fileSystem: await realFileSystemValue(),
+        spawner: defaultSpawn,
         loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work', 'home']))),
         authoring,
         watchConfig: false,
@@ -220,6 +226,8 @@ describe('session evaluation', () => {
         env: { DSH_HOME: join(work, 'home') },
         stdout: () => {},
         stderr: () => {},
+        fileSystem: await realFileSystemValue(),
+        spawner: defaultSpawn,
         loadConfig: () => Effect.succeed(loaded(configWithProfiles(['work']))),
         authoring,
         watchConfig: false,
@@ -249,6 +257,8 @@ describe('session evaluation', () => {
       env: { DSH_HOME: join(work, 'home') },
       stdout: () => {},
       stderr: () => {},
+      fileSystem: await realFileSystemValue(),
+      spawner: defaultSpawn,
       loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       watchConfig: false,
@@ -270,6 +280,8 @@ describe('session evaluation', () => {
           env: { DSH_HOME: join(work, 'home') },
           stdout: () => {},
           stderr: () => {},
+          fileSystem: await realFileSystemValue(),
+          spawner: defaultSpawn,
           loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
           watchConfig: false,
         }),
@@ -664,6 +676,8 @@ describe('shell commands', () => {
       env: { DSH_HOME: join(work, 'home') },
       stdout: (line) => out.push(line),
       stderr: () => {},
+      fileSystem: await realFileSystemValue(),
+      spawner: defaultSpawn,
       loadConfig: () => Effect.succeed(loaded(configWith(['a']))),
       compose: async () => ({ rowCount: 1, warnings: [] }),
       authoring,

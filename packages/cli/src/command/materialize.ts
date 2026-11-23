@@ -47,6 +47,7 @@ export function programFor(
 ): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, MaterializeServices> {
   return Effect.gen(function* () {
     // Kept pure-computation seam: the CLI's own runtime dependency.
+    const eedshVersion = yield* cliVersion()
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
     // Provision declared sources before reconciliation so the derived link
     // specifications take part in the same managed dependency decision.
@@ -60,7 +61,7 @@ export function programFor(
     const result = yield* materialize({
       plan,
       profileDir: profileDirFor(plan, env),
-      eedshVersion: cliVersion(),
+      eedshVersion,
       dsh,
       runtimeSpec,
       generatedSpec: 'link:./.eedsh/generated',
