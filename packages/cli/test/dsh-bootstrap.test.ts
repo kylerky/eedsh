@@ -258,6 +258,87 @@ describe('pnpm and npm bootstrap', () => {
   })
 })
 
+describe('pnpm metadata tolerance', () => {
+  async function withPnpm(metadata: (anchor: string) => string) {
+    const home = await tempDir('bootstrap-shape-')
+    const installation = await writeInstallation(home, 'dsh', '0.2.1-rc.2')
+    const { runner } = fakeRunner({
+      pnpm: () => ({ status: 0, stdout: metadata(installation.dir) }),
+      version: () => ({ status: 0, stdout: '0.2.1-rc.2' }),
+    })
+    const launcher = join(home, 'pnpm', 'bin', 'dsh')
+    return {
+      installation,
+      result: bootstrapDshInstallation({ env: {}, cwd: root, launcher, runner }),
+    }
+  }
+
+  it('selects a candidate from an array of roots', async () => {
+    const { installation, result } = await withPnpm((anchor) =>
+      JSON.stringify([
+        { path: '/pnpm/global/5' },
+        { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': { path: anchor } } },
+      ]),
+    )
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+  })
+
+  it('keeps a valid root beside a malformed one', async () => {
+    const { installation, result } = await withPnpm((anchor) =>
+      JSON.stringify([
+        null,
+        'not-a-root',
+        { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': { path: anchor } } },
+      ]),
+    )
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+  })
+
+  it('keeps a valid dependency group beside a malformed one', async () => {
+    const { installation, result } = await withPnpm((anchor) =>
+      JSON.stringify([
+        {
+          path: '/pnpm/global/6',
+          dependencies: 'not-a-group',
+          devDependencies: { '@deepseek-ai/dsh': { path: anchor } },
+        },
+      ]),
+    )
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+  })
+
+  it('ignores entries without a usable path', async () => {
+    for (const dependency of [{ version: '0.2.1-rc.2' }, { path: '' }, { path: 5 }, { path: null }]) {
+      const { result } = await withPnpm(() =>
+        JSON.stringify([
+          { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': dependency } },
+        ]),
+      )
+      expect(failureOf(result).code, JSON.stringify(dependency)).toBe('dsh.launcher_unresolved')
+    }
+  })
+
+  it('keeps an entry whose version is not a string', async () => {
+    const { installation, result } = await withPnpm((anchor) =>
+      JSON.stringify([
+        { path: '/pnpm/global/6', dependencies: { '@deepseek-ai/dsh': { path: anchor, version: 7 } } },
+      ]),
+    )
+    if (Result.isFailure(result)) throw result.failure
+    expect(result.success.installation.installAnchor).toBe(installation.anchor)
+  })
+
+  it('ignores a scalar root', async () => {
+    for (const stdout of ['"text"', '5', 'null', 'true']) {
+      const { result } = await withPnpm(() => stdout)
+      expect(failureOf(result).code, stdout).toBe('dsh.launcher_unresolved')
+    }
+  })
+})
+
 describe('bootstrap boundaries', () => {
   it('never writes the anchor cache', async () => {
     const home = await tempDir('bootstrap-nowrite-')

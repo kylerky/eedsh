@@ -9,6 +9,7 @@
  */
 import { basename, join } from 'node:path'
 import type { InstallationAnchorManager } from '@eedsh/runtime/installation-anchor'
+import { Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
 import {
   type CommandResult,
@@ -22,6 +23,7 @@ import {
   type ValidatedInstallation,
 } from './installation-anchor'
 import type { DshFailure } from './internal/effect/errors'
+import { readNonEmptyString, readRecord } from './internal/schema-readers'
 
 /** How long one metadata command may run. */
 const METADATA_TIMEOUT_MS = 5000
@@ -55,36 +57,41 @@ interface Candidate {
   readonly installation: ValidatedInstallation
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 function anchorPathFromManagerPath(path: string): string {
   return basename(path) === 'package.json' ? path : join(path, 'package.json')
 }
 
+/** Dependency groups a pnpm global listing may report. */
+const PNPM_DEPENDENCY_GROUPS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const
+
+/** One DSH entry in pnpm's global metadata; other fields are ignored. */
+const pnpmEntrySchema = Schema.Struct({ path: Schema.NonEmptyString })
+
+/**
+ * Read pnpm's global listing as candidates. A malformed document, root,
+ * dependency group, or entry is skipped so its valid siblings survive; the
+ * manifest remains the authority for the selected version.
+ * @param stdout - the pnpm listing text.
+ * @returns one candidate per usable DSH entry.
+ */
 function parsePnpmCandidates(stdout: string): { anchor: string; version?: string }[] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(stdout)
-  } catch {
-    return []
-  }
-  const roots = Array.isArray(parsed) ? parsed : [parsed]
+  const parsed = Result.try({
+    try: () => JSON.parse(stdout) as unknown,
+    catch: () => undefined,
+  })
+  if (Result.isFailure(parsed)) return []
+  const roots = Array.isArray(parsed.success) ? parsed.success : [parsed.success]
   const candidates: { anchor: string; version?: string }[] = []
   for (const root of roots) {
-    if (!isObject(root)) continue
-    for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-      const dependencies = root[group]
-      if (!isObject(dependencies)) continue
-      const dependency = dependencies['@deepseek-ai/dsh']
-      if (!isObject(dependency)) continue
-      const path = dependency.path
-      if (typeof path !== 'string' || path.length === 0) continue
-      const version = dependency.version
+    const listing = readRecord(root)
+    for (const group of PNPM_DEPENDENCY_GROUPS) {
+      const dependency = readRecord(listing[group])['@deepseek-ai/dsh']
+      const entry = Schema.decodeUnknownOption(pnpmEntrySchema)(dependency)
+      if (Option.isNone(entry)) continue
+      const version = readNonEmptyString(readRecord(dependency).version)
       candidates.push({
-        anchor: anchorPathFromManagerPath(path),
-        ...(typeof version === 'string' && version.length > 0 ? { version } : {}),
+        anchor: anchorPathFromManagerPath(entry.value.path),
+        ...(Option.isNone(version) ? {} : { version: version.value }),
       })
     }
   }
