@@ -9,16 +9,13 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
-import {
-  decodeInstallationAnchor,
-  encodeInstallationAnchor,
-} from '@eedsh/runtime/installation-anchor'
+import { encodeInstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Data, Effect, Layer, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
-import { validateRecordedInstallation } from './installation-anchor'
+import { decodeInstallationAnchor, validateRecordedInstallation } from './installation-anchor'
 import { writeFileAtomic } from './internal/atomic-write'
 import type { PackageInstallFailure } from './internal/effect/errors'
 import { pnpmPackageManagerLayer } from './internal/effect/layer'
