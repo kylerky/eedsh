@@ -5,6 +5,7 @@ import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
   anchorForInstallation,
+  decodeInstallationAnchor,
   type InstallationAnchorStore,
   installationAnchorPathForEnv,
   installationFromSelection,
@@ -141,6 +142,137 @@ describe('CLI installation anchor validation', () => {
     expect(failure.code).toBe('dsh.anchor_invalid')
     expect(failure.message).toContain('0.2.1-rc.5')
     expect(failure.message).toContain('0.2.1-rc.2')
+  })
+})
+
+describe('CLI installation anchor decoder', () => {
+  const required = { format: 1, installAnchor: '/opt/dsh/package.json' }
+
+  it('decodes every recorded field', () => {
+    const record = {
+      format: 1 as const,
+      installAnchor: '/opt/dsh/package.json',
+      version: '0.2.1-rc.2',
+      launcher: '/opt/dsh/bin/dsh',
+      manager: 'pnpm' as const,
+      recordedBy: 'sync',
+      recordedAt: '2026-11-03T08:00:00.000Z',
+    }
+    expect(decodeInstallationAnchor(JSON.stringify(record))).toEqual({ ok: true, anchor: record })
+  })
+
+  it('accepts the required fields only', () => {
+    expect(decodeInstallationAnchor(JSON.stringify(required))).toEqual({
+      ok: true,
+      anchor: required,
+    })
+  })
+
+  it('reports malformed JSON', () => {
+    const decoded = decodeInstallationAnchor('{ not json')
+    expect(decoded.ok).toBe(false)
+    if (!decoded.ok) expect(decoded.reason).toMatch(/^the installation anchor is not valid JSON: /)
+  })
+
+  it('rejects a non-object root', () => {
+    for (const text of ['[]', 'null', '"anchor"', '1', 'true']) {
+      expect(decodeInstallationAnchor(text), text).toEqual({
+        ok: false,
+        reason: 'the installation anchor must be a JSON object',
+      })
+    }
+  })
+
+  it('rejects an unsupported format', () => {
+    expect(decodeInstallationAnchor(JSON.stringify({ ...required, format: 2 }))).toEqual({
+      ok: false,
+      reason: 'unsupported installation anchor format 2; expected 1',
+    })
+  })
+
+  it('rejects a missing installAnchor', () => {
+    expect(decodeInstallationAnchor(JSON.stringify({ format: 1 }))).toEqual({
+      ok: false,
+      reason: 'the installation anchor has no installAnchor path',
+    })
+  })
+
+  it('rejects a relative installAnchor', () => {
+    expect(decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: 'dsh/package.json' })))
+      .toEqual({
+        ok: false,
+        reason: 'installAnchor must be an absolute package.json path: "dsh/package.json"',
+      })
+  })
+
+  it('rejects an installAnchor that is not a package.json', () => {
+    expect(decodeInstallationAnchor(JSON.stringify({ ...required, installAnchor: '/opt/dsh/index' })))
+      .toEqual({
+        ok: false,
+        reason: 'installAnchor must name a package.json: "/opt/dsh/index"',
+      })
+  })
+
+  const invalidFields: readonly [string, Record<string, unknown>, string][] = [
+    ['a non-string version', { version: 3 }, 'version must be a non-empty string when present'],
+    ['an empty version', { version: '' }, 'version must be a non-empty string when present'],
+    [
+      'a non-string launcher',
+      { launcher: 3 },
+      'launcher must be a non-empty string when present',
+    ],
+    [
+      'a relative launcher',
+      { launcher: 'bin/dsh' },
+      'launcher must be absolute when present: "bin/dsh"',
+    ],
+    [
+      'an unknown manager',
+      { manager: 'yarn' },
+      'manager must be "pnpm" or "npm" when present: "yarn"',
+    ],
+    ['an empty recordedBy', { recordedBy: '' }, 'recordedBy must be a non-empty string when present'],
+    ['a non-string recordedAt', { recordedAt: 7 }, 'recordedAt must be a non-empty string when present'],
+  ]
+
+  it.each(invalidFields)('rejects %s', (_label, extra, reason) => {
+    expect(decodeInstallationAnchor(JSON.stringify({ ...required, ...extra }))).toEqual({
+      ok: false,
+      reason,
+    })
+  })
+
+  it('drops extra fields', () => {
+    expect(
+      decodeInstallationAnchor(JSON.stringify({ ...required, extra: 'ignored', layers: [] })),
+    ).toEqual({ ok: true, anchor: required })
+  })
+
+  it('reports the first defect in the recorded validation order', () => {
+    const decoded = decodeInstallationAnchor(
+      JSON.stringify({
+        format: 1,
+        installAnchor: 'dsh/package.json',
+        version: 3,
+        launcher: 'bin/dsh',
+        manager: 'yarn',
+        recordedBy: '',
+      }),
+    )
+    expect(decoded).toEqual({
+      ok: false,
+      reason: 'installAnchor must be an absolute package.json path: "dsh/package.json"',
+    })
+  })
+
+  it('reports a bad version before a bad launcher', () => {
+    const decoded = decodeInstallationAnchor(
+      JSON.stringify({ ...required, version: 3, launcher: 'bin/dsh' }),
+    )
+    expect(decoded).toEqual({
+      ok: false,
+      reason: 'version must be a non-empty string when present',
+    })
   })
 })
 
