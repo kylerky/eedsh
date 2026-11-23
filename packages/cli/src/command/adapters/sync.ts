@@ -6,9 +6,8 @@
 import { Cause, Effect, Exit } from 'effect'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
-import type { ConfigLoadFailure } from '../../config'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from '../../exit'
-import type { DshFailure, MaterializeError } from '../../internal/effect/errors'
+import { type CliServices, Output } from '../../internal/effect/services'
 import { selectSyncProfiles } from '../../selection'
 import {
   adoptOwnershipFlag,
@@ -21,7 +20,7 @@ import {
   syncProfileFlag,
   watchFlag,
 } from '../../surface'
-import type { CommandContext, CommandRuntime } from '../context'
+import type { CommandContext } from '../context'
 import { type ProvisioningMode, syncOnce } from '../materialize'
 import type { Parsed } from '../options'
 import {
@@ -32,7 +31,7 @@ import {
   resolveConfigPath,
   selectionFailure,
 } from '../prepare'
-import { printResult } from '../report'
+import { failWith, printResult } from '../report'
 import { syncWatch, type WatchContext } from '../watch'
 
 /** The `eedsh sync` flag record. */
@@ -51,29 +50,17 @@ export const syncOptions = {
 /** The parsed input for {@link runSyncCommand}. */
 export type SyncInput = Parsed<typeof syncOptions>
 
-export function runSyncCommand(
-  input: SyncInput,
-  runtime: CommandRuntime,
-): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure> {
+/** One sync pass over the selected profiles. */
+function syncSelection(input: SyncInput, provisioning: ProvisioningMode) {
   return Effect.gen(function* () {
-    runtime.setFailureContext({ sync: true, explain: input.explain })
-    if (input.rebuild && input.noBuild) {
-      runtime.stderr('eedsh: --rebuild and --no-build are mutually exclusive')
-      return EXIT_USAGE
-    }
-    const provisioning: ProvisioningMode = {
-      rebuild: input.rebuild,
-      noBuild: input.noBuild,
-    }
-    const requestedConfig = input.config
-    const configPath = resolveConfigPath(requestedConfig, runtime)
+    const output = yield* Output
+    const configPath = yield* resolveConfigPath(input.config)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     const path = configPath.value
-    const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: true })
+    const installation = yield* requireDsh(input.dsh, { bootstrap: true })
 
     if (input.watch) {
       const context: WatchContext = {
-        ...runtime,
         configPath: path,
         profile: input.profile,
         installation,
@@ -82,9 +69,9 @@ export function runSyncCommand(
       return EXIT_OK
     }
 
-    const loaded = yield* loadConfigValue(path, runtime)
+    const loaded = yield* loadConfigValue(path)
     const selection = selectSyncProfiles(loaded.config, input.profile)
-    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+    if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
     const entries = selection.success
 
     const multiple = entries.length > 1
@@ -92,13 +79,12 @@ export function runSyncCommand(
     for (const entry of entries) {
       if (Result.isFailure(entry.plan)) {
         failed = true
-        reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
+        reportProfileFailure(output.stderr, entry.name, entry.plan.failure)
         continue
       }
       const plan = entry.plan.success
-      if (multiple) runtime.stdout(`eedsh: profile "${entry.name}"`)
+      if (multiple) output.stdout(`eedsh: profile "${entry.name}"`)
       const context: CommandContext = {
-        ...runtime,
         configPath: path,
         installation,
         plan,
@@ -113,15 +99,30 @@ export function runSyncCommand(
         if (Cause.hasInterruptsOnly(runExit.cause)) return yield* Effect.interrupt
         failed = true
         reportProfileSyncFailure(
-          runtime.stderr,
+          output.stderr,
           entry.name,
           Cause.squash(runExit.cause),
           input.explain,
         )
         continue
       }
-      printResult(runtime.stdout, runtime.stderr, plan, runExit.value, input.explain)
+      printResult(output.stdout, output.stderr, plan, runExit.value, input.explain)
     }
     return failed ? EXIT_FAILURE : EXIT_OK
   })
+}
+
+export function runSyncCommand(input: SyncInput): Effect.Effect<number, never, CliServices> {
+  return Effect.gen(function* () {
+    const output = yield* Output
+    if (input.rebuild && input.noBuild) {
+      output.stderr('eedsh: --rebuild and --no-build are mutually exclusive')
+      return EXIT_USAGE
+    }
+    const provisioning: ProvisioningMode = {
+      rebuild: input.rebuild,
+      noBuild: input.noBuild,
+    }
+    return yield* syncSelection(input, provisioning)
+  }).pipe(Effect.catch((error) => failWith(error, { sync: true, explain: input.explain })))
 }

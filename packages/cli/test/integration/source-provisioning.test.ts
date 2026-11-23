@@ -11,19 +11,11 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { DshBridge } from '@eedsh/config'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Layer } from 'effect'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { runEedsh } from '../../src/cli'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../../src/internal/effect/services'
 import { sourceKey, sourceLinkSpec } from '../../src/provision/source'
-import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
+import { type CliOverrides, captureOutput, fakeBundleResolver, runCli } from '../support/cli'
+import { fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 
 const root = process.cwd()
 const tempRoot = join(root, 'packages/cli/.tmp')
@@ -111,29 +103,27 @@ describe('source provisioning integration', () => {
     await writeFile(configPath, sourceConfig(url))
 
     const packages = fakePackageManager()
-    const services = () =>
-      Layer.mergeAll(
-        NodeServices.layer,
-        Layer.succeed(PackageManager, packages.shape),
-        Layer.succeed(DshInstallation, fakeDsh().shape),
-        Layer.succeed(Preflight, fakePreflight().shape),
-        Layer.succeed(SyncLock, fakeSyncLock().shape),
-      )
     const out: string[] = []
     const err: string[] = []
-    const options = {
-      env: {
-        DSH_HOME: home,
-        XDG_CONFIG_HOME: join(parent, 'xdg'),
-        HOME: parent,
+    const overrides: CliOverrides = {
+      output: captureOutput(out, err),
+      environment: {
+        env: {
+          DSH_HOME: home,
+          XDG_CONFIG_HOME: join(parent, 'xdg'),
+          HOME: parent,
+        },
+        cwd: root,
       },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      services,
-      loadDshBridge: async () => Result.succeed({} as DshBridge),
+      bundleResolver: fakeBundleResolver({
+        loadBridge: async () => Result.succeed({} as DshBridge),
+      }),
+      packageManager: packages.shape,
+      preflight: fakePreflight().shape,
+      syncLock: fakeSyncLock().shape,
     }
 
-    expect(await runEedsh(['sync', '--config', configPath, '--dsh', dshDir], options)).toBe(0)
+    expect(await runCli(['sync', '--config', configPath, '--dsh', dshDir], overrides)).toBe(0)
     expect(err.join('\n')).toBe('')
 
     const key = sourceKey({ from: url })
@@ -167,7 +157,7 @@ describe('source provisioning integration', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 10))
     await writeFile(configPath, plainConfig())
-    expect(await runEedsh(['sync', '--config', configPath, '--dsh', dshDir], options)).toBe(0)
+    expect(await runCli(['sync', '--config', configPath, '--dsh', dshDir], overrides)).toBe(0)
 
     const updated = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>

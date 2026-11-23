@@ -9,22 +9,14 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DshBridge } from '@eedsh/config'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Layer } from 'effect'
 import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { runEedsh } from '../../src/cli'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../../src/internal/effect/services'
 import { composePreflightLayers, type PreflightLayer } from '../../src/preflight'
 import { sourceCheckoutDir, sourceKey } from '../../src/provision/source'
 import { clearTestBridge, installTestBridge } from '../support/bridge'
-import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
+import { type CliOverrides, captureOutput, fakeBundleResolver, runCli } from '../support/cli'
+import { fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 import { createSourceRepository, SOURCE_BUNDLE_NAME } from '../support/source-fixture'
 
 const root = process.cwd()
@@ -85,29 +77,27 @@ describe('source bundle slow integration', () => {
     const configPath = join(configDir, 'config.ts')
     await writeFile(configPath, sourceBundleConfig(repository.url))
 
-    const services = () =>
-      Layer.mergeAll(
-        NodeServices.layer,
-        Layer.succeed(PackageManager, fakePackageManager().shape),
-        Layer.succeed(DshInstallation, fakeDsh().shape),
-        Layer.succeed(Preflight, fakePreflight().shape),
-        Layer.succeed(SyncLock, fakeSyncLock().shape),
-      )
     const out: string[] = []
     const err: string[] = []
-    const options = {
-      env: {
-        DSH_HOME: home,
-        XDG_CONFIG_HOME: join(parent, 'xdg'),
-        HOME: parent,
+    const overrides: CliOverrides = {
+      output: captureOutput(out, err),
+      environment: {
+        env: {
+          DSH_HOME: home,
+          XDG_CONFIG_HOME: join(parent, 'xdg'),
+          HOME: parent,
+        },
+        cwd: root,
       },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      services,
-      loadDshBridge: async () => Result.succeed({} as DshBridge),
+      bundleResolver: fakeBundleResolver({
+        loadBridge: async () => Result.succeed({} as DshBridge),
+      }),
+      packageManager: fakePackageManager().shape,
+      preflight: fakePreflight().shape,
+      syncLock: fakeSyncLock().shape,
     }
 
-    expect(await runEedsh(['sync', '--config', configPath, '--dsh', dshDir], options)).toBe(0)
+    expect(await runCli(['sync', '--config', configPath, '--dsh', dshDir], overrides)).toBe(0)
     expect(err.join('\n')).toBe('')
 
     const key = sourceKey({ from: repository.url })

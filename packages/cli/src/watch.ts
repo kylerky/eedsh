@@ -1,9 +1,12 @@
 /**
  * The `sync --watch` file watcher. It watches the config directory (not
- * transitive imports outside it) and debounces bursts of editor writes.
+ * transitive imports outside it) and debounces bursts of editor writes. The
+ * stop request is the invocation's interruption seam until watch mode becomes a
+ * `Stream`.
  * @module @eedsh/cli/watch
  */
 import { watch } from 'chokidar'
+import { Effect } from 'effect'
 
 /** A live watch registration. */
 export interface WatchSession {
@@ -58,4 +61,30 @@ export async function watchConfigDirectory(
       await watcher.close()
     },
   }
+}
+
+/**
+ * A stop request from an injected `AbortSignal`, SIGINT, or SIGTERM.
+ * @param signal - an explicit abort signal, when the caller has one.
+ * @returns an effect that completes when the session should stop.
+ */
+export function stopSignal(signal: AbortSignal | undefined): Effect.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        resume(Effect.void)
+        return
+      }
+      const onAbort = () => resume(Effect.void)
+      signal.addEventListener('abort', onAbort, { once: true })
+      return Effect.sync(() => signal.removeEventListener('abort', onAbort))
+    }
+    const onSignal = () => resume(Effect.void)
+    process.once('SIGINT', onSignal)
+    process.once('SIGTERM', onSignal)
+    return Effect.sync(() => {
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+    })
+  })
 }

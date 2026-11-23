@@ -43,6 +43,8 @@ export interface PublishProfileInput {
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
+  /** Absolute path of the DSH package.json the bundles resolve against. */
+  installAnchor: string
   /** Reconciliation diagnostics to report with the publication. */
   notices: readonly Diagnostic[]
   /** The evaluated config's recorded provenance, when it has any. */
@@ -254,6 +256,7 @@ export function publishProfile(
         generated: input.generated,
         strict: input.strict,
         explain: input.explain,
+        installAnchor: input.installAnchor,
         ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
         ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
       }),

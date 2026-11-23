@@ -2,12 +2,10 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Effect, Layer } from 'effect'
+import { Effect } from 'effect'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { liveServiceLayerFor } from '../../src/internal/effect/layer'
+import { liveCliServicesLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
-import { preflightLayer } from '../../src/preflight'
 import { clearTestBridge, devDshInstallation, installTestBridge } from '../support/bridge'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, layer, override } from '../support/plan-parts'
@@ -49,20 +47,17 @@ describe('bootable profile integration', () => {
       ],
     })
 
-    const live = liveServiceLayerFor(installation)
-    const services = Layer.mergeAll(live, preflightLayer.pipe(Layer.provide(live))).pipe(
-      Layer.provideMerge(NodeServices.layer),
-    )
     const result = await Effect.runPromise(
       materialize({
         plan,
         profileDir,
         eedshVersion: '0.0.0',
+        dsh: installation,
         runtimeSpec: `link:${join(root, 'packages/runtime')}`,
         generatedSpec: 'link:./.eedsh/generated',
         strict: true,
         explain: false,
-      }).pipe(Effect.provide(services)),
+      }).pipe(Effect.provide(liveCliServicesLayer)),
     )
     expect(result.changed).toBe(true)
 

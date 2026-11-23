@@ -4,16 +4,13 @@
  */
 import { Effect } from 'effect'
 import * as Option from 'effect/Option'
-import type * as Schema from 'effect/Schema'
 import { runCheck } from '../../check'
-import type { ConfigError } from '../../config'
 import { EXIT_FAILURE } from '../../exit'
-import type { CheckFailure } from '../../internal/effect/errors'
-import { defaultSpawn } from '../../spawn'
+import { type CliServices, Environment, Output, Spawner } from '../../internal/effect/services'
 import { configFlag } from '../../surface'
-import type { CommandRuntime } from '../context'
 import type { Parsed } from '../options'
 import { resolveConfigPath } from '../prepare'
+import { failWith } from '../report'
 
 /** The `eedsh check` flag record. */
 export const checkOptions = { config: configFlag }
@@ -21,22 +18,21 @@ export const checkOptions = { config: configFlag }
 /** The parsed input for {@link runCheckCommand}; `tscArgs` comes from `--`. */
 export type CheckInput = Parsed<typeof checkOptions> & { tscArgs: readonly string[] }
 
-export function runCheckCommand(
-  input: CheckInput,
-  runtime: CommandRuntime,
-): Effect.Effect<number, ConfigError | Schema.SchemaError | CheckFailure> {
+export function runCheckCommand(input: CheckInput): Effect.Effect<number, never, CliServices> {
   return Effect.gen(function* () {
-    runtime.setFailureContext(undefined)
-    const configPath = resolveConfigPath(input.config, runtime)
+    const output = yield* Output
+    const { env, cwd } = yield* Environment
+    const spawn = yield* Spawner
+    const configPath = yield* resolveConfigPath(input.config)
     if (Option.isNone(configPath)) return EXIT_FAILURE
     return yield* runCheck({
       configPath: configPath.value,
       tscArgs: input.tscArgs,
-      stdout: runtime.stdout,
-      stderr: runtime.stderr,
-      env: runtime.env,
-      cwd: runtime.cwd,
-      spawn: runtime.options.spawn ?? defaultSpawn,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env,
+      cwd,
+      spawn,
     })
-  })
+  }).pipe(Effect.catch((error) => failWith(error)))
 }

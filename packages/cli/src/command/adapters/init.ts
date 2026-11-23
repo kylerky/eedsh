@@ -6,26 +6,19 @@
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { Effect } from 'effect'
 import * as Option from 'effect/Option'
-import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { configDirectory } from '../../config-path'
 import { EXIT_OK } from '../../exit'
-import {
-  defaultInitServices,
-  INIT_PROFILE_NAME,
-  type InitError,
-  resolveInitDependencySpecs,
-  runInit,
-} from '../../init'
+import { INIT_PROFILE_NAME, resolveInitDependencySpecs, runInit } from '../../init'
 import {
   anchorForInstallation,
   installationAnchorPathForEnv,
   installationFromSelection,
 } from '../../installation-anchor'
-import type { DshFailure, PackageInstallFailure } from '../../internal/effect/errors'
+import { type CliServices, Environment, Output } from '../../internal/effect/services'
 import { dshFlag, noInstallFlag } from '../../surface'
-import type { CommandRuntime } from '../context'
 import type { Parsed } from '../options'
+import { failWith } from '../report'
 
 /** The `eedsh init` flag record. */
 export const initOptions = { noInstall: noInstallFlag, dsh: dshFlag }
@@ -34,18 +27,13 @@ export const initOptions = { noInstall: noInstallFlag, dsh: dshFlag }
 export type InitInput = Parsed<typeof initOptions>
 
 /** Create the XDG config project and print what to do next. */
-export function runInitCommand(
-  input: InitInput,
-  runtime: CommandRuntime,
-): Effect.Effect<
-  number,
-  InitError | PackageInstallFailure | PlatformError.PlatformError | DshFailure
-> {
+export function runInitCommand(input: InitInput): Effect.Effect<number, never, CliServices> {
   return Effect.gen(function* () {
-    runtime.setFailureContext(undefined)
+    const output = yield* Output
+    const { env, cwd } = yield* Environment
     let anchorRecord: InstallationAnchor | undefined
     if (Option.isSome(input.dsh)) {
-      const selected = installationFromSelection(input.dsh.value, runtime.cwd, {
+      const selected = installationFromSelection(input.dsh.value, cwd, {
         requireSupported: true,
       })
       if (Result.isFailure(selected)) return yield* Effect.fail(selected.failure)
@@ -53,43 +41,43 @@ export function runInitCommand(
     }
     const specs = resolveInitDependencySpecs()
     if (Result.isFailure(specs)) return yield* Effect.fail(specs.failure)
-    const configDir = configDirectory(runtime.env)
-    const anchorPath = installationAnchorPathForEnv(runtime.env)
+    const configDir = configDirectory(env)
+    const anchorPath = installationAnchorPathForEnv(env)
     const result = yield* runInit({
       configDir,
       specs: specs.success,
       install: !input.noInstall,
-      stdout: runtime.stdout,
+      stdout: output.stdout,
       anchorPath,
       ...(anchorRecord === undefined ? {} : { anchorRecord }),
-      warn: (line: string) => runtime.stderr(line),
-    }).pipe(Effect.provide((runtime.options.initServices ?? defaultInitServices)()))
+      warn: output.stderr,
+    })
 
-    runtime.stdout(`eedsh: initialized ${configDir}`)
-    runtime.stdout(`eedsh: profiles: ${INIT_PROFILE_NAME}`)
+    output.stdout(`eedsh: initialized ${configDir}`)
+    output.stdout(`eedsh: profiles: ${INIT_PROFILE_NAME}`)
     if (result.kept.length > 0) {
-      runtime.stdout(`eedsh: kept existing files: ${result.kept.join(', ')}`)
+      output.stdout(`eedsh: kept existing files: ${result.kept.join(', ')}`)
     }
-    if (input.noInstall) runtime.stdout(`eedsh: ${result.installCommand}`)
-    else runtime.stdout('eedsh: installed dependencies with pnpm')
+    if (input.noInstall) output.stdout(`eedsh: ${result.installCommand}`)
+    else output.stdout('eedsh: installed dependencies with pnpm')
     if (result.recordedAnchor !== undefined) {
       const version =
         result.recordedAnchor.version === undefined ? '' : ` (DSH ${result.recordedAnchor.version})`
-      runtime.stdout(
+      output.stdout(
         `eedsh: recorded installation anchor${version} at ${result.recordedAnchor.installAnchor}`,
       )
     } else if (result.existingAnchor !== undefined) {
       const version =
         result.existingAnchor.version === undefined ? '' : ` (DSH ${result.existingAnchor.version})`
-      runtime.stdout(`eedsh: installation: ${result.existingAnchor.installAnchor}${version}`)
+      output.stdout(`eedsh: installation: ${result.existingAnchor.installAnchor}${version}`)
     } else {
-      runtime.stdout(
+      output.stdout(
         'eedsh: no installation anchor; the first "eedsh sync" bootstraps one through pnpm or npm, or pass --dsh <package dir|package.json>',
       )
     }
-    runtime.stdout('eedsh: next: eedsh check')
-    runtime.stdout('eedsh: next: eedsh sync')
-    runtime.stdout('eedsh: next: eedsh run')
+    output.stdout('eedsh: next: eedsh check')
+    output.stdout('eedsh: next: eedsh sync')
+    output.stdout('eedsh: next: eedsh run')
     return EXIT_OK
-  })
+  }).pipe(Effect.catch((error) => failWith(error)))
 }

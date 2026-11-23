@@ -10,15 +10,13 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
 import { encodeInstallationAnchor } from '@eedsh/runtime/installation-anchor'
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import { Data, Effect, Layer, Option } from 'effect'
+import { Data, Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { decodeInstallationAnchor, validateRecordedInstallation } from './installation-anchor'
 import { writeFileAtomic } from './internal/atomic-write'
 import type { PackageInstallFailure } from './internal/effect/errors'
-import { pnpmPackageManagerLayer } from './internal/effect/layer'
 import { PackageManager, type PackageManagerShape } from './internal/effect/services'
 import { messageOf } from './internal/error-message'
 import { readVersion } from './internal/schema-readers'
@@ -283,16 +281,4 @@ export function runInit(
       ...(anchorError === undefined ? {} : { anchorError }),
     }
   })
-}
-
-/**
- * The live init services: Node file access and pnpm installation. This is a
- * narrow layer; it deliberately omits DSH resolution, preflight, and locking.
- * @returns the init service layer.
- */
-export function defaultInitServices(): Layer.Layer<InitService> {
-  return Layer.mergeAll(
-    NodeServices.layer,
-    pnpmPackageManagerLayer.pipe(Layer.provide(NodeServices.layer)),
-  )
 }

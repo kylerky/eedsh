@@ -4,26 +4,23 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { clearDshBridge, type DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
-import { Layer } from 'effect'
-import * as FileSystem from 'effect/FileSystem'
-import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { runEedsh } from '../src/cli'
 import type { CommandRunner } from '../src/command-runner'
 import type { InstallationAnchorStore } from '../src/installation-anchor'
 import { DshFailure } from '../src/internal/effect/errors'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../src/internal/effect/services'
 import { delay, waitFor } from './support/async'
 import { devDshInstallation } from './support/bridge'
 import {
+  type CliOverrides,
+  captureOutput,
+  fakeBundleResolver,
+  fakeDshDiscovery,
+  fakeWatcher,
+  runCli,
+} from './support/cli'
+import {
   fakeChildProcessSpawner,
-  fakeDsh,
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
@@ -43,33 +40,44 @@ const generatedManifest = join(
 )
 const installation = devDshInstallation()
 
-function harness(env: Record<string, string | undefined>, options: Record<string, unknown> = {}) {
+/** Per-invocation conveniences on top of the service overrides. */
+interface RunExtras extends Partial<CliOverrides> {
+  /** Replace the invocation environment entirely. */
+  env?: Record<string, string | undefined>
+  /** Replace the invocation working directory. */
+  cwd?: string
+}
+
+function harness(env: Record<string, string | undefined>, options: Partial<CliOverrides> = {}) {
   const fs = memoryFileSystem()
   const packages = fakePackageManager()
-  const dsh = fakeDsh()
   const preflight = fakePreflight()
   const lock = fakeSyncLock()
-  const services = () =>
-    Layer.mergeAll(
-      Layer.succeed(FileSystem.FileSystem, fs.fs),
-      Layer.succeed(PackageManager, packages.shape),
-      Layer.succeed(DshInstallation, dsh.shape),
-      Layer.succeed(Preflight, preflight.shape),
-      Layer.succeed(SyncLock, lock.shape),
-      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
-    )
   const out: string[] = []
   const err: string[] = []
+  const baseEnv = { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg', ...env }
+  const overrides: CliOverrides = {
+    fileSystem: fs.fs,
+    packageManager: packages.shape,
+    preflight: preflight.shape,
+    syncLock: lock.shape,
+    childProcessSpawner: fakeChildProcessSpawner().spawner,
+    output: captureOutput(out, err),
+    environment: { env: baseEnv, cwd: root },
+    ...options,
+  }
   return {
     fs,
+    packages,
     out,
     err,
-    options: {
-      env: { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg', ...env },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      services,
-      ...options,
+    run: (argv: readonly string[], extra: RunExtras = {}) => {
+      const { env: envOverride, cwd, ...rest } = extra
+      return runCli(argv, {
+        ...overrides,
+        ...rest,
+        environment: { env: envOverride ?? baseEnv, cwd: cwd ?? root },
+      })
     },
     text: () => ({ out: out.join('\n'), err: err.join('\n') }),
   }
@@ -93,15 +101,14 @@ async function writeFakeInstallation(version: string): Promise<string> {
 describe('command DSH requirements', () => {
   it('syncs with EEDSH_DSH_ANCHOR and publishes', async () => {
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(0)
     expect(h.fs.files.has(generatedManifest)).toBe(true)
   })
 
   it('fails sync before any write when no DSH is discoverable', async () => {
     const h = harness({})
-    const code = await runEedsh(['sync', '--config', fixture('basic')], {
-      ...h.options,
+    const code = await h.run(['sync', '--config', fixture('basic')], {
       cwd: await tempDir('eedsh-no-dsh-'),
     })
     expect(code).toBe(1)
@@ -116,7 +123,7 @@ describe('command DSH requirements', () => {
   it('rejects an unsupported discovered version before any write', async () => {
     const unsupported = await writeFakeInstallation('0.3.0')
     const h = harness({ EEDSH_DSH_ANCHOR: join(unsupported, 'package.json') })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.text().err
     expect(errors).toContain('dsh.unsupported_version')
@@ -128,23 +135,23 @@ describe('command DSH requirements', () => {
   it('lets --dsh win over the environment and fails an invalid explicit selection', async () => {
     const unsupported = await writeFakeInstallation('0.3.0')
     const h = harness({ EEDSH_DSH_ANCHOR: join(unsupported, 'package.json') })
-    const code = await runEedsh(
-      ['sync', '--dsh', installation.packageDir, '--config', fixture('basic')],
-      h.options,
-    )
+    const code = await h.run([
+      'sync',
+      '--dsh',
+      installation.packageDir,
+      '--config',
+      fixture('basic'),
+    ])
     expect(code).toBe(0)
 
     const invalid = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
-    const failed = await runEedsh(
-      [
-        'sync',
-        '--dsh',
-        join(await tempDir('eedsh-missing-'), 'nope'),
-        '--config',
-        fixture('basic'),
-      ],
-      invalid.options,
-    )
+    const failed = await invalid.run([
+      'sync',
+      '--dsh',
+      join(await tempDir('eedsh-missing-'), 'nope'),
+      '--config',
+      fixture('basic'),
+    ])
     expect(failed).toBe(1)
     expect(invalid.text().err).toContain('dsh.anchor_invalid')
     expect(invalid.fs.writeCount()).toBe(0)
@@ -153,19 +160,17 @@ describe('command DSH requirements', () => {
   it('requires DSH for run and boots the discovered launcher', async () => {
     const missing = harness({})
     const spawn = fakeSpawner()
-    const code = await runEedsh(['run', '--no-sync', '--config', fixture('basic')], {
-      ...missing.options,
+    const code = await missing.run(['run', '--no-sync', '--config', fixture('basic')], {
       cwd: await tempDir('eedsh-run-no-dsh-'),
-      spawn: spawn.spawn,
+      spawner: spawn.spawn,
     })
     expect(code).toBe(1)
     expect(spawn.calls).toHaveLength(0)
 
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
     const launched = fakeSpawner()
-    const ok = await runEedsh(['run', '--no-sync', '--config', fixture('basic')], {
-      ...h.options,
-      spawn: launched.spawn,
+    const ok = await h.run(['run', '--no-sync', '--config', fixture('basic')], {
+      spawner: launched.spawn,
     })
     expect(ok).toBe(0)
     expect(launched.calls).toHaveLength(1)
@@ -176,18 +181,14 @@ describe('command DSH requirements', () => {
 
   it('requires DSH for repl', async () => {
     const missing = harness({})
-    const code = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], {
-      ...missing.options,
+    const code = await missing.run(['repl', '--eval', '1', '--config', fixture('basic')], {
       cwd: await tempDir('eedsh-repl-no-dsh-'),
     })
     expect(code).toBe(1)
     expect(missing.text().err).toContain('dsh.not_found')
 
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
-    const ok = await runEedsh(
-      ['repl', '--eval', 'selectedProfile.name', '--config', fixture('basic')],
-      h.options,
-    )
+    const ok = await h.run(['repl', '--eval', 'selectedProfile.name', '--config', fixture('basic')])
     expect(ok).toBe(0)
     expect(h.text().out).toContain("'cli-fixture'")
   })
@@ -196,11 +197,9 @@ describe('command DSH requirements', () => {
     const home = await tempDir('eedsh-init-no-dsh-')
     const out: string[] = []
     const err: string[] = []
-    const code = await runEedsh(['init', '--no-install'], {
-      cwd: home,
-      env: { XDG_CONFIG_HOME: home, HOME: home },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
+    const code = await runCli(['init', '--no-install'], {
+      environment: { env: { XDG_CONFIG_HOME: home, HOME: home }, cwd: home },
+      output: captureOutput(out, err),
     })
     expect(code).toBe(0)
     expect(err.join('\n')).not.toContain('dsh.not_found')
@@ -213,12 +212,10 @@ describe('command DSH requirements', () => {
     const out: string[] = []
     const err: string[] = []
     const spawn = fakeSpawner({ listing: fixture('basic') })
-    const code = await runEedsh(['check', '--config', fixture('basic')], {
-      cwd: await tempDir('eedsh-check-no-dsh-'),
-      env: {},
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      spawn: spawn.spawn,
+    const code = await runCli(['check', '--config', fixture('basic')], {
+      environment: { env: {}, cwd: await tempDir('eedsh-check-no-dsh-') },
+      output: captureOutput(out, err),
+      spawner: spawn.spawn,
     })
     expect(err.join('\n')).not.toContain('dsh.not_found')
     expect(code === 0 || code === 1).toBe(true)
@@ -233,11 +230,9 @@ describe('command DSH requirements', () => {
     )
     const out: string[] = []
     const err: string[] = []
-    const code = await runEedsh(['doctor', '--profile', 'work'], {
-      cwd: await tempDir('eedsh-doctor-cwd-'),
-      env: { DSH_HOME: home },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
+    const code = await runCli(['doctor', '--profile', 'work'], {
+      environment: { env: { DSH_HOME: home }, cwd: await tempDir('eedsh-doctor-cwd-') },
+      output: captureOutput(out, err),
     })
     expect(err.join('\n')).not.toContain('dsh.not_found')
     expect(code === 0 || code === 1).toBe(true)
@@ -264,7 +259,7 @@ export default defineConfig()
 `,
     )
     const h = harness({ EEDSH_DSH_ANCHOR: installation.installAnchor })
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(0)
     const manifest = JSON.parse(h.fs.files.get(generatedManifest) ?? '{}') as {
       eedsh?: { dshVersion?: string }
@@ -277,10 +272,12 @@ export default defineConfig()
     const h = harness(
       {},
       {
-        discoverDsh: () => {
-          discoveries += 1
-          return Result.succeed(installation)
-        },
+        discovery: fakeDshDiscovery(installation, {
+          discover: () => {
+            discoveries += 1
+            return Result.succeed(installation)
+          },
+        }),
       },
     )
     let onChange: (() => void) | undefined
@@ -289,10 +286,8 @@ export default defineConfig()
       return { close: async () => {} }
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
     expect(discoveries).toBe(1)
@@ -310,8 +305,7 @@ describe('command DSH failure reporting', () => {
 
   it('prints a discovery failure once and not as a config import failure', async () => {
     const h = harness({})
-    const code = await runEedsh(['sync', '--config', fixture('basic')], {
-      ...h.options,
+    const code = await h.run(['sync', '--config', fixture('basic')], {
       cwd: await tempDir('eedsh-report-not-found-'),
     })
     expect(code).toBe(1)
@@ -324,7 +318,7 @@ describe('command DSH failure reporting', () => {
   it('prints an unsupported-version failure once with its facts', async () => {
     const unsupported = await writeFakeInstallation('0.3.0')
     const h = harness({ EEDSH_DSH_ANCHOR: join(unsupported, 'package.json') })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.text().err
     expect(countOf(errors, 'eedsh: dsh.unsupported_version:')).toBe(1)
@@ -337,17 +331,19 @@ describe('command DSH failure reporting', () => {
     const h = harness(
       { EEDSH_DSH_ANCHOR: installation.installAnchor },
       {
-        loadDshBridge: async () =>
-          Result.fail(
-            new DshFailure({
-              code: 'dsh.capability_missing',
-              message: 'DSH 0.2.1-rc.2 does not provide the "composeEntries" capability',
-              capability: 'composeEntries',
-            }),
-          ),
+        bundleResolver: fakeBundleResolver({
+          loadBridge: async () =>
+            Result.fail(
+              new DshFailure({
+                code: 'dsh.capability_missing',
+                message: 'DSH 0.2.1-rc.2 does not provide the "composeEntries" capability',
+                capability: 'composeEntries',
+              }),
+            ),
+        }),
       },
     )
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.text().err
     expect(countOf(errors, 'eedsh: dsh.capability_missing:')).toBe(1)
@@ -371,9 +367,13 @@ export default defineConfig()
     )
     const h = harness(
       { EEDSH_DSH_ANCHOR: installation.installAnchor },
-      { loadDshBridge: async () => Result.succeed({} as DshBridge) },
+      {
+        bundleResolver: fakeBundleResolver({
+          loadBridge: async () => Result.succeed({} as DshBridge),
+        }),
+      },
     )
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.text().err
     expect(countOf(errors, 'eedsh: resolution.bridge_missing:')).toBe(1)
@@ -434,7 +434,9 @@ async function fakeBootstrap(options: FakeBootstrapOptions = {}): Promise<Bootst
     { DSH_HOME: home, PATH: bin, XDG_CONFIG_HOME: join(home, 'xdg') },
     {
       commandRunner: runner,
-      loadDshBridge: async () => Result.succeed({} as DshBridge),
+      bundleResolver: fakeBundleResolver({
+        loadBridge: async () => Result.succeed({} as DshBridge),
+      }),
     },
   )
   return { home, bin, launcher, installation, calls, runner, h }
@@ -460,7 +462,7 @@ function profileManifest(home: string): string {
 describe('sync installation bootstrap', () => {
   it('bootstraps the first sync through pnpm and records the anchor', async () => {
     const f = await fakeBootstrap()
-    const code = await runEedsh(['sync', '--config', fixture('basic')], f.h.options)
+    const code = await f.h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(0)
     expect(f.h.fs.files.has(profileManifest(f.home))).toBe(true)
     expect(f.h.text().err).not.toContain('dsh.launcher_unresolved')
@@ -477,32 +479,32 @@ describe('sync installation bootstrap', () => {
 
   it('does not query package managers again when the anchor is valid', async () => {
     const f = await fakeBootstrap()
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     const queries = managerQueries(f.calls)
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     expect(managerQueries(f.calls)).toBe(queries)
     expect(f.calls.filter((call) => call.command === f.launcher)).toHaveLength(2)
   })
 
   it('re-bootstraps when the recorded package disappears', async () => {
     const f = await fakeBootstrap()
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     await rm(anchorPathOf(f.home), { force: true })
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     expect(bootstrapRounds(f.calls)).toBe(2)
     expect(existsSync(anchorPathOf(f.home))).toBe(true)
   })
 
   it('re-bootstraps when the recorded version no longer matches', async () => {
     const f = await fakeBootstrap()
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     const record = JSON.parse(await readFile(anchorPathOf(f.home), 'utf8')) as InstallationAnchor
     await writeFile(
       anchorPathOf(f.home),
       JSON.stringify({ ...record, version: '0.2.1-rc.5' }, null, 2),
       'utf8',
     )
-    expect(await runEedsh(['sync', '--config', fixture('basic')], f.h.options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')])).toBe(0)
     expect(bootstrapRounds(f.calls)).toBe(2)
     const refreshed = JSON.parse(await readFile(anchorPathOf(f.home), 'utf8')) as InstallationAnchor
     expect(refreshed.version).toBe('0.2.1-rc.2')
@@ -511,10 +513,7 @@ describe('sync installation bootstrap', () => {
   it("bootstraps during run's sync step", async () => {
     const f = await fakeBootstrap()
     const spawn = fakeSpawner()
-    const code = await runEedsh(['run', '--config', fixture('basic')], {
-      ...f.h.options,
-      spawn: spawn.spawn,
-    })
+    const code = await f.h.run(['run', '--config', fixture('basic')], { spawner: spawn.spawn })
     expect(code).toBe(0)
     expect(f.h.fs.files.has(profileManifest(f.home))).toBe(true)
     expect(existsSync(anchorPathOf(f.home))).toBe(true)
@@ -524,10 +523,7 @@ describe('sync installation bootstrap', () => {
   it('fails with launcher_unresolved before import, publication, or boot', async () => {
     const f = await fakeBootstrap({ pnpm: false })
     const spawn = fakeSpawner()
-    const code = await runEedsh(['run', '--config', fixture('basic')], {
-      ...f.h.options,
-      spawn: spawn.spawn,
-    })
+    const code = await f.h.run(['run', '--config', fixture('basic')], { spawner: spawn.spawn })
     expect(code).toBe(1)
     const errors = f.h.text().err
     expect(errors).toContain('dsh.launcher_unresolved')
@@ -554,11 +550,12 @@ describe('installation bootstrap boundaries', () => {
     )
     const out: string[] = []
     const err: string[] = []
-    const code = await runEedsh(['doctor', '--profile', 'work'], {
-      cwd: await tempDir('eedsh-doctor-bootstrap-cwd-'),
-      env: { DSH_HOME: home, PATH: f.bin },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
+    const code = await runCli(['doctor', '--profile', 'work'], {
+      environment: {
+        env: { DSH_HOME: home, PATH: f.bin },
+        cwd: await tempDir('eedsh-doctor-bootstrap-cwd-'),
+      },
+      output: captureOutput(out, err),
       commandRunner: f.runner,
     })
     expect(code === 0 || code === 1).toBe(true)
@@ -570,8 +567,7 @@ describe('installation bootstrap boundaries', () => {
   it('names the sync-once remedy when repl has no launcher and no anchor', async () => {
     const home = await tempDir('eedsh-repl-nolauncher-home-')
     const h = harness({ DSH_HOME: home, PATH: '' })
-    const code = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], {
-      ...h.options,
+    const code = await h.run(['repl', '--eval', '1', '--config', fixture('basic')], {
       cwd: await tempDir('eedsh-repl-nolauncher-'),
     })
     expect(code).toBe(1)
@@ -584,16 +580,15 @@ describe('installation bootstrap boundaries', () => {
 
   it('rejects repl and run --no-sync without querying a package manager', async () => {
     const f = await fakeBootstrap()
-    const repl = await runEedsh(['repl', '--eval', '1', '--config', fixture('basic')], f.h.options)
+    const repl = await f.h.run(['repl', '--eval', '1', '--config', fixture('basic')])
     expect(repl).toBe(1)
     expect(f.h.text().err).toContain('dsh.launcher_unresolved')
     expect(f.h.text().err).toContain('eedsh sync')
     expect(f.calls).toHaveLength(0)
 
     const spawn = fakeSpawner()
-    const runNoSync = await runEedsh(['run', '--no-sync', '--config', fixture('basic')], {
-      ...f.h.options,
-      spawn: spawn.spawn,
+    const runNoSync = await f.h.run(['run', '--no-sync', '--config', fixture('basic')], {
+      spawner: spawn.spawn,
     })
     expect(runNoSync).toBe(1)
     expect(spawn.calls).toHaveLength(0)
@@ -606,14 +601,14 @@ describe('installation bootstrap boundaries', () => {
       read: () => undefined,
       write: () => ({ ok: false, error: 'read-only home' }),
     }
-    const options = { ...f.h.options, installationAnchor: store }
-    expect(await runEedsh(['sync', '--config', fixture('basic')], options)).toBe(0)
+    const options: CliOverrides = { anchor: store }
+    expect(await f.h.run(['sync', '--config', fixture('basic')], options)).toBe(0)
     expect(f.h.fs.files.has(profileManifest(f.home))).toBe(true)
     expect(f.h.text().err).toContain('warning')
     expect(f.h.text().err).toContain('read-only home')
     expect(existsSync(anchorPathOf(f.home))).toBe(false)
 
-    expect(await runEedsh(['sync', '--config', fixture('basic')], options)).toBe(0)
+    expect(await f.h.run(['sync', '--config', fixture('basic')], options)).toBe(0)
     expect(bootstrapRounds(f.calls)).toBe(2)
   })
 })

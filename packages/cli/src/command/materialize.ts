@@ -1,26 +1,38 @@
 /**
- * Materialization wiring: build the program for one plan, provide it a service
- * layer, and run one one-shot sync.
+ * Materialization wiring: build the program for one plan and run one one-shot
+ * sync. Services come from the invocation's layer, so this module provides no
+ * layer of its own.
  * @module @eedsh/cli/command/materialize
  */
 import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
+import type * as FileSystem from 'effect/FileSystem'
+import type { ChildProcessSpawner } from 'effect/process'
 import type { ConfigError } from '../config'
-import type { DiscoveredDshInstallation } from '../dsh'
+import type { DshInstallationInfo } from '../dsh'
 import { resolveDshHome } from '../internal/dsh-home'
-import type { DshFailure, MaterializeError } from '../internal/effect/errors'
+import type { MaterializeError } from '../internal/effect/errors'
+import {
+  Environment,
+  type EnvironmentShape,
+  type PackageManagerShape,
+  type PreflightShape,
+  type SyncLockShape,
+} from '../internal/effect/services'
 import { type MaterializeResult, materialize } from '../materialize/program'
 import { provisionPlanSources } from '../provision/plan'
-import {
-  type CliRunOptions,
-  type CliService,
-  type CliServiceLayer,
-  type CommandContext,
-  defaultServices,
-} from './context'
+import type { CommandContext } from './context'
 import { profileDirFor } from './prepare'
 import { cliVersion, runtimeLinkSpec } from './version'
+
+/** The services one materialization program needs. */
+export type MaterializeServices =
+  | FileSystem.FileSystem
+  | PackageManagerShape
+  | SyncLockShape
+  | PreflightShape
+  | ChildProcessSpawner.ChildProcessSpawner
 
 export function programFor(
   env: Record<string, string | undefined>,
@@ -30,8 +42,9 @@ export function programFor(
   adoptOwnership: boolean,
   provenance: ConfigProvenance | undefined,
   configDir: string,
+  dsh: DshInstallationInfo,
   provisioning: ProvisioningMode,
-): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, MaterializeServices> {
   return Effect.gen(function* () {
     const runtimeSpec = yield* Effect.fromResult(runtimeLinkSpec())
     // Provision declared sources before reconciliation so the derived link
@@ -47,6 +60,7 @@ export function programFor(
       plan,
       profileDir: profileDirFor(plan, env),
       eedshVersion: cliVersion(),
+      dsh,
       runtimeSpec,
       generatedSpec: 'link:./.eedsh/generated',
       strict,
@@ -60,16 +74,7 @@ export function programFor(
   })
 }
 
-/** Build the materializer's service layer for one command invocation. */
-export function serviceLayerFor(
-  options: CliRunOptions,
-  installation: DiscoveredDshInstallation,
-): CliServiceLayer {
-  if (options.services !== undefined) return options.services()
-  return defaultServices(installation)
-}
-
-/** The materialization program before its service layer is provided. */
+/** The materialization program for one plan, before the layer is provided. */
 export function syncProgram(
   env: Record<string, string | undefined>,
   plan: ProfilePlan,
@@ -78,31 +83,48 @@ export function syncProgram(
   adoptOwnership: boolean,
   provenance: ConfigProvenance | undefined,
   configDir: string,
+  dsh: DshInstallationInfo,
   provisioning: ProvisioningMode,
-): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, CliService> {
-  return programFor(env, plan, strict, explain, adoptOwnership, provenance, configDir, provisioning)
+): Effect.Effect<MaterializeResult, MaterializeError | ConfigError, MaterializeServices> {
+  return programFor(
+    env,
+    plan,
+    strict,
+    explain,
+    adoptOwnership,
+    provenance,
+    configDir,
+    dsh,
+    provisioning,
+  )
 }
 
-/** Run one one-shot materialization with its own service layer. */
+/** Run one one-shot materialization against the invocation's services. */
 export function syncOnce(
   context: CommandContext,
   strict: boolean,
   explain: boolean,
   adoptOwnership: boolean,
   provisioning: ProvisioningMode,
-): Effect.Effect<MaterializeResult, MaterializeError | ConfigError | DshFailure> {
-  return Effect.suspend(() =>
-    syncProgram(
-      context.env,
+): Effect.Effect<
+  MaterializeResult,
+  MaterializeError | ConfigError,
+  MaterializeServices | EnvironmentShape
+> {
+  return Effect.gen(function* () {
+    const { env } = yield* Environment
+    return yield* syncProgram(
+      env,
       context.plan,
       strict,
       explain,
       adoptOwnership,
       context.provenance,
       context.configDir,
+      context.installation,
       provisioning,
-    ).pipe(Effect.provide(serviceLayerFor(context.options, context.installation))),
-  )
+    )
+  })
 }
 
 /** Whether provisioning forces preparation or refuses to prepare. */

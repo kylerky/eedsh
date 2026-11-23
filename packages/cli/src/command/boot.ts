@@ -7,7 +7,8 @@ import { Effect } from 'effect'
 import type { DiscoveredDshInstallation } from '../dsh'
 import { EXIT_FAILURE } from '../exit'
 import { SpawnFailure } from '../internal/effect/errors'
-import { defaultSpawn, type SpawnLike } from '../spawn'
+import { Environment, type EnvironmentShape, Spawner } from '../internal/effect/services'
+import type { SpawnLike } from '../spawn'
 import type { CommandContext } from './context'
 
 /** The executable and arguments that start DSH. */
@@ -88,28 +89,31 @@ export function spawnDsh(
   context: CommandContext,
   installation: DiscoveredDshInstallation,
   dshArgs: readonly string[],
-): Effect.Effect<number, SpawnFailure> {
-  const spawnFn: SpawnLike = context.options.spawn ?? defaultSpawn
-  const launch = resolveLaunch(
-    {
-      launcher: installation.launcher,
-      binPath: installation.binPath,
-      launcherExists: existsSync(installation.launcher),
-    },
-    ['--profile', context.plan.profile.name, ...dshArgs],
-  )
-  return Effect.tryPromise({
-    try: () =>
-      new Promise<number>((resolveExit, rejectExit) => {
-        const child = spawnFn(launch.command, [...launch.args], {
-          cwd: context.cwd,
-          env: context.env,
-          stdio: 'inherit',
-        })
-        child.on('exit', (code) => resolveExit(code ?? EXIT_FAILURE))
-        child.on('error', rejectExit)
-      }),
-    catch: (cause) => new SpawnFailure({ cause }),
+): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape> {
+  return Effect.gen(function* () {
+    const spawnFn = yield* Spawner
+    const { env, cwd } = yield* Environment
+    const launch = resolveLaunch(
+      {
+        launcher: installation.launcher,
+        binPath: installation.binPath,
+        launcherExists: existsSync(installation.launcher),
+      },
+      ['--profile', context.plan.profile.name, ...dshArgs],
+    )
+    return yield* Effect.tryPromise({
+      try: () =>
+        new Promise<number>((resolveExit, rejectExit) => {
+          const child = spawnFn(launch.command, [...launch.args], {
+            cwd,
+            env,
+            stdio: 'inherit',
+          })
+          child.on('exit', (code) => resolveExit(code ?? EXIT_FAILURE))
+          child.on('error', rejectExit)
+        }),
+      catch: (cause) => new SpawnFailure({ cause }),
+    })
   })
 }
 
@@ -117,6 +121,6 @@ export function runBoot(
   context: CommandContext,
   installation: DiscoveredDshInstallation,
   dshArgs: readonly string[],
-): Effect.Effect<number, SpawnFailure> {
+): Effect.Effect<number, SpawnFailure, SpawnLike | EnvironmentShape> {
   return spawnDsh(context, installation, dshArgs)
 }

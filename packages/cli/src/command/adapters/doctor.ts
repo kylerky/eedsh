@@ -4,22 +4,27 @@
  */
 import { isSafeProfileName } from '@eedsh/plan'
 import { Effect } from 'effect'
-import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
-import { defaultCommandRunner, versionProbe } from '../../command-runner'
-import type { ConfigLoadFailure } from '../../config'
+import { versionProbe } from '../../command-runner'
 import { doctor, doctorExitCode, formatDoctorReport } from '../../doctor'
-import { type DiscoveredDshInstallation, discoverDshInstallation } from '../../dsh'
-import { loadDshBridge } from '../../dsh-bridge'
+import type { DiscoveredDshInstallation } from '../../dsh'
 import { EXIT_FAILURE, EXIT_USAGE } from '../../exit'
-import { defaultInstallationAnchorStore } from '../../installation-anchor'
 import { resolveDshHome } from '../../internal/dsh-home'
+import {
+  BundleResolver,
+  type CliServices,
+  CommandRunner,
+  DshDiscovery,
+  Environment,
+  InstallationAnchor,
+  Output,
+} from '../../internal/effect/services'
 import { selectProfile } from '../../selection'
 import { configFlag, doctorStrictFlag, dshFlag, profileFlag } from '../../surface'
-import type { CommandRuntime } from '../context'
 import type { Parsed } from '../options'
 import { loadConfigValue, profileDirForName, resolveConfigPath, selectionFailure } from '../prepare'
+import { failWith } from '../report'
 
 /** The `eedsh doctor` flag record. */
 export const doctorOptions = {
@@ -33,60 +38,56 @@ export const doctorOptions = {
 export type DoctorInput = Parsed<typeof doctorOptions>
 
 /** Inspect one published profile and print its findings. */
-export function runDoctorCommand(
-  input: DoctorInput,
-  runtime: CommandRuntime,
-): Effect.Effect<number, ConfigLoadFailure, FileSystem.FileSystem> {
+export function runDoctorCommand(input: DoctorInput): Effect.Effect<number, never, CliServices> {
   return Effect.gen(function* () {
-    runtime.setFailureContext(undefined)
-    const requestedConfig = input.config
-    if (Option.isSome(input.profile) && Option.isSome(requestedConfig)) {
-      runtime.stderr('eedsh: doctor accepts either --profile or --config, not both')
+    const output = yield* Output
+    const { env, cwd } = yield* Environment
+    if (Option.isSome(input.profile) && Option.isSome(input.config)) {
+      output.stderr('eedsh: doctor accepts either --profile or --config, not both')
       return EXIT_USAGE
     }
-    const store = runtime.options.installationAnchor ?? defaultInstallationAnchorStore
-    const runner = runtime.options.commandRunner ?? defaultCommandRunner
-    const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
-    const discovered = discovery({
+    const store = yield* InstallationAnchor
+    const runner = yield* CommandRunner
+    const discovery = yield* DshDiscovery
+    const discovered = discovery.discover({
       ...(Option.isSome(input.dsh) ? { explicit: input.dsh.value } : {}),
-      env: runtime.env,
-      cwd: runtime.cwd,
-      readAnchor: () => store.read(runtime.env),
-      probeVersion: versionProbe(runner, runtime.env),
+      env,
+      cwd,
+      readAnchor: () => store.read(env),
+      probeVersion: versionProbe(runner, env),
     })
     let doctorDsh: DiscoveredDshInstallation | undefined
     if (Result.isSuccess(discovered)) {
       doctorDsh = discovered.success
-      const load = runtime.options.loadDshBridge ?? loadDshBridge
-      const loaded = yield* Effect.promise(() => load(discovered.success))
-      if (Result.isSuccess(loaded)) runtime.installation = discovered.success
+      const resolver = yield* BundleResolver
+      // The bridge makes config evaluation see the selected installation; a
+      // failure here is reported by the profile inspection, not by discovery.
+      yield* Effect.exit(resolver.loadBridge(discovered.success))
     }
 
     let profileName: string
     if (Option.isSome(input.profile)) {
       if (!isSafeProfileName(input.profile.value)) {
-        runtime.stderr(
+        output.stderr(
           `eedsh: profile name "${input.profile.value}" is not usable as a profile directory`,
         )
         return EXIT_USAGE
       }
       profileName = input.profile.value
     } else {
-      const configPath = resolveConfigPath(requestedConfig, runtime)
+      const configPath = yield* resolveConfigPath(input.config)
       if (Option.isNone(configPath)) return EXIT_FAILURE
-      const loaded = yield* loadConfigValue(configPath.value, runtime)
+      const loaded = yield* loadConfigValue(configPath.value)
       const selection = selectProfile(loaded.config, Option.none())
-      if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+      if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
       profileName = selection.success.name
     }
     const result = yield* doctor({
-      profileDir: profileDirForName(profileName, runtime.env),
-      dshHome: resolveDshHome(undefined, runtime.env),
+      profileDir: profileDirForName(profileName, env),
+      dshHome: resolveDshHome(undefined, env),
       ...(doctorDsh === undefined ? {} : { dsh: doctorDsh }),
     })
-    yield* Effect.sync(() => {
-      for (const line of formatDoctorReport(result)) runtime.stdout(line)
-    })
+    for (const line of formatDoctorReport(result)) output.stdout(line)
     return doctorExitCode(result, input.strict)
-  })
+  }).pipe(Effect.catch((error) => failWith(error)))
 }

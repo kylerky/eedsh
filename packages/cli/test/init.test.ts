@@ -1,12 +1,10 @@
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { Effect, Layer } from 'effect'
-import * as FileSystem from 'effect/FileSystem'
+import { Effect } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { runEedsh } from '../src/cli'
 import { loadConfig } from '../src/config'
 import {
   initConfigTemplate,
@@ -15,7 +13,7 @@ import {
   resolveInitDependencySpecs,
   TYPESCRIPT_SPEC,
 } from '../src/init'
-import { PackageManager } from '../src/internal/effect/services'
+import { type CliOverrides, captureOutput, runCli } from './support/cli'
 import { fakePackageManager, memoryFileSystem } from './support/fakes'
 
 const tempRoot = join(process.cwd(), 'packages/cli/.tmp')
@@ -53,22 +51,22 @@ function harness(options: HarnessOptions = {}) {
               : fs.fs.writeFileString(path, content),
         }
       : fs.fs
-  const services = () =>
-    Layer.mergeAll(
-      Layer.succeed(FileSystem.FileSystem, fileSystem),
-      Layer.succeed(PackageManager, packages.shape),
-    )
+  const overrides: CliOverrides = {
+    output: captureOutput(out, err),
+    environment: {
+      env: { XDG_CONFIG_HOME: '/xdg', ...options.env },
+      cwd: process.cwd(),
+    },
+    fileSystem,
+    packageManager: packages.shape,
+  }
   return {
     fs,
     packages,
     out,
     err,
-    options: {
-      env: { XDG_CONFIG_HOME: '/xdg', ...options.env },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      initServices: services,
-    },
+    overrides,
+    run: (argv: readonly string[]) => runCli(argv, overrides),
     text: () => ({ out: out.join('\n'), err: err.join('\n') }),
   }
 }
@@ -81,7 +79,7 @@ function json(value: string | undefined): Record<string, any> {
 describe('init templates', () => {
   it('writes config.ts, package.json, and tsconfig.json', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install'])).toBe(0)
     expect(h.fs.files.has(configPath)).toBe(true)
     expect(h.fs.files.has(packagePath)).toBe(true)
     expect(h.fs.files.has(tsconfigPath)).toBe(true)
@@ -135,7 +133,7 @@ describe('init templates', () => {
 
   it('installs with pnpm by default', async () => {
     const h = harness()
-    expect(await runEedsh(['init'], h.options)).toBe(0)
+    expect(await h.run(['init'])).toBe(0)
     expect(h.packages.installs).toEqual([configDir])
   })
 })
@@ -143,7 +141,7 @@ describe('init templates', () => {
 describe('init behavior', () => {
   it('defers installation and prints the install command with --no-install', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install'])).toBe(0)
     expect(h.packages.installs).toEqual([])
     const text = h.text().out
     expect(text).toContain(`cd ${configDir} && pnpm install`)
@@ -156,7 +154,7 @@ describe('init behavior', () => {
   it('never overwrites an existing config.ts and creates missing files', async () => {
     const mine = '// my profile config\n'
     const h = harness({ files: { [configPath]: mine } })
-    expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install'])).toBe(0)
     expect(h.fs.files.get(configPath)).toBe(mine)
     expect(h.fs.files.has(packagePath)).toBe(true)
     expect(h.fs.files.has(tsconfigPath)).toBe(true)
@@ -170,21 +168,21 @@ describe('init behavior', () => {
     const h = harness({
       files: { [configPath]: '// mine\n', [packagePath]: manifest, [tsconfigPath]: tsconfig },
     })
-    expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install'])).toBe(0)
     expect(h.fs.files.get(packagePath)).toBe(manifest)
     expect(h.fs.files.get(tsconfigPath)).toBe(tsconfig)
   })
 
   it('does not initialize a repository', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--no-install'], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install'])).toBe(0)
     const paths = [...h.fs.files.keys(), ...h.fs.directories]
     expect(paths.some((path) => path.split('/').includes('.git'))).toBe(false)
   })
 
   it('keeps the written files and names the step when installation fails', async () => {
     const h = harness({ failInstall: true })
-    expect(await runEedsh(['init'], h.options)).toBe(1)
+    expect(await h.run(['init'])).toBe(1)
     expect(h.fs.files.has(configPath)).toBe(true)
     expect(h.fs.files.has(packagePath)).toBe(true)
     expect(h.fs.files.has(tsconfigPath)).toBe(true)
@@ -195,14 +193,14 @@ describe('init behavior', () => {
 
   it('rejects an unknown init option without writing files', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--bogus'], h.options)).toBe(2)
+    expect(await h.run(['init', '--bogus'])).toBe(2)
     expect(h.fs.files.size).toBe(0)
     expect(h.fs.createdDirectories).toEqual([])
   })
 
   it('prints init --help with the deployment flag', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--help'], h.options)).toBe(0)
+    expect(await h.run(['init', '--help'])).toBe(0)
     const text = h.text().out
     expect(text).toContain('init')
     expect(text).toContain('--no-install')
@@ -214,10 +212,9 @@ describe('init on a real filesystem', () => {
     const home = await mkdtemp(join(tempRoot, 'init-'))
     const out: string[] = []
     const err: string[] = []
-    const code = await runEedsh(['init', '--no-install'], {
-      env: { XDG_CONFIG_HOME: home },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
+    const code = await runCli(['init', '--no-install'], {
+      environment: { env: { XDG_CONFIG_HOME: home }, cwd: process.cwd() },
+      output: captureOutput(out, err),
     })
     expect(code).toBe(0)
     const dir = join(home, 'eedsh')
@@ -237,10 +234,9 @@ describe('init on a real filesystem', () => {
 
   it('loads the generated config as an eedsh config', async () => {
     const home = await mkdtemp(join(tempRoot, 'init-load-'))
-    const code = await runEedsh(['init', '--no-install'], {
-      env: { XDG_CONFIG_HOME: home },
-      stdout: () => {},
-      stderr: () => {},
+    const code = await runCli(['init', '--no-install'], {
+      environment: { env: { XDG_CONFIG_HOME: home }, cwd: process.cwd() },
+      output: captureOutput([], []),
     })
     expect(code).toBe(0)
     const { config } = await Effect.runPromise(loadConfig(join(home, 'eedsh', 'config.ts')))
@@ -251,10 +247,9 @@ describe('init on a real filesystem', () => {
 
   it('enforces owner-only mode even with a default umask', async () => {
     const home = await mkdtemp(join(tempRoot, 'init-mode-'))
-    const code = await runEedsh(['init', '--no-install'], {
-      env: { XDG_CONFIG_HOME: home },
-      stdout: () => {},
-      stderr: () => {},
+    const code = await runCli(['init', '--no-install'], {
+      environment: { env: { XDG_CONFIG_HOME: home }, cwd: process.cwd() },
+      output: captureOutput([], []),
     })
     expect(code).toBe(0)
     // Windows has no POSIX permission bits; the mode is only meaningful elsewhere.
@@ -267,10 +262,12 @@ describe('init on a real filesystem', () => {
     const home = await mkdtemp(join(tempRoot, 'init-anchor-mode-'))
     const fixture = await writeDshFixture()
     const dshHome = join(home, 'dsh-home')
-    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], {
-      env: { XDG_CONFIG_HOME: home, DSH_HOME: dshHome },
-      stdout: () => {},
-      stderr: () => {},
+    const code = await runCli(['init', '--no-install', '--dsh', fixture.dir], {
+      environment: {
+        env: { XDG_CONFIG_HOME: home, DSH_HOME: dshHome },
+        cwd: process.cwd(),
+      },
+      output: captureOutput([], []),
     })
     expect(code).toBe(0)
     const anchor = join(dshHome, '.local', 'state', 'installation.json')
@@ -312,7 +309,7 @@ describe('init installation anchor', () => {
   it('validates and records an explicit --dsh installation', async () => {
     const fixture = await writeDshFixture()
     const h = harness({ env: { DSH_HOME: anchorHome } })
-    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], h.options)
+    const code = await h.run(['init', '--no-install', '--dsh', fixture.dir])
     expect(code).toBe(0)
     expect(h.fs.files.has(configPath)).toBe(true)
     expect(h.fs.files.has(packagePath)).toBe(true)
@@ -337,7 +334,7 @@ describe('init installation anchor', () => {
       env: { DSH_HOME: anchorHome },
       files: { [anchorPath]: anchorJson(fixture) },
     })
-    const code = await runEedsh(['init', '--no-install'], h.options)
+    const code = await h.run(['init', '--no-install'])
     expect(code).toBe(0)
     expect(h.text().out).toContain('installation:')
     expect(h.text().out).toContain(fixture.anchor)
@@ -348,7 +345,7 @@ describe('init installation anchor', () => {
 
   it('succeeds without DSH and explains the first-sync bootstrap', async () => {
     const h = harness({ env: { DSH_HOME: anchorHome } })
-    const code = await runEedsh(['init', '--no-install'], h.options)
+    const code = await h.run(['init', '--no-install'])
     expect(code).toBe(0)
     expect(h.fs.files.has(configPath)).toBe(true)
     expect(h.fs.files.has(anchorPath)).toBe(false)
@@ -359,7 +356,7 @@ describe('init installation anchor', () => {
   it('rejects an invalid --dsh without writing the project', async () => {
     const h = harness({ env: { DSH_HOME: anchorHome } })
     const missing = join(tempRoot, 'missing-dsh')
-    const code = await runEedsh(['init', '--no-install', '--dsh', missing], h.options)
+    const code = await h.run(['init', '--no-install', '--dsh', missing])
     expect(code).toBe(1)
     expect(h.fs.files.size).toBe(0)
     expect(h.fs.createdDirectories).toEqual([])
@@ -370,12 +367,12 @@ describe('init installation anchor', () => {
     const first = await writeDshFixture('0.2.1-rc.2')
     const second = await writeDshFixture('0.2.1-rc.5')
     const h = harness({ env: { DSH_HOME: anchorHome } })
-    expect(await runEedsh(['init', '--no-install', '--dsh', first.dir], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install', '--dsh', first.dir])).toBe(0)
     const config = h.fs.files.get(configPath)
     const manifest = h.fs.files.get(packagePath)
     const tsconfig = h.fs.files.get(tsconfigPath)
 
-    expect(await runEedsh(['init', '--no-install', '--dsh', second.dir], h.options)).toBe(0)
+    expect(await h.run(['init', '--no-install', '--dsh', second.dir])).toBe(0)
     expect(h.fs.files.get(configPath)).toBe(config)
     expect(h.fs.files.get(packagePath)).toBe(manifest)
     expect(h.fs.files.get(tsconfigPath)).toBe(tsconfig)
@@ -390,7 +387,7 @@ describe('init installation anchor', () => {
       env: { DSH_HOME: anchorHome },
       failAnchorWrite: true,
     })
-    const code = await runEedsh(['init', '--no-install', '--dsh', fixture.dir], h.options)
+    const code = await h.run(['init', '--no-install', '--dsh', fixture.dir])
     expect(code).toBe(0)
     expect(h.fs.files.has(configPath)).toBe(true)
     expect(h.fs.files.has(packagePath)).toBe(true)
@@ -401,7 +398,7 @@ describe('init installation anchor', () => {
 
   it('lists --dsh in init --help', async () => {
     const h = harness()
-    expect(await runEedsh(['init', '--help'], h.options)).toBe(0)
+    expect(await h.run(['init', '--help'])).toBe(0)
     expect(h.text().out).toContain('--dsh')
   })
 })

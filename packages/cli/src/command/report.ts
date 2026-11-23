@@ -5,9 +5,12 @@
  * @module @eedsh/cli/command/report
  */
 import type { ProfilePlan } from '@eedsh/plan'
+import { Effect } from 'effect'
 import type * as Console from 'effect/Console'
 import * as Schema from 'effect/Schema'
+import { EXIT_FAILURE } from '../exit'
 import { presetDefinitionErrorLines } from '../internal/authoring-error'
+import { Output, type OutputShape } from '../internal/effect/services'
 import { messageOf } from '../internal/error-message'
 import { asRecord } from '../internal/record'
 import { describeInvalidRecord } from '../materialize/generation-record'
@@ -121,6 +124,25 @@ export function describeError(error: unknown): string[] {
 
 export function report(stderr: (line: string) => void, error: unknown): void {
   for (const line of describeError(error)) stderr(`eedsh: ${line}`)
+}
+
+/**
+ * Report one typed command failure and return the failure exit code. A sync
+ * failure keeps its explain hint; every other failure prints the diagnostic
+ * once.
+ * @param error - the failure the command produced.
+ * @param options - whether this is a sync failure and whether explain is on.
+ * @returns the failure exit code.
+ */
+export function failWith(
+  error: unknown,
+  options: { sync?: boolean; explain?: boolean } = {},
+): Effect.Effect<number, never, OutputShape> {
+  return Effect.map(Output, (output) => {
+    if (options.sync === true) reportSyncError(output.stderr, error, options.explain === true)
+    else report(output.stderr, error)
+    return EXIT_FAILURE
+  })
 }
 
 export function rawPreflightWarnings(error: unknown): string[] {

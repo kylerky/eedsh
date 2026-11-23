@@ -11,22 +11,12 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DshBridge } from '@eedsh/config'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
-import { Layer } from 'effect'
-import * as FileSystem from 'effect/FileSystem'
-import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { runEedsh } from '../../src/cli'
 import type { CommandRunner } from '../../src/command-runner'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../../src/internal/effect/services'
+import { type CliOverrides, captureOutput, fakeBundleResolver, runCli } from '../support/cli'
 import {
   fakeChildProcessSpawner,
-  fakeDsh,
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
@@ -89,31 +79,30 @@ describe('first-sync bootstrap integration', () => {
     }
 
     const fs = memoryFileSystem()
-    const services = () =>
-      Layer.mergeAll(
-        Layer.succeed(FileSystem.FileSystem, fs.fs),
-        Layer.succeed(PackageManager, fakePackageManager().shape),
-        Layer.succeed(DshInstallation, fakeDsh().shape),
-        Layer.succeed(Preflight, fakePreflight().shape),
-        Layer.succeed(SyncLock, fakeSyncLock().shape),
-        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
-      )
     const out: string[] = []
     const err: string[] = []
-    const options = {
-      env: {
-        DSH_HOME: home,
-        PATH: join(home, 'pnpm-bin'),
-        XDG_CONFIG_HOME: join(home, 'xdg'),
+    const overrides: CliOverrides = {
+      output: captureOutput(out, err),
+      environment: {
+        env: {
+          DSH_HOME: home,
+          PATH: join(home, 'pnpm-bin'),
+          XDG_CONFIG_HOME: join(home, 'xdg'),
+        },
+        cwd: root,
       },
-      stdout: (line: string) => out.push(line),
-      stderr: (line: string) => err.push(line),
-      services,
+      fileSystem: fs.fs,
+      packageManager: fakePackageManager().shape,
+      preflight: fakePreflight().shape,
+      syncLock: fakeSyncLock().shape,
+      childProcessSpawner: fakeChildProcessSpawner().spawner,
       commandRunner: runner,
-      loadDshBridge: async () => Result.succeed({} as DshBridge),
+      bundleResolver: fakeBundleResolver({
+        loadBridge: async () => Result.succeed({} as DshBridge),
+      }),
     }
 
-    expect(await runEedsh(['sync', '--config', fixture], options)).toBe(0)
+    expect(await runCli(['sync', '--config', fixture], overrides)).toBe(0)
     const manifestPath = join(
       home,
       'profiles',
@@ -144,7 +133,7 @@ describe('first-sync bootstrap integration', () => {
     const queriesAfterFirstSync = managerQueries()
     expect(queriesAfterFirstSync).toBe(2)
 
-    expect(await runEedsh(['sync', '--config', fixture], options)).toBe(0)
+    expect(await runCli(['sync', '--config', fixture], overrides)).toBe(0)
     expect(managerQueries()).toBe(queriesAfterFirstSync)
     expect(
       calls.some((call) => call.command === installation.launcher && call.args[0] === '--version'),

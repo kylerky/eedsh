@@ -4,14 +4,9 @@ import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
 import { doctor, doctorExitCode, formatDoctorReport } from '../../src/doctor'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../../src/internal/effect/services'
+import { PackageManager, Preflight, SyncLock } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
-import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
+import { fakePackageManager, fakePreflight, fakeSyncLock } from '../support/fakes'
 import { planOf } from '../support/plan'
 import { bundle, generated, insert, layer } from '../support/plan-parts'
 
@@ -23,7 +18,14 @@ interface RecordShape {
   eedsh: { generationId: string; packages: Record<string, string> }
 }
 
-/** Publish a real profile on disk with fake package, DSH, preflight, and lock services. */
+/** The discovered installation the published profile records. */
+const installation = {
+  version: '0.2.1-rc.2',
+  installAnchor: '/dsh/package.json',
+  binPath: '/dsh/lib/bin.js',
+}
+
+/** Publish a real profile on disk with fake package, preflight, and lock services. */
 async function publish(): Promise<string> {
   await mkdir(tempRoot, { recursive: true })
   const profileDir = await mkdtemp(join(tempRoot, 'doctor-'))
@@ -35,7 +37,6 @@ async function publish(): Promise<string> {
   })
   const services = Layer.mergeAll(
     Layer.succeed(PackageManager, fakePackageManager().shape),
-    Layer.succeed(DshInstallation, fakeDsh().shape),
     Layer.succeed(Preflight, fakePreflight().shape),
     Layer.succeed(SyncLock, fakeSyncLock().shape),
   ).pipe(Layer.provideMerge(NodeServices.layer))
@@ -44,6 +45,7 @@ async function publish(): Promise<string> {
       plan,
       profileDir,
       eedshVersion: '0.0.0',
+      dsh: installation,
       runtimeSpec: `link:${join(root, 'packages/runtime')}`,
       generatedSpec: 'link:./.eedsh/generated',
       strict: false,

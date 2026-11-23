@@ -5,8 +5,8 @@ import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DshResolveFailure } from '../../src/internal/effect/errors'
 import {
-  DshInstallation,
-  type DshInstallationShape,
+  BundleResolver,
+  type BundleResolverShape,
   Preflight,
   type PreflightInput,
 } from '../../src/internal/effect/services'
@@ -73,20 +73,21 @@ function groupLayer(
   }
 }
 
-function fakeDsh(resolve: DshInstallationShape['resolveBundlePatches']): DshInstallationShape {
+function fakeResolver(resolve: BundleResolverShape['resolveBundlePatches']): BundleResolverShape {
   return {
-    version: '0.2.1-rc.2',
-    installAnchor: '/dsh/package.json',
-    binPath: '/dsh/bin.js',
+    loadBridge: () => Effect.die(new Error('the bridge is unused in a preflight test')),
     resolveBundlePatches: resolve,
   }
 }
 
-async function runCheck(input: PreflightInput, dsh: DshInstallationShape) {
-  const layer = preflightLayer.pipe(Layer.provide(Layer.succeed(DshInstallation, dsh)))
+async function runCheck(
+  input: Omit<PreflightInput, 'installAnchor'>,
+  resolver: BundleResolverShape,
+) {
+  const layer = preflightLayer.pipe(Layer.provide(Layer.succeed(BundleResolver, resolver)))
   const effect = Effect.gen(function* () {
     const service = yield* Preflight
-    return yield* service.check(input)
+    return yield* service.check({ ...input, installAnchor: '/dsh/package.json' })
   }).pipe(Effect.provide(layer))
   return Effect.runPromise(Effect.result(effect))
 }
@@ -341,7 +342,7 @@ describe('empty generated layers', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
@@ -360,7 +361,7 @@ describe('empty generated layers', () => {
         strict: false,
         explain: true,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
@@ -379,7 +380,7 @@ describe('empty generated layers', () => {
         strict: true,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -434,7 +435,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
@@ -453,7 +454,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: true,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Success')
     if (result._tag !== 'Success') return
@@ -472,7 +473,7 @@ describe('preflight checks', () => {
         strict: true,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -492,7 +493,7 @@ describe('preflight checks', () => {
         strict: true,
         explain: true,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -515,7 +516,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -540,7 +541,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -566,7 +567,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() => Effect.succeed(basePatches)),
+      fakeResolver(() => Effect.succeed(basePatches)),
     )
     expect(result._tag).toBe('Failure')
     if (result._tag !== 'Failure') return
@@ -583,7 +584,7 @@ describe('preflight checks', () => {
         strict: false,
         explain: false,
       },
-      fakeDsh(() =>
+      fakeResolver(() =>
         Effect.fail(new DshResolveFailure({ packageName: '@deepseek-ai/dsh-base', cause: 'gone' })),
       ),
     )

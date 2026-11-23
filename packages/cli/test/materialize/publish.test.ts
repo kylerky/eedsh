@@ -156,6 +156,7 @@ async function publish(options: PublishOptions = {}) {
       previousManifest: Option.some({ name: 'initial', private: true }),
       strict: false,
       explain: false,
+      installAnchor: '/dsh/package.json',
       notices: [],
       provenance: PROVENANCE,
       configDir: CONFIG_DIR,

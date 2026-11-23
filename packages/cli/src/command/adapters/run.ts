@@ -6,13 +6,12 @@
 import { Effect } from 'effect'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
-import type { ConfigLoadFailure } from '../../config'
 import { EXIT_FAILURE } from '../../exit'
-import type { DshFailure, MaterializeError, SpawnFailure } from '../../internal/effect/errors'
+import { type CliServices, Output } from '../../internal/effect/services'
 import { selectProfile } from '../../selection'
 import { configFlag, dshFlag, noSyncFlag, runProfileFlag } from '../../surface'
 import { runBoot } from '../boot'
-import type { CommandContext, CommandRuntime } from '../context'
+import type { CommandContext } from '../context'
 import { NO_PROVISIONING_MODE, syncOnce } from '../materialize'
 import type { Parsed } from '../options'
 import {
@@ -22,7 +21,7 @@ import {
   resolveConfigPath,
   selectionFailure,
 } from '../prepare'
-import { printResult } from '../report'
+import { failWith, printResult } from '../report'
 
 /** The `eedsh run` flag record. */
 export const runOptions = {
@@ -35,27 +34,22 @@ export const runOptions = {
 /** The parsed input for {@link runRunCommand}; `dshArgs` comes from `--`. */
 export type RunInput = Parsed<typeof runOptions> & { dshArgs: readonly string[] }
 
-export function runRunCommand(
-  input: RunInput,
-  runtime: CommandRuntime,
-): Effect.Effect<number, ConfigLoadFailure | MaterializeError | DshFailure | SpawnFailure> {
+export function runRunCommand(input: RunInput): Effect.Effect<number, never, CliServices> {
   return Effect.gen(function* () {
-    runtime.setFailureContext(input.noSync ? undefined : { sync: true, explain: false })
-    const requestedConfig = input.config
-    const configPath = resolveConfigPath(requestedConfig, runtime)
+    const output = yield* Output
+    const configPath = yield* resolveConfigPath(input.config)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const installation = yield* requireDsh(runtime, input.dsh, { bootstrap: !input.noSync })
-    const loaded = yield* loadConfigValue(configPath.value, runtime)
+    const installation = yield* requireDsh(input.dsh, { bootstrap: !input.noSync })
+    const loaded = yield* loadConfigValue(configPath.value)
     const selection = selectProfile(loaded.config, input.profile)
-    if (Result.isFailure(selection)) return selectionFailure(runtime, selection.failure)
+    if (Result.isFailure(selection)) return yield* selectionFailure(selection.failure)
     const entry = selection.success
     if (Result.isFailure(entry.plan)) {
-      reportProfileFailure(runtime.stderr, entry.name, entry.plan.failure)
+      reportProfileFailure(output.stderr, entry.name, entry.plan.failure)
       return EXIT_FAILURE
     }
     const plan = entry.plan.success
     const context: CommandContext = {
-      ...runtime,
       configPath: configPath.value,
       installation,
       plan,
@@ -65,8 +59,8 @@ export function runRunCommand(
     }
     if (!input.noSync) {
       const result = yield* syncOnce(context, false, false, false, NO_PROVISIONING_MODE)
-      yield* Effect.sync(() => printResult(runtime.stdout, runtime.stderr, plan, result, false))
+      printResult(output.stdout, output.stderr, plan, result, false)
     }
     return yield* runBoot(context, installation, input.dshArgs)
-  })
+  }).pipe(Effect.catch((error) => failWith(error, { sync: !input.noSync, explain: false })))
 }

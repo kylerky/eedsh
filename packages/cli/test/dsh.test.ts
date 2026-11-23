@@ -144,7 +144,12 @@ describe('DSH discovery precedence', () => {
       expect(withPath.success.binPath).toBe(await realpath(join(pathDir, 'dsh')))
     }
 
-    const withProject = discoverDshInstallation({ env: {}, cwd: project })
+    // Keep discovery hermetic: a machine-level DSH home would supply a record
+    // that outranks the project-local installation.
+    const withProject = discoverDshInstallation({
+      env: { DSH_HOME: join(rootDir, 'dsh-home') },
+      cwd: project,
+    })
     expect(Result.isSuccess(withProject)).toBe(true)
     if (Result.isSuccess(withProject)) {
       expect(withProject.success.version).toBe('0.2.1')
@@ -190,7 +195,9 @@ describe('DSH discovery precedence', () => {
 
   it('reports a tagged not-found failure naming every remedy', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'eedsh-discovery-missing-'))
-    const failure = failureOf(discoverDshInstallation({ env: {}, cwd: rootDir }))
+    const failure = failureOf(
+      discoverDshInstallation({ env: { DSH_HOME: join(rootDir, 'dsh-home') }, cwd: rootDir }),
+    )
     expect(failure.code).toBe('dsh.not_found')
     expect(failure.message).toContain('--dsh')
     expect(failure.message).toContain('EEDSH_DSH_ANCHOR')

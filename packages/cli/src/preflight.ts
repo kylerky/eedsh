@@ -19,8 +19,8 @@ import * as Result from 'effect/Result'
 import * as yaml from 'js-yaml'
 import { PreflightFailure } from './internal/effect/errors'
 import {
-  DshInstallation,
-  type DshInstallationShape,
+  BundleResolver,
+  type BundleResolverShape,
   Preflight,
   type PreflightShape,
 } from './internal/effect/services'
@@ -378,9 +378,10 @@ function bundleLayers(
   plan: ProfilePlan,
   profileDir: string,
   generatedLayers: readonly PreflightLayer[],
-): Effect.Effect<PreflightLayer[], PreflightFailure, DshInstallationShape> {
+  resolver: BundleResolverShape,
+  installAnchor: string,
+): Effect.Effect<PreflightLayer[], PreflightFailure> {
   return Effect.gen(function* () {
-    const dsh = yield* DshInstallation
     const layers: PreflightLayer[] = []
     let placed = false
     for (const item of plan.bundles) {
@@ -389,8 +390,8 @@ function bundleLayers(
         placed = true
         continue
       }
-      const patches = yield* dsh
-        .resolveBundlePatches(item.name, profileDir)
+      const patches = yield* resolver
+        .resolveBundlePatches(item.name, profileDir, installAnchor)
         .pipe(
           Effect.catch((error) =>
             Effect.fail(
@@ -407,44 +408,47 @@ function bundleLayers(
   })
 }
 
-/** The live preflight implementation; it needs the discovered DSH installation. */
-export const preflightLayer: Layer.Layer<PreflightShape, never, DshInstallationShape> =
-  Layer.effect(
-    Preflight,
-    Effect.gen(function* () {
-      const dsh = yield* DshInstallation
-      const check: PreflightShape['check'] = (input) =>
-        Effect.gen(function* () {
-          const groups = input.provenance?.profiles[input.plan.profile.name] ?? []
-          const generatedLayers = yield* Effect.fromResult(
-            parseGeneratedLayers(input.generated, { groups }),
+/** The live preflight implementation over the bundle resolver. */
+export const preflightLayer: Layer.Layer<PreflightShape, never, BundleResolverShape> = Layer.effect(
+  Preflight,
+  Effect.gen(function* () {
+    const resolver = yield* BundleResolver
+    const check: PreflightShape['check'] = (input) =>
+      Effect.gen(function* () {
+        const groups = input.provenance?.profiles[input.plan.profile.name] ?? []
+        const generatedLayers = yield* Effect.fromResult(
+          parseGeneratedLayers(input.generated, { groups }),
+        )
+        const layers = yield* bundleLayers(
+          input.plan,
+          input.profileDir,
+          generatedLayers,
+          resolver,
+          input.installAnchor,
+        )
+        const composition = composePreflightLayers(layers)
+        const raw = composition.warnings
+        const messages =
+          input.explain && raw.length > 0
+            ? attributePreflightWarnings(
+                layers,
+                raw,
+                input.configDir === undefined ? {} : { configDir: input.configDir },
+              ).map((warning) => `${warning.layer}: ${warning.message}`)
+            : raw
+        if (composition.duplicateInsertIds.length > 0) {
+          return yield* Effect.fail(
+            fail(
+              `generated layers insert duplicate row ids: ${composition.duplicateInsertIds.join(', ')}`,
+              messages,
+            ),
           )
-          const layers = yield* bundleLayers(input.plan, input.profileDir, generatedLayers).pipe(
-            Effect.provideService(DshInstallation, dsh),
-          )
-          const composition = composePreflightLayers(layers)
-          const raw = composition.warnings
-          const messages =
-            input.explain && raw.length > 0
-              ? attributePreflightWarnings(
-                  layers,
-                  raw,
-                  input.configDir === undefined ? {} : { configDir: input.configDir },
-                ).map((warning) => `${warning.layer}: ${warning.message}`)
-              : raw
-          if (composition.duplicateInsertIds.length > 0) {
-            return yield* Effect.fail(
-              fail(
-                `generated layers insert duplicate row ids: ${composition.duplicateInsertIds.join(', ')}`,
-                messages,
-              ),
-            )
-          }
-          if (input.strict && messages.length > 0) {
-            return yield* Effect.fail(fail('preflight warnings in strict mode', messages))
-          }
-          return { warnings: messages }
-        })
-      return { check }
-    }),
-  )
+        }
+        if (input.strict && messages.length > 0) {
+          return yield* Effect.fail(fail('preflight warnings in strict mode', messages))
+        }
+        return { warnings: messages }
+      })
+    return { check }
+  }),
+)

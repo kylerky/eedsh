@@ -1,25 +1,51 @@
 /**
- * Live service layers. Package installation runs through the core
- * `ChildProcess` API, and file access and terminal services come from
- * `@effect/platform-node`'s aggregate layer at the CLI bootstrap.
+ * Live service layers and the one production composition root. The platform
+ * layer supplies the effect services every command runs on; each capability tag
+ * has one live layer that delegates to the module that implements it, so a test
+ * can replace any single capability without rebuilding the graph.
  * @module @eedsh/cli/internal/effect/layer
  */
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import { Effect, Layer, Stream } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
-import { pnpmInvocation } from '../../command-runner'
+import { defaultCommandRunner, pnpmInvocation } from '../../command-runner'
+import { loadConfig } from '../../config'
 import { resolveBundleLayers } from '../../dsh'
-import type { DiscoveredDshInstallation } from '../../dsh-discovery'
+import { bootstrapDshInstallation } from '../../dsh-bootstrap'
+import { loadDshBridge } from '../../dsh-bridge'
+import { discoverDshInstallation, validateDshVersion } from '../../dsh-discovery'
+import { defaultInstallationAnchorStore } from '../../installation-anchor'
+import { preflightLayer } from '../../preflight'
+import { defaultSpawn, type SpawnLike } from '../../spawn'
+import { stopSignal, watchConfigDirectory } from '../../watch'
 import { posixSyncLock } from '../lock-posix'
 import { win32SyncLock } from '../lock-win32'
 import { PackageInstallFailure } from './errors'
 import {
-  DshInstallation,
-  type DshInstallationShape,
+  BundleResolver,
+  type BundleResolverShape,
+  type CliServices,
+  CommandRunner,
+  type CommandRunnerShape,
+  ConfigLoader,
+  type ConfigLoaderShape,
+  DshDiscovery,
+  type DshDiscoveryShape,
+  Environment,
+  type EnvironmentShape,
+  InstallationAnchor,
+  type InstallationAnchorShape,
+  Output,
+  type OutputShape,
   PackageManager,
   type PackageManagerShape,
+  type PreflightShape,
+  Spawner,
   SyncLock,
   type SyncLockShape,
+  Watcher,
+  type WatcherShape,
 } from './services'
 
 /**
@@ -86,20 +112,6 @@ export const pnpmPackageManagerLayer: Layer.Layer<
   }),
 )
 
-/** The discovered DSH installation as a service. */
-export function dshInstallationLayerFor(
-  installation: DiscoveredDshInstallation,
-): Layer.Layer<DshInstallationShape> {
-  const shape: DshInstallationShape = {
-    version: installation.version,
-    installAnchor: installation.installAnchor,
-    binPath: installation.binPath,
-    resolveBundlePatches: (packageName, profileDir) =>
-      Effect.fromResult(resolveBundleLayers(packageName, profileDir, installation.installAnchor)),
-  }
-  return Layer.succeed(DshInstallation, shape)
-}
-
 /** Injectable platform implementations for tests and alternate hosts. */
 export interface SyncLockPlatforms {
   readonly posix?: SyncLockShape
@@ -142,17 +154,90 @@ function unsupportedSyncLock(platform: NodeJS.Platform): SyncLockShape {
   }
 }
 
-/** Every live service the pipeline needs except preflight. */
-export function liveServiceLayerFor(
-  installation: DiscoveredDshInstallation,
-): Layer.Layer<
-  PackageManagerShape | DshInstallationShape | SyncLockShape,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> {
-  return Layer.mergeAll(
-    pnpmPackageManagerLayer,
-    dshInstallationLayerFor(installation),
-    syncLockLayer(),
-  )
-}
+/** The process's own standard output and standard error. */
+export const outputLayer: Layer.Layer<OutputShape> = Layer.succeed(Output, {
+  stdout: (line) => {
+    console.log(line)
+  },
+  stderr: (line) => {
+    console.error(line)
+  },
+})
+
+/** The invocation's environment and working directory. */
+export const environmentLayer: Layer.Layer<EnvironmentShape> = Layer.succeed(Environment, {
+  env: process.env,
+  cwd: process.cwd(),
+})
+
+/** Discovery, bootstrap, and validation of the selected DSH installation. */
+export const dshDiscoveryLayer: Layer.Layer<DshDiscoveryShape> = Layer.succeed(DshDiscovery, {
+  discover: (input) => discoverDshInstallation(input),
+  bootstrap: (input) => bootstrapDshInstallation(input),
+  validate: (installation) => validateDshVersion(installation),
+})
+
+/** Evaluation of the config module through tsx. */
+export const configLoaderLayer: Layer.Layer<ConfigLoaderShape> = Layer.succeed(ConfigLoader, {
+  load: (configPath, evaluationNonce) => loadConfig(configPath, evaluationNonce),
+})
+
+/** The DSH bridge and profile-bundle patch resolution. */
+export const bundleResolverLayer: Layer.Layer<BundleResolverShape> = Layer.succeed(BundleResolver, {
+  loadBridge: (installation) =>
+    Effect.promise(() => loadDshBridge(installation)).pipe(Effect.flatMap(Effect.fromResult)),
+  resolveBundlePatches: (packageName, profileDir, installAnchor) =>
+    Effect.fromResult(resolveBundleLayers(packageName, profileDir, installAnchor)),
+})
+
+/** The chokidar-backed config-directory watcher and the signal stop. */
+export const watcherLayer: Layer.Layer<WatcherShape> = Layer.succeed(Watcher, {
+  watch: (dir, onChange) => watchConfigDirectory({ dir, onChange }),
+  stop: stopSignal(undefined),
+})
+
+/** The machine-local installation anchor record. */
+export const installationAnchorLayer: Layer.Layer<InstallationAnchorShape> = Layer.succeed(
+  InstallationAnchor,
+  defaultInstallationAnchorStore,
+)
+
+/** The bounded, fixed-argument command runner used by setup paths. */
+export const commandRunnerLayer: Layer.Layer<CommandRunnerShape> = Layer.succeed(
+  CommandRunner,
+  defaultCommandRunner,
+)
+
+/** The streaming launcher spawn. */
+export const spawnerLayer: Layer.Layer<SpawnLike> = Layer.succeed(Spawner, defaultSpawn)
+
+/** The live preflight composition over the bundle resolver. */
+export const livePreflightLayer: Layer.Layer<PreflightShape> = preflightLayer.pipe(
+  Layer.provide(bundleResolverLayer),
+)
+
+const platformLayer = NodeServices.layer
+
+const domainLayer = Layer.mergeAll(
+  outputLayer,
+  environmentLayer,
+  dshDiscoveryLayer,
+  configLoaderLayer,
+  bundleResolverLayer,
+  watcherLayer,
+  installationAnchorLayer,
+  commandRunnerLayer,
+  spawnerLayer,
+  syncLockLayer(),
+)
+
+/**
+ * The one production composition root: every platform and CLI service a
+ * command can require, built once per process.
+ */
+export const liveCliServicesLayer: Layer.Layer<CliServices> = Layer.mergeAll(
+  platformLayer,
+  domainLayer,
+  pnpmPackageManagerLayer.pipe(Layer.provide(platformLayer)),
+  livePreflightLayer,
+)

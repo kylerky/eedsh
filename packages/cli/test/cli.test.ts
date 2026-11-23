@@ -7,27 +7,26 @@ import { promisify } from 'node:util'
 import type { ConfigProvenance } from '@eedsh/config'
 import { type EedshConfig, type ProfilePlan, validateConfigValue } from '@eedsh/plan'
 import { Deferred, Effect, Layer } from 'effect'
-import * as FileSystem from 'effect/FileSystem'
-import { ChildProcessSpawner } from 'effect/process'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readmeExample } from '../../../test/support/readme'
-import { runEedsh } from '../src/cli'
 import { ConfigError, type LoadedConfig } from '../src/config'
-import { DshResolveFailure } from '../src/internal/effect/errors'
-import {
-  DshInstallation,
-  PackageManager,
-  Preflight,
-  SyncLock,
-} from '../src/internal/effect/services'
-import { preflightLayer } from '../src/preflight'
+import { DshFailure } from '../src/internal/effect/errors'
+import { type CliServices, Output } from '../src/internal/effect/services'
 import { delay, waitFor } from './support/async'
 import { devDshInstallation, installTestBridge } from './support/bridge'
 import {
+  type CliOverrides,
+  captureOutput,
+  fakeBundleResolver,
+  fakeConfigLoader,
+  fakeDshDiscovery,
+  fakeWatcher,
+  runCli,
+} from './support/cli'
+import {
   fakeChildProcessSpawner,
-  fakeDsh,
   fakePackageManager,
   fakePreflight,
   fakeSyncLock,
@@ -94,83 +93,95 @@ interface HarnessOptions {
   realPreflight?: boolean
   lockHeld?: boolean
   lockContendedPaths?: readonly string[]
-  failLayer?: boolean
+  discoveryFails?: boolean
+}
+
+/** The environment every harness invocation reads unless a test overrides it. */
+const harnessEnv = { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg' }
+
+/** The installation anchor every harness invocation reads, without touching the machine. */
+const harnessAnchor: NonNullable<CliOverrides['anchor']> = {
+  read: () => undefined,
+  write: () => ({ ok: true }),
+}
+
+/** Widen one test layer that provides a single CLI service to the full service type. */
+function asCliServiceLayer<A, E, R>(provided: Layer.Layer<A, E, R>): Layer.Layer<CliServices> {
+  return provided as Layer.Layer<CliServices>
 }
 
 function harness(options: HarnessOptions = {}) {
   const fs = memoryFileSystem(options.files)
   const packages = fakePackageManager(options.packages)
-  const dsh = fakeDsh({ patches: options.basePatches ?? [] })
+  const resolver = fakeBundleResolver({ patches: options.basePatches ?? [] })
   const preflight = fakePreflight(options.preflight)
   const lock = fakeSyncLock(
     options.lockContendedPaths === undefined
       ? { held: options.lockHeld ?? false }
       : { held: options.lockHeld ?? false, contendedPaths: options.lockContendedPaths },
   )
-  const dshLayer = options.failLayer
-    ? Layer.effect(
-        DshInstallation,
-        Effect.fail(
-          new DshResolveFailure({
-            packageName: '@deepseek-ai/dsh',
-            cause: new Error('missing DSH installation'),
-          }),
-        ),
-      )
-    : Layer.succeed(DshInstallation, dsh.shape)
-  let constructions = 0
-  let finalizers = 0
-  const fileSystemLayer = Layer.effect(
-    FileSystem.FileSystem,
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        constructions += 1
-        return fs.fs
-      }),
-      () =>
-        Effect.sync(() => {
-          finalizers += 1
-        }),
-    ),
-  )
-  const services = () =>
-    Layer.mergeAll(
-      fileSystemLayer,
-      Layer.effect(
-        PackageManager,
-        Effect.sync(() => {
-          constructions += 1
-          return packages.shape
-        }),
-      ),
-      dshLayer,
-      options.realPreflight
-        ? preflightLayer.pipe(Layer.provide(dshLayer))
-        : Layer.succeed(Preflight, preflight.shape),
-      Layer.succeed(SyncLock, lock.shape),
-      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, fakeChildProcessSpawner().spawner),
-    )
   const out: string[] = []
   const err: string[] = []
-  const runOptions = {
-    env: { DSH_HOME: '/home', XDG_CONFIG_HOME: '/home/xdg' },
-    stdout: (line: string) => out.push(line),
-    stderr: (line: string) => err.push(line),
-    services,
-    discoverDsh: () => Result.succeed(devDshInstallation()),
+  let constructions = 0
+  let finalizers = 0
+  // The composed layer is built once per invocation and released when that
+  // invocation ends. The counting output service stands in for it: a run that
+  // acquires the layer must release it exactly once.
+  const countingOutput = asCliServiceLayer(
+    Layer.effect(
+      Output,
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          constructions += 1
+          return captureOutput(out, err)
+        }),
+        () =>
+          Effect.sync(() => {
+            finalizers += 1
+          }),
+      ),
+    ),
+  )
+  const discovery =
+    options.discoveryFails === true
+      ? fakeDshDiscovery(devDshInstallation(), {
+          discover: () =>
+            Result.fail(
+              new DshFailure({
+                code: 'dsh.not_found',
+                message: 'cannot resolve a DSH installation for this invocation',
+              }),
+            ),
+        })
+      : fakeDshDiscovery(devDshInstallation())
+  const base: CliOverrides = {
+    environment: { env: harnessEnv, cwd: root },
+    discovery,
+    bundleResolver: resolver,
+    packageManager: packages.shape,
+    syncLock: lock.shape,
+    anchor: harnessAnchor,
+    fileSystem: fs.fs,
+    childProcessSpawner: fakeChildProcessSpawner().spawner,
+    ...(options.realPreflight === true ? {} : { preflight: preflight.shape }),
+    extra: [countingOutput],
   }
+  const run = (argv: readonly string[], overrides: CliOverrides = {}) =>
+    runCli(argv, {
+      ...base,
+      ...overrides,
+      extra: [...(overrides.extra ?? []), ...(base.extra ?? [])],
+    })
   return {
-    options: runOptions,
     fs,
     packages,
-    dsh,
     preflight,
     lock,
     out,
     err,
+    run,
     constructions: () => constructions,
     finalizers: () => finalizers,
-    text: () => ({ out: out.join('\n'), err: err.join('\n') }),
   }
 }
 
@@ -187,7 +198,7 @@ beforeAll(async () => {
 describe('eedsh sync', () => {
   it('loads a TypeScript config and publishes the profile', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(0)
     expect(h.fs.files.has(generatedManifest)).toBe(true)
     expect(h.packages.installs).toEqual([homePath('profiles', 'cli-fixture')])
@@ -197,7 +208,7 @@ describe('eedsh sync', () => {
 
   it('reports the native validation message for an invalid config and exits 1', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', fixture('invalid')], h.options)
+    const code = await h.run(['sync', '--config', fixture('invalid')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('"@eedsh/runtime" is owned by the materializer')
@@ -217,9 +228,8 @@ describe('eedsh sync', () => {
     if (!Schema.isSchemaError(failure)) throw new Error('expected a schema error')
     const loadConfig = (): Effect.Effect<never, Schema.SchemaError> =>
       Effect.fail(new Schema.SchemaError(failure.issue))
-    const code = await runEedsh(['sync', '--config', fixture('basic')], {
-      ...h.options,
-      loadConfig,
+    const code = await h.run(['sync', '--config', fixture('basic')], {
+      configLoader: fakeConfigLoader(loadConfig),
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
@@ -232,7 +242,7 @@ describe('eedsh sync', () => {
 
   it('reports a missing config file with exit 1', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', join(root, 'nope/config.ts')], h.options)
+    const code = await h.run(['sync', '--config', join(root, 'nope/config.ts')])
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('eedsh:')
   })
@@ -248,7 +258,7 @@ describe('explicit config paths', () => {
     it(`rejects an explicit ${name} config before evaluation`, async () => {
       const h = harness()
       const path = join(root, 'packages/cli/test/fixtures', dir, name)
-      const code = await runEedsh(['sync', '--config', path], h.options)
+      const code = await h.run(['sync', '--config', path])
       expect(code).toBe(1)
       const errors = h.err.join('\n')
       expect(errors).toContain('config.unsupported_extension')
@@ -289,10 +299,8 @@ export default defineConfig()
     const cwd = await tempDir('xdg-cwd-')
     await writeFile(join(cwd, 'eedsh.config.ts'), source)
 
-    const code = await runEedsh(['sync'], {
-      ...h.options,
-      cwd,
-      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    const code = await h.run(['sync'], {
+      environment: { env: { ...harnessEnv, XDG_CONFIG_HOME: home }, cwd },
     })
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile xdg-profile')
@@ -306,9 +314,8 @@ export default defineConfig()
       const home = await tempDir('xdg-fallback-home-')
       await mkdir(join(home, '.config', 'eedsh'), { recursive: true })
       await writeFile(join(home, '.config', 'eedsh', 'config.ts'), source)
-      const code = await runEedsh(['sync'], {
-        ...h.options,
-        env: { ...h.options.env, HOME: home, XDG_CONFIG_HOME: value },
+      const code = await h.run(['sync'], {
+        environment: { env: { ...harnessEnv, HOME: home, XDG_CONFIG_HOME: value }, cwd: root },
       })
       expect(code).toBe(0)
       expect(h.out.join('\n')).toContain('profile xdg-profile')
@@ -322,10 +329,8 @@ export default defineConfig()
     const cwd = await tempDir('xdg-cwd-')
     await writeFile(join(cwd, 'eedsh.config.ts'), source)
 
-    const code = await runEedsh(['sync'], {
-      ...h.options,
-      cwd,
-      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    const code = await h.run(['sync'], {
+      environment: { env: { ...harnessEnv, XDG_CONFIG_HOME: home }, cwd },
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
@@ -339,10 +344,8 @@ export default defineConfig()
     const h = harness()
     const home = await xdgHome()
     const cwd = await tempDir('xdg-empty-cwd-')
-    const code = await runEedsh(['sync'], {
-      ...h.options,
-      cwd,
-      env: { ...h.options.env, XDG_CONFIG_HOME: home },
+    const code = await h.run(['sync'], {
+      environment: { env: { ...harnessEnv, XDG_CONFIG_HOME: home }, cwd },
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
@@ -357,7 +360,7 @@ export default defineConfig()
     const dir = await tempDir('xdg-mts-')
     const configPath = join(dir, 'config.mts')
     await writeFile(configPath, source)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('config.unsupported_extension')
@@ -369,7 +372,7 @@ export default defineConfig()
 describe('config evaluation', () => {
   it('evaluates non-erasable TypeScript syntax', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', fixture('enum')], h.options)
+    const code = await h.run(['sync', '--config', fixture('enum')])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile enum-basic')
     expect(h.fs.files.has(generatedPath('enum-basic'))).toBe(true)
@@ -377,7 +380,7 @@ describe('config evaluation', () => {
 
   it('evaluates a config in a CommonJS project', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', fixture('cjs-project')], h.options)
+    const code = await h.run(['sync', '--config', fixture('cjs-project')])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile cli-cjs')
     expect(h.fs.files.has(generatedPath('cli-cjs'))).toBe(true)
@@ -389,7 +392,7 @@ describe('config evaluation', () => {
     await writeFile(configPath, 'export default {\n')
 
     const h = harness()
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('config.import_failed')
     expect(h.fs.files.size).toBe(0)
@@ -406,7 +409,7 @@ export default bundle('@deepseek-ai/dsh-base').preset('missing').toJSON()
 `,
     )
     const h = harness()
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('resolution.preset_not_found')
@@ -430,7 +433,7 @@ export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
 `,
     )
     const h = harness()
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('preset.child_not_found')
@@ -455,10 +458,8 @@ export default { dsh: '0.2.1-rc.2', profiles: { work: { bundles: [] } } }
       }
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
     const patches = () =>
       [...h.fs.files.entries()]
@@ -541,7 +542,7 @@ export default {}
   it('unwraps a successful config Result export', async () => {
     const h = harness()
     const configPath = await writeConfig(successResult)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile result-export')
     expect(h.fs.files.has(generatedPath('result-export'))).toBe(true)
@@ -550,7 +551,7 @@ export default {}
   it('accepts a plain config export', async () => {
     const h = harness()
     const configPath = await writeConfig(plainConfig)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile plain-export')
     expect(h.fs.files.has(generatedPath('plain-export'))).toBe(true)
@@ -559,7 +560,7 @@ export default {}
   it('reports a failed Result export with the native schema message', async () => {
     const h = harness()
     const configPath = await writeConfig(failureResult)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('not usable as a profile directory')
@@ -570,7 +571,7 @@ export default {}
   it('rejects a lone plan export', async () => {
     const h = harness()
     const configPath = await writeConfig(lonePlan)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('at ["profiles"]')
@@ -580,7 +581,7 @@ export default {}
   it('revalidates a forged successful Result export', async () => {
     const h = harness()
     const configPath = await writeConfig(forgedSuccess)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('not usable as a profile directory')
@@ -591,7 +592,7 @@ export default {}
   it('surfaces a schema failure raised during module evaluation', async () => {
     const h = harness()
     const configPath = await writeConfig(authoringThrow)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('not usable as a profile directory')
@@ -650,10 +651,7 @@ export default defineConfig()
     const h = harness()
     const configPath = await writeConfig(defaultsSource)
     const { calls, spawn } = fakeSpawner({ exitCode: 0 })
-    const code = await runEedsh(['run', '--config', configPath, '--no-sync'], {
-      ...h.options,
-      spawn,
-    })
+    const code = await h.run(['run', '--config', configPath, '--no-sync'], { spawner: spawn })
     expect(code).toBe(0)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.args.slice(1)).toEqual(['--profile', 'home'])
@@ -662,7 +660,7 @@ export default defineConfig()
   it('syncs the sole profile when no default is declared', async () => {
     const h = harness()
     const configPath = await writeConfig(soleSource)
-    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(0)
+    expect(await h.run(['sync', '--config', configPath])).toBe(0)
     expect(h.out.join('\n')).toContain('profile solo')
     expect(h.fs.files.has(generatedPath('solo'))).toBe(true)
   })
@@ -670,7 +668,7 @@ export default defineConfig()
   it('syncs a valid profile when a sibling profile is invalid', async () => {
     const h = harness()
     const configPath = await writeConfig(invalidSiblingSource)
-    expect(await runEedsh(['sync', '--config', configPath], h.options)).toBe(1)
+    expect(await h.run(['sync', '--config', configPath])).toBe(1)
     expect(h.out.join('\n')).toContain('profile work')
     expect(h.fs.files.has(generatedPath('work'))).toBe(true)
     expect(h.err.join('\n')).toContain('owned by the materializer')
@@ -743,7 +741,7 @@ export default defineConfig()
   it('narrows sync to the named profile without falling back to the default', async () => {
     const h = harness()
     const configPath = await writeConfig(withDefault)
-    const code = await runEedsh(['sync', '--config', configPath, '--profile', 'home'], h.options)
+    const code = await h.run(['sync', '--config', configPath, '--profile', 'home'])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('profile home')
     expect(h.fs.files.has(generatedPath('home'))).toBe(true)
@@ -753,7 +751,7 @@ export default defineConfig()
   it('reports an unknown --profile as a usage error listing the names', async () => {
     const h = harness()
     const configPath = await writeConfig(withDefault)
-    const code = await runEedsh(['sync', '--config', configPath, '--profile', 'missing'], h.options)
+    const code = await h.run(['sync', '--config', configPath, '--profile', 'missing'])
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('missing')
@@ -765,7 +763,7 @@ export default defineConfig()
   it('publishes every profile on a bare sync', async () => {
     const h = harness()
     const configPath = await writeConfig(withDefault)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(0)
     expect(h.fs.files.has(generatedPath('work'))).toBe(true)
     expect(h.fs.files.has(generatedPath('home'))).toBe(true)
@@ -777,10 +775,7 @@ export default defineConfig()
     const h = harness()
     const configPath = await writeConfig(withoutDefault)
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['run', '--config', configPath, '--no-sync'], {
-      ...h.options,
-      spawn,
-    })
+    const code = await h.run(['run', '--config', configPath, '--no-sync'], { spawner: spawn })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('work')
@@ -792,9 +787,9 @@ export default defineConfig()
     const h = harness()
     const configPath = await writeConfig(withDefault)
     const { calls, spawn } = fakeSpawner({ exitCode: 7 })
-    const code = await runEedsh(
+    const code = await h.run(
       ['run', '--config', configPath, '--profile', 'home', '--no-sync', '--', '--port', '7777'],
-      { ...h.options, spawn },
+      { spawner: spawn },
     )
     expect(code).toBe(7)
     expect(calls).toHaveLength(1)
@@ -804,9 +799,8 @@ export default defineConfig()
   it('rejects --profile on check as a usage error', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['check', '--profile', 'work', '--config', fixture('basic')], {
-      ...h.options,
-      spawn,
+    const code = await h.run(['check', '--profile', 'work', '--config', fixture('basic')], {
+      spawner: spawn,
     })
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
@@ -815,7 +809,7 @@ export default defineConfig()
   it('keeps syncing valid profiles after an invalid sibling', async () => {
     const h = harness()
     const configPath = await writeConfig(invalidHome)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     expect(h.fs.files.has(generatedPath('work'))).toBe(true)
     const errors = h.err.join('\n')
@@ -826,7 +820,7 @@ export default defineConfig()
   it('keeps syncing valid profiles after a locked sibling', async () => {
     const h = harness({ lockContendedPaths: [homePath('profiles', 'work', '.eedsh', 'sync.lock')] })
     const configPath = await writeConfig(withDefault)
-    const code = await runEedsh(['sync', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--config', configPath])
     expect(code).toBe(1)
     expect(h.fs.files.has(generatedPath('home'))).toBe(true)
     expect(h.fs.files.has(generatedPath('work'))).toBe(false)
@@ -837,7 +831,7 @@ export default defineConfig()
     const basePatches = [{ insert: [{ id: 'timer', name: '@deepseek-ai/cordis-plugin-timer' }] }]
     const h = harness({ basePatches, realPreflight: true })
     const configPath = await writeConfig(strictWork)
-    const code = await runEedsh(['sync', '--strict', '--config', configPath], h.options)
+    const code = await h.run(['sync', '--strict', '--config', configPath])
     expect(code).toBe(1)
     expect(h.fs.files.has(generatedPath('home'))).toBe(true)
     expect(h.fs.files.has(generatedPath('work'))).toBe(false)
@@ -847,7 +841,7 @@ export default defineConfig()
   it('reports ambiguous doctor selection as a usage error', async () => {
     const h = harness()
     const configPath = await writeConfig(withoutDefault)
-    const code = await runEedsh(['doctor', '--config', configPath], doctorOptions(h))
+    const code = await h.run(['doctor', '--config', configPath])
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('work')
@@ -858,9 +852,9 @@ export default defineConfig()
 describe('eedsh arguments', () => {
   it('returns exit 2 for usage errors without ANSI escapes', async () => {
     const h = harness()
-    expect(await runEedsh(['bogus'], h.options)).toBe(2)
-    expect(await runEedsh(['sync', '--bogus'], h.options)).toBe(2)
-    expect(await runEedsh(['sync', '--config'], h.options)).toBe(2)
+    expect(await h.run(['bogus'])).toBe(2)
+    expect(await h.run(['sync', '--bogus'])).toBe(2)
+    expect(await h.run(['sync', '--config'])).toBe(2)
     const text = `${h.out.join('\n')}\n${h.err.join('\n')}`
     expect(text).toContain('--config')
     expect(hasAnsi(text)).toBe(false)
@@ -869,7 +863,7 @@ describe('eedsh arguments', () => {
 
   it('prints no-argument help and command help without ANSI escapes', async () => {
     const noArgs = harness()
-    expect(await runEedsh([], noArgs.options)).toBe(0)
+    expect(await noArgs.run([])).toBe(0)
     const noArgsText = noArgs.out.join('\n')
     expect(noArgsText).toContain('eedsh')
     expect(noArgsText).toContain('init')
@@ -879,12 +873,12 @@ describe('eedsh arguments', () => {
     expect(hasAnsi(noArgsText)).toBe(false)
 
     const help = harness()
-    expect(await runEedsh(['--help'], help.options)).toBe(0)
+    expect(await help.run(['--help'])).toBe(0)
     expect(help.out.join('\n')).toContain('sync')
     expect(hasAnsi(help.out.join('\n'))).toBe(false)
 
     const checkHelp = harness()
-    expect(await runEedsh(['check', '--help'], checkHelp.options)).toBe(0)
+    expect(await checkHelp.run(['check', '--help'])).toBe(0)
     const checkText = checkHelp.out.join('\n')
     expect(checkText).toContain('check')
     expect(checkText).toContain('--config')
@@ -893,7 +887,7 @@ describe('eedsh arguments', () => {
 
   it('prints the version without ANSI escapes', async () => {
     const h = harness()
-    expect(await runEedsh(['--version'], h.options)).toBe(0)
+    expect(await h.run(['--version'])).toBe(0)
     expect(h.out.join('\n')).toMatch(/\d+\.\d+\.\d+/)
     expect(hasAnsi(h.out.join('\n'))).toBe(false)
   })
@@ -901,9 +895,8 @@ describe('eedsh arguments', () => {
   it('rejects --explain on run and check before spawning', async () => {
     const runHarness = harness()
     const runSpawn = fakeSpawner()
-    const runCode = await runEedsh(['run', '--explain', '--config', fixture('basic')], {
-      ...runHarness.options,
-      spawn: runSpawn.spawn,
+    const runCode = await runHarness.run(['run', '--explain', '--config', fixture('basic')], {
+      spawner: runSpawn.spawn,
     })
     expect(runCode).toBe(2)
     expect(runSpawn.calls).toHaveLength(0)
@@ -912,9 +905,8 @@ describe('eedsh arguments', () => {
 
     const checkHarness = harness()
     const checkSpawn = fakeSpawner()
-    const checkCode = await runEedsh(['check', '--explain', '--config', fixture('basic')], {
-      ...checkHarness.options,
-      spawn: checkSpawn.spawn,
+    const checkCode = await checkHarness.run(['check', '--explain', '--config', fixture('basic')], {
+      spawner: checkSpawn.spawn,
     })
     expect(checkCode).toBe(2)
     expect(checkSpawn.calls).toHaveLength(0)
@@ -923,7 +915,7 @@ describe('eedsh arguments', () => {
 
   it('rejects -- passthrough on sync', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--', '--strict'], h.options)
+    const code = await h.run(['sync', '--', '--strict'])
     expect(code).toBe(2)
     expect(h.err.join('\n')).toContain('--')
     expect(h.fs.files.size).toBe(0)
@@ -935,7 +927,7 @@ describe('strict mode', () => {
 
   it('reports raw warnings and a hint but publishes without strict mode', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(['sync', '--config', fixture('unmatched')], h.options)
+    const code = await h.run(['sync', '--config', fixture('unmatched')])
     expect(code).toBe(0)
     const errors = h.err.join('\n')
     expect(errors).toContain('missing-row')
@@ -946,7 +938,7 @@ describe('strict mode', () => {
 
   it('attributes warnings with --explain and omits the hint', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(['sync', '--explain', '--config', fixture('unmatched')], h.options)
+    const code = await h.run(['sync', '--explain', '--config', fixture('unmatched')])
     expect(code).toBe(0)
     const errors = h.err.join('\n')
     expect(errors).toContain('generated #1 "cli" (config.ts:')
@@ -958,7 +950,7 @@ describe('strict mode', () => {
 
   it('keeps strict failures raw and prints the hint', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(['sync', '--strict', '--config', fixture('unmatched')], h.options)
+    const code = await h.run(['sync', '--strict', '--config', fixture('unmatched')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('missing-row')
@@ -969,10 +961,7 @@ describe('strict mode', () => {
 
   it('attributes strict failures with --strict --explain and omits the hint', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(
-      ['sync', '--strict', '--explain', '--config', fixture('unmatched')],
-      h.options,
-    )
+    const code = await h.run(['sync', '--strict', '--explain', '--config', fixture('unmatched')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('generated #1 "cli" (config.ts:')
@@ -989,9 +978,8 @@ describe('strict mode', () => {
       bundles: [bundle('@deepseek-ai/dsh-base'), generated()],
       layers: [{ patches: [override('missing-row', { interval: 1 })] }],
     })
-    const code = await runEedsh(['sync', '--explain', '--config', fixture('unmatched')], {
-      ...h.options,
-      loadConfig: () => Effect.succeed(loaded(configWith(plan))),
+    const code = await h.run(['sync', '--explain', '--config', fixture('unmatched')], {
+      configLoader: fakeConfigLoader(() => Effect.succeed(loaded(configWith(plan)))),
     })
     expect(code).toBe(0)
     const errors = h.err.join('\n')
@@ -1016,21 +1004,21 @@ export default defineConfig()
     )
     const manifest = generatedPath('cli-empty')
     const warned = harness({ basePatches, realPreflight: true })
-    expect(await runEedsh(['sync', '--config', configPath], warned.options)).toBe(0)
+    expect(await warned.run(['sync', '--config', configPath])).toBe(0)
     const warnings = warned.err.join('\n')
     expect(warnings).toContain('generated #1 "empty": contains no patches')
     expect(warnings).toContain('--explain')
     expect(warned.fs.files.has(manifest)).toBe(true)
 
     const strict = harness({ basePatches, realPreflight: true })
-    expect(await runEedsh(['sync', '--strict', '--config', configPath], strict.options)).toBe(1)
+    expect(await strict.run(['sync', '--strict', '--config', configPath])).toBe(1)
     expect(strict.err.join('\n')).toContain('contains no patches')
     expect(strict.fs.files.has(manifest)).toBe(false)
   })
 
   it('publishes with --explain when there are no warnings', async () => {
     const h = harness({ basePatches, realPreflight: true })
-    const code = await runEedsh(['sync', '--explain', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--explain', '--config', fixture('basic')])
     expect(code).toBe(0)
     expect(h.err.join('\n')).not.toContain('warning:')
     expect(h.err.join('\n')).not.toContain('--explain')
@@ -1065,7 +1053,7 @@ describe('generation record diagnostics', () => {
   it('fails an eedsh-managed profile with a corrupt record and names the recovery', async () => {
     const manifest = managedManifest()
     const h = harness({ files: { [manifestPath]: manifest, [recordPath]: '{ not json' } })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain(recordPath)
@@ -1085,7 +1073,7 @@ describe('generation record diagnostics', () => {
         }),
       },
     })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('upgrade eedsh')
@@ -1094,7 +1082,7 @@ describe('generation record diagnostics', () => {
 
   it('documents --adopt-ownership in sync help', async () => {
     const h = harness()
-    expect(await runEedsh(['sync', '--help'], h.options)).toBe(0)
+    expect(await h.run(['sync', '--help'])).toBe(0)
     expect(h.out.join('\n')).toContain('--adopt-ownership')
   })
 
@@ -1110,10 +1098,7 @@ describe('generation record diagnostics', () => {
         [recordPath]: '{ not json',
       },
     })
-    const code = await runEedsh(
-      ['sync', '--config', fixture('basic'), '--adopt-ownership'],
-      h.options,
-    )
+    const code = await h.run(['sync', '--config', fixture('basic'), '--adopt-ownership'])
     expect(code).toBe(0)
     const errors = h.err.join('\n')
     expect(errors).toContain('eedsh: notice:')
@@ -1146,16 +1131,9 @@ function addPublishedRuntimeState(h: ReturnType<typeof harness>): void {
 
 async function syncedProfile() {
   const h = harness()
-  expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+  expect(await h.run(['sync', '--config', fixture('basic')])).toBe(0)
   addPublishedRuntimeState(h)
   return h
-}
-
-function doctorOptions(h: ReturnType<typeof harness>) {
-  return {
-    ...h.options,
-    fileSystem: () => Layer.succeed(FileSystem.FileSystem, h.fs.fs),
-  }
 }
 
 describe('eedsh doctor', () => {
@@ -1164,9 +1142,10 @@ describe('eedsh doctor', () => {
 
   it('inspects --profile without evaluating a config', async () => {
     const h = await syncedProfile()
-    const code = await runEedsh(['doctor', '--profile', profileName], {
-      ...doctorOptions(h),
-      loadConfig: () => Effect.die(new Error('doctor --profile must not evaluate the config')),
+    const code = await h.run(['doctor', '--profile', profileName], {
+      configLoader: fakeConfigLoader(() =>
+        Effect.die(new Error('doctor --profile must not evaluate the config')),
+      ),
     })
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('clean: 0 errors, 0 warnings')
@@ -1174,30 +1153,27 @@ describe('eedsh doctor', () => {
 
   it('takes the profile name from the config', async () => {
     const h = await syncedProfile()
-    const code = await runEedsh(['doctor', '--config', fixture('basic')], doctorOptions(h))
+    const code = await h.run(['doctor', '--config', fixture('basic')])
     expect(code).toBe(0)
     expect(h.out.join('\n')).toContain('clean: 0 errors, 0 warnings')
   })
 
   it('rejects --profile together with --config as a usage error', async () => {
     const h = harness()
-    const code = await runEedsh(
-      ['doctor', '--profile', profileName, '--config', fixture('basic')],
-      doctorOptions(h),
-    )
+    const code = await h.run(['doctor', '--profile', profileName, '--config', fixture('basic')])
     expect(code).toBe(2)
     expect(h.err.join('\n')).toContain('--profile')
   })
 
   it('rejects an unusable profile name as a usage error', async () => {
     const h = harness()
-    expect(await runEedsh(['doctor', '--profile', '../escape'], doctorOptions(h))).toBe(2)
-    expect(await runEedsh(['doctor', '--profile', 'node_modules'], doctorOptions(h))).toBe(2)
+    expect(await h.run(['doctor', '--profile', '../escape'])).toBe(2)
+    expect(await h.run(['doctor', '--profile', 'node_modules'])).toBe(2)
   })
 
   it('reports a missing profile with exit 1', async () => {
     const h = harness()
-    const code = await runEedsh(['doctor', '--profile', 'missing'], doctorOptions(h))
+    const code = await h.run(['doctor', '--profile', 'missing'])
     expect(code).toBe(1)
     expect(h.out.join('\n')).toContain('does not exist')
   })
@@ -1205,7 +1181,7 @@ describe('eedsh doctor', () => {
   it('exits 1 when a finding is an error', async () => {
     const h = await syncedProfile()
     h.fs.files.delete(join(profileDir, '.eedsh', 'generated', 'package.json'))
-    const code = await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))
+    const code = await h.run(['doctor', '--profile', profileName])
     expect(code).toBe(1)
     expect(h.out.join('\n')).toContain('error: record:')
   })
@@ -1213,18 +1189,15 @@ describe('eedsh doctor', () => {
   it('exits 0 with warnings and 1 with --strict', async () => {
     const h = await syncedProfile()
     h.fs.files.delete(join(profileDir, 'cordis.yml'))
-    expect(await runEedsh(['doctor', '--profile', profileName], doctorOptions(h))).toBe(0)
+    expect(await h.run(['doctor', '--profile', profileName])).toBe(0)
     expect(h.out.join('\n')).toContain('warning: scaffolding:')
-    const strict = await runEedsh(
-      ['doctor', '--profile', profileName, '--strict'],
-      doctorOptions(h),
-    )
+    const strict = await h.run(['doctor', '--profile', profileName, '--strict'])
     expect(strict).toBe(1)
   })
 
   it('rejects --explain as a usage error', async () => {
     const h = await syncedProfile()
-    const code = await runEedsh(['doctor', '--profile', profileName, '--explain'], doctorOptions(h))
+    const code = await h.run(['doctor', '--profile', profileName, '--explain'])
     expect(code).toBe(2)
   })
 })
@@ -1234,7 +1207,7 @@ describe('dependency section notices', () => {
 
   it('prints a cleanup notice and still reinstalls the profile', async () => {
     const h = harness()
-    expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+    expect(await h.run(['sync', '--config', fixture('basic')])).toBe(0)
     const installs = h.packages.installs.length
     const manifest = JSON.parse(h.fs.files.get(manifestPath) ?? '{}') as {
       devDependencies?: Record<string, string>
@@ -1242,7 +1215,7 @@ describe('dependency section notices', () => {
     manifest.devDependencies = { '@eedsh/generated': '^1.0.0' }
     h.fs.files.set(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
-    expect(await runEedsh(['sync', '--config', fixture('basic')], h.options)).toBe(0)
+    expect(await h.run(['sync', '--config', fixture('basic')])).toBe(0)
     expect(h.err.join('\n')).toContain(
       'eedsh: notice: removed @eedsh/generated from devDependencies',
     )
@@ -1257,21 +1230,21 @@ describe('dependency section notices', () => {
 describe('tagged failures', () => {
   it('maps a preflight failure to a diagnostic and exit 1', async () => {
     const h = harness({ preflight: { fail: true } })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('unmatched target')
   })
 
   it('reports a typed failure exactly once', async () => {
     const h = harness({ preflight: { fail: true } })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     expect(h.err.join('\n').match(/unmatched target/g)).toHaveLength(1)
   })
 
   it('maps a held sync lock to a diagnostic naming the path and no PID', async () => {
     const h = harness({ lockHeld: true })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     const errors = h.err.join('\n')
     expect(errors).toContain('another sync is running')
@@ -1281,18 +1254,20 @@ describe('tagged failures', () => {
 
   it('maps a package failure to a diagnostic and exit 1', async () => {
     const h = harness({ packages: { fail: true } })
-    const code = await runEedsh(['sync', '--config', fixture('basic')], h.options)
+    const code = await h.run(['sync', '--config', fixture('basic')])
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('package install')
   })
 
   it('reports an unexpected command failure and exits 1', async () => {
     const h = harness()
-    const code = await runEedsh(['sync', '--config', fixture('basic')], {
-      ...h.options,
-      services: () => {
-        throw new Error('service layer unavailable')
-      },
+    // The CLI does not build the service layer, so an unexpected failure is
+    // modelled through a capability that violates its contract; the sync command
+    // reports it once and exits 1 instead of letting it escape as a defect.
+    const code = await h.run(['sync', '--config', fixture('basic')], {
+      configLoader: fakeConfigLoader(() =>
+        Effect.fail(new Error('service layer unavailable') as never),
+      ),
     })
     expect(code).toBe(1)
     const errors = h.err.join('\n')
@@ -1304,10 +1279,7 @@ describe('tagged failures', () => {
 describe('sync provisioning flags', () => {
   it('rejects --rebuild together with --no-build as a usage error', async () => {
     const h = harness()
-    const code = await runEedsh(
-      ['sync', '--rebuild', '--no-build', '--config', fixture('basic')],
-      h.options,
-    )
+    const code = await h.run(['sync', '--rebuild', '--no-build', '--config', fixture('basic')])
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('--rebuild')
@@ -1348,11 +1320,9 @@ describe('eedsh sync --watch', () => {
       return Effect.succeed(loaded(configWith(call === 1 ? planA : planB)))
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      loadConfig,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      configLoader: fakeConfigLoader(loadConfig),
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
@@ -1377,9 +1347,8 @@ describe('eedsh sync --watch', () => {
     const watch = async () => {
       throw new Error('watcher failed')
     }
-    const code = await runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
+    const code = await h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch }),
     })
     expect(code).toBe(1)
     expect(h.packages.installs).toEqual([])
@@ -1388,24 +1357,23 @@ describe('eedsh sync --watch', () => {
     expect(h.err.join('\n')).toContain('watcher failed')
   })
 
-  it('releases the layer and skips the watcher when the service layer cannot be built', async () => {
-    const h = harness({ failLayer: true })
+  it('releases the layer and skips the watcher when discovery fails', async () => {
+    const h = harness({ discoveryFails: true })
     let watchCalls = 0
     const watch = async () => {
       watchCalls += 1
       return { close: async () => {} }
     }
-    const code = await runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: AbortSignal.abort(),
+    const code = await h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: AbortSignal.abort() }),
     })
     expect(code).toBe(1)
     expect(watchCalls).toBe(0)
     expect(h.packages.installs).toEqual([])
     expect(h.fs.files.size).toBe(0)
     expect(h.finalizers()).toBe(1)
-    expect(h.err.join('\n')).toContain('cannot resolve DSH package')
+    expect(h.err.join('\n')).toContain('dsh.not_found')
+    expect(h.err.join('\n')).toContain('cannot resolve a DSH installation')
   })
 
   it('starts the initial sync only after the watcher is ready', async () => {
@@ -1421,10 +1389,8 @@ describe('eedsh sync --watch', () => {
       return { close: async () => {} }
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => watchCalled)).toBe(true)
@@ -1449,10 +1415,8 @@ describe('eedsh sync --watch', () => {
       return { close: async () => {} }
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
     const runs = () =>
       h.out.filter(
@@ -1483,10 +1447,8 @@ describe('eedsh sync --watch', () => {
       return { close: async () => {} }
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
     const runs = () =>
       h.out.filter(
@@ -1540,11 +1502,9 @@ describe('eedsh sync --watch', () => {
       return Effect.succeed(loaded(configWith(calls === 1 ? planA : planB)))
     }
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      loadConfig,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      configLoader: fakeConfigLoader(loadConfig),
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
 
     await waitFor(() => h.fs.files.has(generatedManifest))
@@ -1577,10 +1537,8 @@ describe('eedsh sync --watch', () => {
       },
     })
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', fixture('basic'), '--watch'], {
-      ...h.options,
-      watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', fixture('basic'), '--watch'], {
+      watcher: fakeWatcher({ watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(generatedManifest))).toBe(true)
@@ -1717,10 +1675,8 @@ export default defineConfig()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(
@@ -1744,10 +1700,8 @@ export default defineConfig()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
@@ -1763,10 +1717,8 @@ export default defineConfig()
     const configPath = await watchConfig(singleProfile('work-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
@@ -1790,10 +1742,8 @@ export default defineConfig()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(
@@ -1819,10 +1769,8 @@ export default defineConfig()
     const configPath = await watchConfig(invalidHome('work-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('work')))).toBe(true)
@@ -1843,10 +1791,8 @@ export default defineConfig()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--config', configPath, '--watch', '--profile', 'home'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(await waitFor(() => h.fs.files.has(manifestPath('home')))).toBe(true)
@@ -1878,10 +1824,8 @@ export default defineConfig()
     const configPath = await watchConfig(twoProfiles('work-a', 'home-a'))
     const control = watchControl()
     const controller = new AbortController()
-    const running = runEedsh(['sync', '--strict', '--config', configPath, '--watch'], {
-      ...h.options,
-      watch: control.watch,
-      signal: controller.signal,
+    const running = h.run(['sync', '--strict', '--config', configPath, '--watch'], {
+      watcher: fakeWatcher({ watch: control.watch, signal: controller.signal }),
     })
 
     expect(
@@ -1917,10 +1861,11 @@ describe('eedsh check', () => {
   it('prints the resolved invocation and runs the compiler without materializing', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner({ listing: `${configPath}\n` })
-    const code = await runEedsh(['check', '--config', configPath, '--', '--pretty', 'false'], {
-      ...h.options,
-      spawn,
-      loadConfig: () => Effect.die(new Error('eedsh check must not evaluate the config')),
+    const code = await h.run(['check', '--config', configPath, '--', '--pretty', 'false'], {
+      configLoader: fakeConfigLoader(() =>
+        Effect.die(new Error('eedsh check must not evaluate the config')),
+      ),
+      spawner: spawn,
     })
     expect(code).toBe(0)
     const text = h.out.join('\n')
@@ -1949,7 +1894,7 @@ describe('eedsh check', () => {
       stderr: 'error TS2322',
       listing: `${configPath}\n`,
     })
-    const code = await runEedsh(['check', '--config', configPath], { ...h.options, spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('check failed')
@@ -1960,7 +1905,7 @@ describe('eedsh check', () => {
   it('forwards a failed file listing without a check failure code', async () => {
     const h = harness()
     const { spawn } = fakeSpawner({ listingExit: 2, stderr: 'listing failed', listing: '' })
-    const code = await runEedsh(['check', '--config', configPath], { ...h.options, spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
     expect(code).toBe(2)
     const errors = h.err.join('\n')
     expect(errors).toContain('cannot list the project files')
@@ -1981,9 +1926,8 @@ describe('eedsh check failures', () => {
   it('fails with config.not_found for a missing config', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['check', '--config', join(root, 'nope/config.ts')], {
-      ...h.options,
-      spawn,
+    const code = await h.run(['check', '--config', join(root, 'nope/config.ts')], {
+      spawner: spawn,
     })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('config.not_found')
@@ -1994,7 +1938,7 @@ describe('eedsh check failures', () => {
     const configPath = await externalProject('export default {}\n')
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['check', '--config', configPath], { ...h.options, spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.tsconfig_missing')
     expect(h.err.join('\n')).toContain('tsconfig.json')
@@ -2005,7 +1949,7 @@ describe('eedsh check failures', () => {
     const configPath = await externalProject('export default {}\n', '{}\n')
     const h = harness()
     const { calls, spawn } = fakeSpawner()
-    const code = await runEedsh(['check', '--config', configPath], { ...h.options, spawn })
+    const code = await h.run(['check', '--config', configPath], { spawner: spawn })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.typescript_missing')
     expect(h.err.join('\n')).toContain('install')
@@ -2015,7 +1959,7 @@ describe('eedsh check failures', () => {
   it('fails with check.config_not_in_project when the tsconfig excludes the config', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner({ listing: '/home/project/src/index.ts\n' })
-    const code = await runEedsh(['check', '--config', fixture('basic')], { ...h.options, spawn })
+    const code = await h.run(['check', '--config', fixture('basic')], { spawner: spawn })
     expect(code).toBe(1)
     expect(h.err.join('\n')).toContain('check.config_not_in_project')
     expect(h.err.join('\n')).toContain(join(root, 'tsconfig.json'))
@@ -2058,9 +2002,9 @@ describe('eedsh run', () => {
   it('forwards dsh arguments through an injected spawn', async () => {
     const h = harness()
     const { calls, spawn } = fakeSpawner({ exitCode: 7 })
-    const code = await runEedsh(
+    const code = await h.run(
       ['run', '--config', fixture('basic'), '--no-sync', '--', '--port', '7777'],
-      { ...h.options, spawn },
+      { spawner: spawn },
     )
     expect(code).toBe(7)
     expect(calls).toHaveLength(1)

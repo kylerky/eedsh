@@ -9,14 +9,20 @@ import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit } from 'effect'
 import * as Option from 'effect/Option'
 import { EXIT_FAILURE, EXIT_OK } from '../../exit'
+import {
+  type CliServices,
+  ConfigLoader,
+  Environment,
+  Output,
+  Watcher,
+} from '../../internal/effect/services'
 import { runReplLoop } from '../../repl/prompt'
 import { ReplSession } from '../../repl/session'
 import { configFlag, dshFlag, evalFlag, profileFlag, replSyncFlag } from '../../surface'
-import type { CommandRuntime } from '../context'
-import { NO_PROVISIONING_MODE, serviceLayerFor, syncProgram } from '../materialize'
+import { NO_PROVISIONING_MODE, syncProgram } from '../materialize'
 import type { Parsed } from '../options'
 import { requireDsh, resolveConfigPath } from '../prepare'
-import { report } from '../report'
+import { failWith, report } from '../report'
 
 /** The `eedsh repl` flag record. */
 export const replOptions = {
@@ -31,30 +37,32 @@ export const replOptions = {
 export type ReplInput = Parsed<typeof replOptions>
 
 /** Open the config REPL, or evaluate one expression with --eval. */
-export function runReplCommand(
-  input: ReplInput,
-  runtime: CommandRuntime,
-): Effect.Effect<number, unknown> {
+export function runReplCommand(input: ReplInput): Effect.Effect<number, never, CliServices> {
   return Effect.gen(function* () {
-    runtime.setFailureContext(undefined)
-    const configPath = resolveConfigPath(input.config, runtime)
+    const output = yield* Output
+    const { env } = yield* Environment
+    const configPath = yield* resolveConfigPath(input.config)
     if (Option.isNone(configPath)) return EXIT_FAILURE
-    const installation = yield* requireDsh(runtime, input.dsh)
+    const installation = yield* requireDsh(input.dsh)
+    const loader = yield* ConfigLoader
+    const watcher = yield* Watcher
+    const services = yield* Effect.context<CliServices>()
     const profile = Option.getOrUndefined(input.profile)
     const configDir = dirname(configPath.value)
     const syncPlan = async (plan: ProfilePlan, provenance: ConfigProvenance | undefined) => {
       const exit = await Effect.runPromiseExit(
         Effect.suspend(() =>
           syncProgram(
-            runtime.env,
+            env,
             plan,
             false,
             false,
             false,
             provenance,
             configDir,
+            installation,
             NO_PROVISIONING_MODE,
-          ).pipe(Effect.provide(serviceLayerFor(runtime.options, installation))),
+          ).pipe(Effect.provide(services)),
         ),
       )
       if (Exit.isFailure(exit)) {
@@ -70,23 +78,25 @@ export function runReplCommand(
         notices: exit.value.notices.map((notice) => `${notice.severity}: ${notice.message}`),
       }
     }
-    const session = yield* Effect.promise(() =>
-      ReplSession.create({
-        configPath: configPath.value,
-        ...(profile === undefined ? {} : { profile }),
-        sync: input.sync,
-        env: runtime.env,
-        stdout: runtime.stdout,
-        stderr: runtime.stderr,
-        ...(runtime.options.loadConfig === undefined
-          ? {}
-          : { loadConfig: runtime.options.loadConfig }),
-        ...(runtime.options.watch === undefined ? {} : { watch: runtime.options.watch }),
-        syncPlan,
-        watchConfig: Option.isNone(input.eval),
-        oneShot: Option.isSome(input.eval),
-      }),
-    )
+    // Session construction loads the config and the authoring package; a
+    // rejection there is this command's failure, reported once through Output.
+    const session = yield* Effect.tryPromise({
+      try: () =>
+        ReplSession.create({
+          configPath: configPath.value,
+          ...(profile === undefined ? {} : { profile }),
+          sync: input.sync,
+          env,
+          stdout: output.stdout,
+          stderr: output.stderr,
+          loadConfig: (path, evaluationNonce) => loader.load(path, evaluationNonce),
+          watch: (dir, onChange) => watcher.watch(dir, onChange),
+          syncPlan,
+          watchConfig: Option.isNone(input.eval),
+          oneShot: Option.isSome(input.eval),
+        }),
+      catch: (cause) => cause,
+    })
 
     const evalExpression = Option.getOrUndefined(input.eval)
     if (evalExpression !== undefined) {
@@ -99,27 +109,25 @@ export function runReplCommand(
       yield* Effect.promise(() => session.close())
       if (Exit.isFailure(evaluated)) {
         if (Cause.hasInterruptsOnly(evaluated.cause)) return EXIT_FAILURE
-        report(runtime.stderr, Cause.squash(evaluated.cause))
+        report(output.stderr, Cause.squash(evaluated.cause))
         return EXIT_FAILURE
       }
       session.printValue(evaluated.value)
       return EXIT_OK
     }
 
-    const inputStream = runtime.options.replInput ?? process.stdin
-    const outputStream = runtime.options.replOutput ?? process.stdout
     const loop = yield* Effect.exit(
       Effect.tryPromise({
-        try: () => runReplLoop(session, { input: inputStream, output: outputStream }),
+        try: () => runReplLoop(session, { input: process.stdin, output: process.stdout }),
         catch: (cause) => cause,
       }),
     )
     yield* Effect.promise(() => session.close())
     if (Exit.isFailure(loop)) {
       if (Cause.hasInterruptsOnly(loop.cause)) return EXIT_FAILURE
-      report(runtime.stderr, Cause.squash(loop.cause))
+      report(output.stderr, Cause.squash(loop.cause))
       return EXIT_FAILURE
     }
     return EXIT_OK
-  })
+  }).pipe(Effect.catch((error) => failWith(error)))
 }

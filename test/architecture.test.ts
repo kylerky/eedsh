@@ -375,15 +375,13 @@ describe('installation anchor boundaries', () => {
 
   it('imports the bootstrap only from the setup command path', () => {
     const importers = sourceImports('cli')
-      .filter(
-        ({ specifier }) => specifier === './dsh-bootstrap' || specifier === '../dsh-bootstrap',
-      )
+      .filter(({ specifier }) => /(^|\/)dsh-bootstrap$/.test(specifier))
       .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
-    // `context.ts` names the injected bootstrap seam's types; `prepare.ts` is
-    // the setup path that calls it.
-    expect(importers, 'only the sync/run setup path may import the bootstrap').toEqual([
-      'packages/cli/src/command/context.ts',
-      'packages/cli/src/command/prepare.ts',
+    // `services.ts` names the discovery service's bootstrap method; the live
+    // layer is the composition root that wires the bootstrap implementation.
+    expect(importers, 'only the setup path may import the bootstrap').toEqual([
+      'packages/cli/src/internal/effect/layer.ts',
+      'packages/cli/src/internal/effect/services.ts',
     ])
   })
 
@@ -392,16 +390,16 @@ describe('installation anchor boundaries', () => {
       .filter(({ specifier }) => specifier.endsWith('/command-runner'))
       .map(({ file }) => relative(root, file).replaceAll('\\', '/'))
       .sort()
-    // The setup path and the doctor adapter hold the runner seam; the context
-    // names its type. Discovery and bootstrap select an installation, and the
-    // repl preview and service layer use the shared invocation helper.
+    // The setup path and the doctor adapter hold the runner seam; the services
+    // module names its type. Discovery and bootstrap select an installation,
+    // and the repl preview and live layer use the shared invocation helper.
     expect(importers).toEqual([
       'packages/cli/src/command/adapters/doctor.ts',
-      'packages/cli/src/command/context.ts',
       'packages/cli/src/command/prepare.ts',
       'packages/cli/src/dsh-bootstrap.ts',
       'packages/cli/src/dsh-discovery.ts',
       'packages/cli/src/internal/effect/layer.ts',
+      'packages/cli/src/internal/effect/services.ts',
       'packages/cli/src/repl/preview.ts',
     ])
   })

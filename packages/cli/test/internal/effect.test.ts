@@ -7,7 +7,6 @@ import * as PlatformError from 'effect/PlatformError'
 import { describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'
 import {
-  DshInstallation,
   PackageManager,
   type PackageManagerShape,
   Preflight,
@@ -16,13 +15,7 @@ import {
 } from '../../src/internal/effect/services'
 import { materialize } from '../../src/materialize/program'
 import { failureOf } from '../support/effect'
-import {
-  fakeDsh,
-  fakePackageManager,
-  fakePreflight,
-  fakeSyncLock,
-  memoryFileSystem,
-} from '../support/fakes'
+import { fakePackageManager, fakePreflight, fakeSyncLock, memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
 import { bundle, insert, layer as planLayer } from '../support/plan-parts'
 
@@ -57,12 +50,10 @@ function harness(options: HarnessOptions = {}) {
   const fs = memoryFileSystem(options.files)
   const packages = options.packages ?? fakePackageManager().shape
   const preflight = options.preflight ?? fakePreflight().shape
-  const dsh = fakeDsh().shape
   const lock = options.lock ?? fakeSyncLock()
   const layer = Layer.mergeAll(
     Layer.succeed(FileSystem.FileSystem, fs.fs),
     Layer.succeed(PackageManager, packages),
-    Layer.succeed(DshInstallation, dsh),
     Layer.succeed(Preflight, preflight),
     Layer.succeed(SyncLock, lock.shape),
   )
@@ -70,6 +61,7 @@ function harness(options: HarnessOptions = {}) {
     plan: options.plan ?? fixturePlan(),
     profileDir,
     eedshVersion: '0.0.0',
+    dsh: { version: '0.2.1-rc.2', installAnchor: '/dsh/package.json', binPath: '/dsh/lib/bin.js' },
     runtimeSpec,
     generatedSpec,
     strict: false,

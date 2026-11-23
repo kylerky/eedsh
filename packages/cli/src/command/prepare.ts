@@ -1,7 +1,8 @@
 /**
  * Preparation shared by the subcommands: profile directories, DSH discovery and
  * bootstrap, config-path resolution, config loading, and the profile-labelled
- * failure reports a multi-profile command emits.
+ * failure reports a multi-profile command emits. Every capability comes from a
+ * service, so preparation takes no runtime bag.
  * @module @eedsh/cli/command/prepare
  */
 import { existsSync } from 'node:fs'
@@ -10,24 +11,32 @@ import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
-import { defaultCommandRunner, versionProbe } from '../command-runner'
-import {
-  type ConfigLoadFailure,
-  type LoadedConfig,
-  loadConfig,
-  validateConfigPath,
-} from '../config'
+import { versionProbe } from '../command-runner'
+import { type ConfigLoadFailure, type LoadedConfig, validateConfigPath } from '../config'
 import { defaultConfigPath } from '../config-path'
-import { type DiscoveredDshInstallation, discoverDshInstallation, validateDshVersion } from '../dsh'
-import { bootstrapDshInstallation } from '../dsh-bootstrap'
-import { loadDshBridge } from '../dsh-bridge'
+import type { DiscoveredDshInstallation } from '../dsh'
 import { EXIT_USAGE } from '../exit'
-import { anchorForInstallation, defaultInstallationAnchorStore } from '../installation-anchor'
+import { anchorForInstallation } from '../installation-anchor'
 import { resolveDshHome, resolveProfileDir } from '../internal/dsh-home'
 import type { DshFailure } from '../internal/effect/errors'
+import {
+  BundleResolver,
+  type BundleResolverShape,
+  CommandRunner,
+  type CommandRunnerShape,
+  ConfigLoader,
+  type ConfigLoaderShape,
+  DshDiscovery,
+  type DshDiscoveryShape,
+  Environment,
+  type EnvironmentShape,
+  InstallationAnchor,
+  type InstallationAnchorShape,
+  Output,
+  type OutputShape,
+} from '../internal/effect/services'
 import type { ProfileSelectionError } from '../selection'
-import type { CommandRuntime } from './context'
-import { describeError, EXPLAIN_HINT, rawPreflightWarnings, report } from './report'
+import { describeError, EXPLAIN_HINT, rawPreflightWarnings } from './report'
 
 export function profileDirForName(name: string, env: Record<string, string | undefined>): string {
   return resolveProfileDir(name, resolveDshHome(undefined, env))
@@ -37,36 +46,44 @@ export function profileDirFor(plan: ProfilePlan, env: Record<string, string | un
   return profileDirForName(plan.profile.name, env)
 }
 
+/** The capabilities discovery and bridge loading need. */
+export type PrepareServices =
+  | DshDiscoveryShape
+  | EnvironmentShape
+  | InstallationAnchorShape
+  | CommandRunnerShape
+  | BundleResolverShape
+  | OutputShape
+
 /**
- * Discover and validate one installation, then install its bridge. Runs before
- * any config import so a top-level query or dshVersion() resolves. Setup
- * commands may bootstrap an unresolved PATH launcher through pnpm/npm and
- * record the anchor; doctor, repl, and run --no-sync never do.
+ * Discover and validate one installation, then load its bridge. Runs before any
+ * config import so the authoring layer can record its queries. Setup commands
+ * may bootstrap an unresolved PATH launcher through pnpm/npm and record the
+ * anchor; doctor, repl, and run --no-sync never do.
  */
 export function requireDsh(
-  runtime: CommandRuntime,
   explicit: Option.Option<string>,
   options: { readonly bootstrap?: boolean } = {},
-): Effect.Effect<DiscoveredDshInstallation, DshFailure> {
+): Effect.Effect<DiscoveredDshInstallation, DshFailure, PrepareServices> {
   return Effect.gen(function* () {
-    const store = runtime.options.installationAnchor ?? defaultInstallationAnchorStore
-    const runner = runtime.options.commandRunner ?? defaultCommandRunner
-    const discovery = runtime.options.discoverDsh ?? discoverDshInstallation
-    const discovered = yield* Effect.sync(() =>
-      discovery({
-        ...(Option.isSome(explicit) ? { explicit: explicit.value } : {}),
-        env: runtime.env,
-        cwd: runtime.cwd,
-        readAnchor: () => store.read(runtime.env),
-        probeVersion: versionProbe(runner, runtime.env),
-      }),
-    )
+    const { env, cwd } = yield* Environment
+    const discovery = yield* DshDiscovery
+    const store = yield* InstallationAnchor
+    const runner = yield* CommandRunner
+    const output = yield* Output
+    const discovered = discovery.discover({
+      ...(Option.isSome(explicit) ? { explicit: explicit.value } : {}),
+      env,
+      cwd,
+      readAnchor: () => store.read(env),
+      probeVersion: versionProbe(runner, env),
+    })
 
     let selected: DiscoveredDshInstallation
     if (Result.isSuccess(discovered)) {
       selected = discovered.success
     } else {
-      const envAnchor = runtime.env.EEDSH_DSH_ANCHOR
+      const envAnchor = env.EEDSH_DSH_ANCHOR
       const explicitAnchor = envAnchor !== undefined && envAnchor.trim() !== ''
       const launcher = discovered.failure.path
       const canBootstrap =
@@ -76,77 +93,84 @@ export function requireDsh(
         discovered.failure.code === 'dsh.launcher_unresolved' &&
         launcher !== undefined
       if (!canBootstrap) return yield* Effect.fail(discovered.failure)
-      const bootstrap = runtime.options.bootstrapDsh ?? bootstrapDshInstallation
-      const bootstrapped = yield* Effect.sync(() =>
-        bootstrap({ env: runtime.env, cwd: runtime.cwd, launcher: launcher as string, runner }),
-      )
+      const bootstrapped = discovery.bootstrap({
+        env,
+        cwd,
+        launcher: launcher as string,
+        runner,
+      })
       if (Result.isFailure(bootstrapped)) return yield* Effect.fail(bootstrapped.failure)
       selected = {
         ...bootstrapped.success.installation,
         source: 'bootstrapped',
         launcher: bootstrapped.success.launcher,
       }
-      const written = yield* Effect.sync(() =>
-        store.write(
-          runtime.env,
-          anchorForInstallation(selected, {
-            recordedBy: 'sync',
-            launcher: bootstrapped.success.launcher,
-            manager: bootstrapped.success.manager,
-          }),
-        ),
+      const written = store.write(
+        env,
+        anchorForInstallation(selected, {
+          recordedBy: 'sync',
+          launcher: bootstrapped.success.launcher,
+          manager: bootstrapped.success.manager,
+        }),
       )
       if (!written.ok) {
-        runtime.stderr(
+        output.stderr(
           `eedsh: warning: cannot record the DSH installation anchor: ${written.error}; ` +
             `continuing with ${selected.installAnchor}`,
         )
       }
     }
 
-    const validated = validateDshVersion(selected)
+    const validated = discovery.validate(selected)
     if (Result.isFailure(validated)) return yield* Effect.fail(validated.failure)
-    const load = runtime.options.loadDshBridge ?? loadDshBridge
-    const loaded = yield* Effect.promise(() => load(validated.success))
-    if (Result.isFailure(loaded)) return yield* Effect.fail(loaded.failure)
-    runtime.installation = validated.success
+    const resolver = yield* BundleResolver
+    yield* resolver.loadBridge(validated.success)
     return validated.success
   })
 }
 
+/** Resolve the config path, reporting an unusable explicit path or a missing default. */
 export function resolveConfigPath(
   requested: Option.Option<string>,
-  runtime: CommandRuntime,
-): Option.Option<string> {
-  if (Option.isSome(requested)) {
-    const configPath = resolve(runtime.cwd, requested.value)
-    const valid = validateConfigPath(configPath)
-    if (Result.isFailure(valid)) {
-      report(runtime.stderr, valid.failure)
-      return Option.none()
+): Effect.Effect<Option.Option<string>, never, EnvironmentShape | OutputShape> {
+  return Effect.gen(function* () {
+    const output = yield* Output
+    if (Option.isSome(requested)) {
+      const { cwd } = yield* Environment
+      const configPath = resolve(cwd, requested.value)
+      const valid = validateConfigPath(configPath)
+      if (Result.isFailure(valid)) {
+        for (const line of describeError(valid.failure)) output.stderr(`eedsh: ${line}`)
+        return Option.none()
+      }
+      return Option.some(configPath)
     }
-    return Option.some(configPath)
-  }
 
-  const configPath = defaultConfigPath(runtime.env)
-  if (existsSync(configPath)) return Option.some(configPath)
+    const { env } = yield* Environment
+    const configPath = defaultConfigPath(env)
+    if (existsSync(configPath)) return Option.some(configPath)
 
-  runtime.stderr(
-    `eedsh: cannot find a config at ${configPath}; run "eedsh init" to create one, or pass --config <path>`,
-  )
-  return Option.none()
+    output.stderr(
+      `eedsh: cannot find a config at ${configPath}; run "eedsh init" to create one, or pass --config <path>`,
+    )
+    return Option.none()
+  })
 }
 
 export function loadConfigValue(
   configPath: string,
-  runtime: CommandRuntime,
-): Effect.Effect<LoadedConfig, ConfigLoadFailure> {
-  return (runtime.options.loadConfig ?? loadConfig)(configPath)
+): Effect.Effect<LoadedConfig, ConfigLoadFailure, ConfigLoaderShape> {
+  return Effect.flatMap(ConfigLoader, (loader) => loader.load(configPath))
 }
 
-export function selectionFailure(runtime: CommandRuntime, error: ProfileSelectionError): number {
-  for (const line of describeError(error)) runtime.stderr(`eedsh: ${line}`)
-  return EXIT_USAGE
+/** Report a profile-selection failure and return the usage exit code. */
+export function selectionFailure(
+  error: ProfileSelectionError,
+): Effect.Effect<number, never, OutputShape> {
+  return Effect.map(Output, (output) => {
+    for (const line of describeError(error)) output.stderr(`eedsh: ${line}`)
+    return EXIT_USAGE
+  })
 }
 
 /** Report one profile-labelled failure without stopping the run. */

@@ -10,13 +10,12 @@ import { Effect, Option, Schema } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
+import type { DshInstallationInfo } from '../dsh'
 import { type MaterializeError, OwnershipRecordInvalid } from '../internal/effect/errors'
-import {
-  DshInstallation,
-  type DshInstallationShape,
-  type PackageManagerShape,
-  type PreflightShape,
-  type SyncLockShape,
+import type {
+  PackageManagerShape,
+  PreflightShape,
+  SyncLockShape,
 } from '../internal/effect/services'
 import { withSyncLock } from '../internal/lock'
 import type { Diagnostic } from './diagnostics'
@@ -55,6 +54,8 @@ export interface MaterializeOptions {
   profileDir: string
   /** eedsh version recorded in the generation. */
   eedshVersion: string
+  /** The DSH installation selected for this invocation. */
+  dsh: DshInstallationInfo
   /** Dependency specification for `@eedsh/runtime`. */
   runtimeSpec: string
   /** Dependency specification for `@eedsh/generated`. */
@@ -237,17 +238,12 @@ export function materialize(
 ): Effect.Effect<
   MaterializeResult,
   MaterializeError,
-  | FileSystem.FileSystem
-  | PackageManagerShape
-  | DshInstallationShape
-  | PreflightShape
-  | SyncLockShape
+  FileSystem.FileSystem | PackageManagerShape | PreflightShape | SyncLockShape
 > {
   return withSyncLock(
     join(options.profileDir, LOCK_RELATIVE_PATH),
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const dsh = yield* DshInstallation
 
       const manifestPath = join(options.profileDir, 'package.json')
       const generatedManifestPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
@@ -270,7 +266,7 @@ export function materialize(
         managedBundles: reconciled.managedBundles,
         packages: reconciled.managedPackages,
         eedshVersion: options.eedshVersion,
-        dshVersion: dsh.version,
+        dshVersion: options.dsh.version,
       })
 
       const unchanged =
@@ -312,6 +308,7 @@ export function materialize(
         previousManifest: existingManifest,
         strict: options.strict,
         explain: options.explain,
+        installAnchor: options.dsh.installAnchor,
         notices: reconciled.notices,
         ...(options.provenance === undefined ? {} : { provenance: options.provenance }),
         ...(options.configDir === undefined ? {} : { configDir: options.configDir }),

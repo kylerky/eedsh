@@ -3,14 +3,16 @@ import type { ConfigProvenance } from '@eedsh/config'
 import type { ProfilePlan } from '@eedsh/plan'
 import { Cause, Effect, Exit, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
+import type { DshInstallationInfo } from '../../src/dsh'
 import {
-  DshInstallation,
+  BundleResolver,
   PackageManager,
   Preflight,
   SyncLock,
 } from '../../src/internal/effect/services'
 import { type MaterializeOptions, materialize } from '../../src/materialize/program'
-import { fakeDsh, fakePackageManager, fakePreflight, fakeSyncLock, memoryFileSystem } from './fakes'
+import { fakeBundleResolver } from './cli'
+import { fakePackageManager, fakePreflight, fakeSyncLock, memoryFileSystem } from './fakes'
 import { planOf } from './plan'
 import { bundle, generated, insert, layer } from './plan-parts'
 
@@ -90,15 +92,23 @@ export function harness(options: HarnessOptions = {}) {
   const packages = fakePackageManager({
     ...(options.installFail === undefined ? {} : { fail: options.installFail }),
   })
-  const dsh = fakeDsh()
+  const resolver = fakeBundleResolver()
   const preflight = fakePreflight({
     ...(options.preflightFail === undefined ? {} : { fail: options.preflightFail }),
   })
   const lock = fakeSyncLock()
+  let dshVersion = '0.2.1-rc.2'
+  const dsh: DshInstallationInfo = {
+    get version() {
+      return dshVersion
+    },
+    installAnchor: '/dsh/package.json',
+    binPath: '/dsh/lib/bin.js',
+  }
   const layer = Layer.mergeAll(
     Layer.succeed(FileSystem.FileSystem, fs.fs),
     Layer.succeed(PackageManager, packages.shape),
-    Layer.succeed(DshInstallation, dsh.shape),
+    Layer.succeed(BundleResolver, resolver),
     Layer.succeed(Preflight, preflight.shape),
     Layer.succeed(SyncLock, lock.shape),
   )
@@ -107,6 +117,7 @@ export function harness(options: HarnessOptions = {}) {
       plan: options.plan ?? basePlan(),
       profileDir: PROFILE_DIR,
       eedshVersion: '0.0.0',
+      dsh,
       runtimeSpec: RUNTIME_SPEC,
       generatedSpec: GENERATED_SPEC,
       strict: false,
@@ -119,7 +130,14 @@ export function harness(options: HarnessOptions = {}) {
   return {
     fs,
     packages,
-    dsh,
+    resolver,
+    dsh: {
+      info: dsh,
+      /** Publish the next generation against another DSH version. */
+      setVersion: (next: string) => {
+        dshVersion = next
+      },
+    },
     preflight,
     lock,
     optionsFor,

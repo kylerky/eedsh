@@ -8,9 +8,9 @@ import type { ProfilePlan } from '@eedsh/plan'
 import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { defaultServices } from '../../src/command/context'
 import { type DiscoveredDshInstallation, discoverDshInstallation } from '../../src/dsh'
 import { loadDshBridge } from '../../src/dsh-bridge'
+import { liveCliServicesLayer } from '../../src/internal/effect/layer'
 import { materialize } from '../../src/materialize/program'
 import { delay, waitFor } from '../support/async'
 import {
@@ -98,11 +98,12 @@ describe('slow Web HMR integration', () => {
           plan,
           profileDir,
           eedshVersion: '0.0.0',
+          dsh: installation,
           runtimeSpec,
           generatedSpec: 'link:./.eedsh/generated',
           strict: false,
           explain: false,
-        }).pipe(Effect.provide(defaultServices(installation))),
+        }).pipe(Effect.provide(liveCliServicesLayer)),
       )
 
     const first = await publish(webPlan(profileName, []))
