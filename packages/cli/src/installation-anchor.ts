@@ -27,14 +27,18 @@ import {
   type InstallationAnchorManager,
   installationAnchorPath,
 } from '@eedsh/runtime/installation-anchor'
-import { Schema } from 'effect'
+import { Option, Schema } from 'effect'
 import * as Result from 'effect/Result'
 import type * as SchemaIssue from 'effect/SchemaIssue'
 import { SUPPORTED_DSH_RANGE, supportsDshVersion } from './dsh-policy'
 import { resolveDshHome } from './internal/dsh-home'
 import { DshFailure } from './internal/effect/errors'
 import { messageOf } from './internal/error-message'
-import { readRecord } from './internal/schema-readers'
+import {
+  readNonEmptyString,
+  readOptionalString,
+  readRecord,
+} from './internal/schema-readers'
 
 /** The DSH package name the anchor must name. */
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'
@@ -81,13 +85,6 @@ export interface InstallationAnchorStore {
     env: Record<string, string | undefined>,
     anchor: InstallationAnchor,
   ): InstallationAnchorWrite
-}
-
-interface Manifest {
-  readonly name?: unknown
-  readonly version?: unknown
-  readonly bin?: unknown
-  readonly main?: unknown
 }
 
 /** Build one tagged discovery failure. */
@@ -288,26 +285,41 @@ export function readInstallationAnchorSnapshot(
   return decoded.ok ? { path, record: decoded.anchor } : { path, problem: decoded.reason }
 }
 
-/** Read one package manifest, or undefined when it cannot be parsed. */
-export function readPackageManifest(anchor: string): Manifest | undefined {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(anchor, 'utf8'))
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    return parsed as Manifest
-  } catch {
-    return undefined
-  }
+/** A DSH package manifest is a foreign JSON object; its fields are read as leaves. */
+const manifestSchema = Schema.Record(Schema.String, Schema.Unknown)
+
+/** The two `bin` shapes a DSH package may declare. */
+const launcherBinSchema = Schema.Union([Schema.String, Schema.Struct({ dsh: Schema.String })])
+
+/**
+ * Read one package manifest as a foreign JSON object, or undefined when it
+ * cannot be parsed or is not a JSON object.
+ * @param anchor - absolute package.json path.
+ * @returns the manifest record, or undefined.
+ */
+export function readPackageManifest(anchor: string): Record<string, unknown> | undefined {
+  const parsed = Result.try({
+    try: () => JSON.parse(readFileSync(anchor, 'utf8')) as unknown,
+    catch: () => undefined,
+  })
+  if (Result.isFailure(parsed)) return undefined
+  const decoded = Schema.decodeUnknownOption(manifestSchema)(parsed.success)
+  return Option.isSome(decoded) ? decoded.value : undefined
 }
 
-function resolveLauncherEntry(manifest: Manifest, packageDir: string): string | undefined {
-  const bin = manifest.bin
+function resolveLauncherEntry(
+  manifest: Record<string, unknown>,
+  packageDir: string,
+): string | undefined {
+  const bin = Schema.decodeUnknownOption(launcherBinSchema)(manifest.bin)
   let relative: string | undefined
-  if (typeof bin === 'string') relative = bin
-  else if (bin !== null && typeof bin === 'object' && !Array.isArray(bin)) {
-    const dsh = (bin as Record<string, unknown>).dsh
-    if (typeof dsh === 'string') relative = dsh
+  if (Option.isSome(bin)) {
+    relative = typeof bin.value === 'string' ? bin.value : bin.value.dsh
   }
-  if (relative === undefined && typeof manifest.main === 'string') relative = manifest.main
+  if (relative === undefined) {
+    const main = readOptionalString(manifest.main)
+    if (Option.isSome(main)) relative = main.value
+  }
   const candidate =
     relative === undefined ? join(packageDir, DSH_LAUNCHER) : resolve(packageDir, relative)
   return existsSync(candidate) ? candidate : undefined
@@ -341,7 +353,8 @@ export function installationFromManifestAnchor(
       }),
     )
   }
-  if (manifest.name !== DSH_PACKAGE_NAME) {
+  const name = readOptionalString(manifest.name)
+  if (Option.isNone(name) || name.value !== DSH_PACKAGE_NAME) {
     return Result.fail(
       dshFailure({
         code: 'dsh.anchor_invalid',
@@ -350,7 +363,8 @@ export function installationFromManifestAnchor(
       }),
     )
   }
-  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+  const version = readNonEmptyString(manifest.version)
+  if (Option.isNone(version)) {
     return Result.fail(
       dshFailure({
         code: 'dsh.anchor_invalid',
@@ -359,14 +373,14 @@ export function installationFromManifestAnchor(
       }),
     )
   }
-  if (options.requireSupported === true && !supportsDshVersion(manifest.version)) {
+  if (options.requireSupported === true && !supportsDshVersion(version.value)) {
     return Result.fail(
       dshFailure({
         code: 'dsh.unsupported_version',
         path: pathShown,
-        version: manifest.version,
+        version: version.value,
         range: SUPPORTED_DSH_RANGE,
-        message: `DSH ${manifest.version} is outside eedsh's supported range ${SUPPORTED_DSH_RANGE}`,
+        message: `DSH ${version.value} is outside eedsh's supported range ${SUPPORTED_DSH_RANGE}`,
       }),
     )
   }
@@ -381,7 +395,7 @@ export function installationFromManifestAnchor(
       }),
     )
   }
-  return Result.succeed({ version: manifest.version, installAnchor: physical, packageDir, binPath })
+  return Result.succeed({ version: version.value, installAnchor: physical, packageDir, binPath })
 }
 
 /**

@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
 import {
@@ -8,6 +8,7 @@ import {
   decodeInstallationAnchor,
   type InstallationAnchorStore,
   installationAnchorPathForEnv,
+  installationFromManifestAnchor,
   installationFromSelection,
   readInstallationAnchorSnapshot,
   validateRecordedInstallation,
@@ -361,6 +362,75 @@ describe('CLI explicit installation selection', () => {
       installationFromSelection(installation.dir, home, { requireSupported: true }),
     )
     expect(failure.code).toBe('dsh.unsupported_version')
+  })
+})
+
+describe('CLI package manifest launcher resolution', () => {
+  const identity = { name: '@deepseek-ai/dsh', version: '0.2.1-rc.2' }
+
+  async function writeManifest(
+    prefix: string,
+    manifest: Record<string, unknown>,
+    files: readonly string[] = [],
+  ): Promise<Fixture> {
+    const home = await tempDir(prefix)
+    const dir = join(home, 'dsh')
+    const anchor = join(dir, 'package.json')
+    await mkdir(dir, { recursive: true })
+    writeFileSync(anchor, JSON.stringify({ ...identity, ...manifest }, null, 2))
+    for (const file of files) {
+      const path = join(dir, file)
+      await mkdir(dirname(path), { recursive: true })
+      writeFileSync(path, '#!/usr/bin/env node\n')
+    }
+    return { dir, anchor }
+  }
+
+  function launcherOf(anchor: string): string {
+    const validated = installationFromManifestAnchor(anchor, anchor)
+    if (Result.isFailure(validated)) throw validated.failure
+    return validated.success.binPath
+  }
+
+  it('uses a string bin entry', async () => {
+    const fixture = await writeManifest('manifest-string-bin-', { bin: './custom/bin.js' }, [
+      join('custom', 'bin.js'),
+    ])
+    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
+  })
+
+  it('uses the dsh entry of an object bin', async () => {
+    const fixture = await writeManifest('manifest-object-bin-', { bin: { dsh: './custom/bin.js' } }, [
+      join('custom', 'bin.js'),
+    ])
+    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'custom', 'bin.js'))
+  })
+
+  it('falls back to main for a malformed bin', async () => {
+    const fixture = await writeManifest('manifest-main-', { bin: { dsh: 5 }, main: './main.js' }, [
+      'main.js',
+    ])
+    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'main.js'))
+  })
+
+  it('falls back to lib/bin.js for a malformed main', async () => {
+    const fixture = await writeManifest('manifest-lib-bin-', { main: 7 }, [
+      join('lib', 'bin.js'),
+    ])
+    expect(launcherOf(fixture.anchor)).toBe(join(fixture.dir, 'lib', 'bin.js'))
+  })
+
+  it('reports invalid JSON and a non-object document as an unreadable manifest', async () => {
+    for (const content of ['{ nope', '[]', '"text"', 'null']) {
+      const home = await tempDir('manifest-raw-')
+      const dir = join(home, 'dsh')
+      await mkdir(dir, { recursive: true })
+      const anchor = join(dir, 'package.json')
+      writeFileSync(anchor, content)
+      const failure = failureOf(installationFromManifestAnchor(anchor, anchor))
+      expect(failure.code, content).toBe('dsh.anchor_invalid')
+      expect(failure.message, content).toContain('cannot read a DSH manifest')
+    }
   })
 })
 

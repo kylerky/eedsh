@@ -78,6 +78,15 @@ export function readOptionalString(value: unknown): Option.Option<string> {
 }
 
 /**
+ * Read a string that may be absent but must not be empty.
+ * @param value - the value to read.
+ * @returns the string, or None when it is missing, empty, or not a string.
+ */
+export function readNonEmptyString(value: unknown): Option.Option<string> {
+  return decodeOption(Schema.NonEmptyString, value)
+}
+
+/**
  * Read a package version that may be absent.
  * @param value - the value to read.
  * @returns the version, or None when it is missing or not a string.

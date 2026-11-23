@@ -2,6 +2,7 @@ import { Option } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   readLockfileEntry,
+  readNonEmptyString,
   readOptionalString,
   readRecord,
   readStringArray,
@@ -115,6 +116,27 @@ describe('readOptionalString', () => {
   })
 })
 
+describe('readNonEmptyString', () => {
+  it('returns a non-empty string', () => {
+    expect(readNonEmptyString('1.2.3')).toEqual(Option.some('1.2.3'))
+  })
+
+  it('returns none for an empty string', () => {
+    expect(readNonEmptyString('')).toEqual(Option.none())
+  })
+
+  it.each([
+    ['undefined (missing)', undefined],
+    ['null', null],
+    ['a number', 42],
+    ['a boolean', false],
+    ['an array', ['a']],
+    ['an object', { value: 'a' }],
+  ])('returns none for %s', (_label, value) => {
+    expect(readNonEmptyString(value)).toEqual(Option.none())
+  })
+})
+
 describe('readVersion', () => {
   it('returns a present version, including an empty one', () => {
     expect(readVersion('1.2.3')).toEqual(Option.some('1.2.3'))
@@ -201,6 +223,7 @@ describe('tolerant reader boundaries', () => {
       expect(() => readStringRecord(value)).not.toThrow()
       expect(() => readRecord(value)).not.toThrow()
       expect(() => readOptionalString(value)).not.toThrow()
+      expect(() => readNonEmptyString(value)).not.toThrow()
       expect(() => readVersion(value)).not.toThrow()
       expect(() => readLockfileEntry(value)).not.toThrow()
     }

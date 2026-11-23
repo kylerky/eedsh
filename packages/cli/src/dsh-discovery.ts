@@ -12,6 +12,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { delimiter, dirname, join } from 'node:path'
 import type { InstallationAnchor } from '@eedsh/runtime/installation-anchor'
+import { Option } from 'effect'
 import * as Result from 'effect/Result'
 import { defaultCommandRunner, probeLauncherVersion } from './command-runner'
 import type { DshInstallationInfo } from './dsh'
@@ -28,6 +29,7 @@ import {
   validateRecordedInstallation,
 } from './installation-anchor'
 import type { DshFailure } from './internal/effect/errors'
+import { readOptionalString } from './internal/schema-readers'
 
 /** How the selected installation was discovered. */
 export type DshSource = 'explicit' | 'anchor' | 'path' | 'recorded' | 'bootstrapped' | 'project'
@@ -96,7 +98,10 @@ function packageAnchorForLauncher(launcher: string): string | undefined {
     const anchor = join(current, 'package.json')
     if (existsSync(anchor)) {
       const manifest = readPackageManifest(anchor)
-      if (manifest?.name === DSH_PACKAGE_NAME) return anchor
+      if (manifest !== undefined) {
+        const name = readOptionalString(manifest.name)
+        if (Option.isSome(name) && name.value === DSH_PACKAGE_NAME) return anchor
+      }
     }
     const parent = dirname(current)
     if (parent === current) return undefined
