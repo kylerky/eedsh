@@ -113,7 +113,7 @@ export function hasManagedBundles(manifest: Option.Option<ProfileManifest>): boo
 }
 
 /** Sections reconciliation may rewrite in place. */
-export interface CleanedDependencySections {
+interface CleanedDependencySections {
   devDependencies: Option.Option<Record<string, unknown>>
   optionalDependencies: Option.Option<Record<string, unknown>>
 }

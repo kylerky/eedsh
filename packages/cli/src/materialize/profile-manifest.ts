@@ -132,7 +132,11 @@ function tolerant<A>(schema: Schema.Codec<A>, fallback: A): Schema.Codec<A> {
 /** `dsh.profile`, with the bundle list kept raw for its own classification. */
 const profileSectionSchema = Schema.Struct({ bundles: Schema.optionalKey(Schema.Unknown) })
 
-/** `dsh`, tolerant of a missing or non-object section. */
+/**
+ * `dsh`, tolerant of a missing or non-object section. Only the fields the
+ * view interprets are decoded; every other field survives in the parsed
+ * document, which is the rewrite base.
+ */
 const dshSectionSchema = tolerant(
   Schema.Struct({ profile: Schema.optionalKey(profileSectionSchema) }),
   {},

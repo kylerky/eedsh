@@ -6,7 +6,6 @@ import {
   readOptionalString,
   readRecord,
   readStringArray,
-  readStringRecord,
   readVersion,
 } from '../../src/internal/schema-readers'
 
@@ -34,41 +33,6 @@ describe('readStringArray', () => {
     const input = ['a', 'b']
     const result = readStringArray(input)
     expect(result).toEqual(['a', 'b'])
-    expect(result).not.toBe(input)
-  })
-})
-
-describe('readStringRecord', () => {
-  it.each([
-    ['undefined', undefined],
-    ['null', null],
-    ['a string', 'not-a-record'],
-    ['an array', ['a']],
-    ['a number', 7],
-  ])('falls back to an empty record for %s', (_label, value) => {
-    expect(readStringRecord(value)).toEqual({})
-  })
-
-  it('keeps string values and drops invalid siblings', () => {
-    expect(readStringRecord({ good: '1.0.0', bad: 1, nil: null, empty: '', other: {} })).toEqual({
-      good: '1.0.0',
-      empty: '',
-    })
-  })
-
-  it('accepts an empty record', () => {
-    expect(readStringRecord({})).toEqual({})
-  })
-
-  it('keeps a missing key absent and drops a wrong value', () => {
-    expect(readStringRecord({ good: '1.0.0' })).toEqual({ good: '1.0.0' })
-    expect(readStringRecord({ good: 1 })).toEqual({})
-  })
-
-  it('returns a new record without mutating the input', () => {
-    const input = { a: '1.0.0' }
-    const result = readStringRecord(input)
-    expect(result).toEqual({ a: '1.0.0' })
     expect(result).not.toBe(input)
   })
 })
@@ -220,7 +184,6 @@ describe('tolerant reader boundaries', () => {
   it('never throws for malformed values', () => {
     for (const value of hostileValues) {
       expect(() => readStringArray(value)).not.toThrow()
-      expect(() => readStringRecord(value)).not.toThrow()
       expect(() => readRecord(value)).not.toThrow()
       expect(() => readOptionalString(value)).not.toThrow()
       expect(() => readNonEmptyString(value)).not.toThrow()

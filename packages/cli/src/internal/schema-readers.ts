@@ -1,7 +1,9 @@
 /**
- * Schema-backed readers for foreign JSON. Tolerant readers keep the valid
- * siblings of a malformed array or record and fall back only at the boundary
- * they name; strict callers decode directly instead of using these helpers.
+ * Schema-backed readers for foreign JSON. Tolerant readers fall back only at
+ * the boundary they name, and `readStringArray` keeps the valid entries of a
+ * malformed array; strict callers decode directly instead of using these
+ * helpers. A document whose policy is its own (the generation record, the
+ * profile manifest) has a dedicated classified reader instead.
  * @module @eedsh/cli/internal/schema-readers
  */
 import { Effect, Option, Schema } from 'effect'
@@ -24,7 +26,6 @@ function tolerant<A>(schema: Schema.Codec<A>, fallback: A): Schema.Codec<A> {
 const lenientString = tolerant(Schema.UndefinedOr(Schema.String), undefined)
 
 const stringArraySchema = tolerant(Schema.Array(lenientString), [])
-const stringRecordSchema = tolerant(Schema.Record(Schema.String, lenientString), {})
 const recordSchema = tolerant(Schema.Record(Schema.String, Schema.Unknown), {})
 
 function decodeOption<A>(schema: Schema.Codec<A>, value: unknown): Option.Option<A> {
@@ -40,21 +41,6 @@ export function readStringArray(value: unknown): string[] {
   const decoded = decodeOption(stringArraySchema, value)
   if (Option.isNone(decoded)) return []
   return decoded.value.filter((item): item is string => item !== undefined)
-}
-
-/**
- * Read a string record, dropping every non-string value.
- * @param value - the value to read.
- * @returns the string entries, or an empty record when the value is not an object.
- */
-export function readStringRecord(value: unknown): Record<string, string> {
-  const decoded = decodeOption(stringRecordSchema, value)
-  if (Option.isNone(decoded)) return {}
-  const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(decoded.value)) {
-    if (item !== undefined) out[key] = item
-  }
-  return out
 }
 
 /**
