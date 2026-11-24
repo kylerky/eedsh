@@ -77,6 +77,26 @@ export interface ProfileManifest {
   readonly conflicts: ManifestConflicts
 }
 
+/** The readable package specifications of each install-relevant section. */
+export interface ProfileDependencySections {
+  readonly dependencies: Readonly<Record<string, string>>
+  readonly devDependencies: Readonly<Record<string, string>>
+  readonly optionalDependencies: Readonly<Record<string, string>>
+}
+
+/**
+ * The readable package specifications of a manifest's dependency sections.
+ * @param manifest - the typed manifest view.
+ * @returns the specifications by section, in section order.
+ */
+export function dependencySections(manifest: ProfileManifest): ProfileDependencySections {
+  return {
+    dependencies: manifest.dependencies.specs,
+    devDependencies: manifest.devDependencies.specs,
+    optionalDependencies: manifest.optionalDependencies.specs,
+  }
+}
+
 /** The classification of `<profile>/package.json`. */
 export type ProfileManifestRead =
   | { readonly _tag: 'missing' }

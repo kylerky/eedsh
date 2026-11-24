@@ -3,7 +3,10 @@ import { Effect } from 'effect'
 import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import { describe, expect, it } from 'vitest'
-import { classifyProfileManifest, readProfileManifest } from '../../src/materialize/profile-manifest'
+import {
+  classifyProfileManifest,
+  readProfileManifest,
+} from '../../src/materialize/profile-manifest'
 import { memoryFileSystem } from '../support/fakes'
 
 const PROFILE_DIR = '/home/profiles/work'
@@ -62,9 +65,7 @@ describe('profile manifest classification', () => {
           }),
         ),
     }
-    const error = await Effect.runPromise(
-      Effect.result(readProfileManifest(MANIFEST_PATH, broken)),
-    )
+    const error = await Effect.runPromise(Effect.result(readProfileManifest(MANIFEST_PATH, broken)))
     expect(Result.isFailure(error)).toBe(true)
     if (Result.isFailure(error)) {
       expect(PlatformError.isPlatformError(error.failure)).toBe(true)
@@ -227,13 +228,7 @@ describe('profile manifest preservation', () => {
     }
     const view = manifestOf(document)
     expect(view.document).toEqual(document)
-    expect(Object.keys(view.document)).toEqual([
-      'zeta',
-      'scripts',
-      'dsh',
-      'alpha',
-      'dependencies',
-    ])
+    expect(Object.keys(view.document)).toEqual(['zeta', 'scripts', 'dsh', 'alpha', 'dependencies'])
     expect(Object.keys(view.dependencies.entries)).toEqual(['zebra', 'alpha'])
     expect(view.bundles.names).toEqual([BUNDLE])
   })

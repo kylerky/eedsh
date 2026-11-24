@@ -83,6 +83,22 @@ export class OwnershipRecordInvalid extends Data.TaggedError('OwnershipRecordInv
   readonly adoptable: boolean
 }> {}
 
+/**
+ * The profile manifest exists but cannot be interpreted. Materialization
+ * fails closed without writing, so a malformed document is reported rather
+ * than replaced as if the profile were new.
+ */
+export class ProfileManifestInvalid extends Data.TaggedError('ProfileManifestInvalid')<{
+  /** Absolute path of the profile manifest. */
+  readonly path: string
+  /** Stable reason code: `unparseable` or `not-an-object`. */
+  readonly reason: string
+  /** Short phrase naming the parse or shape failure, usable after "is". */
+  readonly detail: string
+  /** How the user can proceed. */
+  readonly recovery: string
+}> {}
+
 /** Provisioning a declared source failed. */
 export class ProvisionFailure extends Data.TaggedError('ProvisionFailure')<{
   readonly code:
@@ -111,4 +127,5 @@ export type MaterializeError =
   | SyncLocked
   | DshResolveFailure
   | OwnershipRecordInvalid
+  | ProfileManifestInvalid
   | ProvisionFailure

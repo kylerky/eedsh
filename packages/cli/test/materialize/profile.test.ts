@@ -2,13 +2,12 @@ import { join } from 'node:path'
 import { canonicalJson, type PlanBundle, type ProfilePlan } from '@eedsh/plan'
 import { Effect, Option } from 'effect'
 import { describe, expect, it } from 'vitest'
-import {
-  managedBundleOrder,
-  readProfileBundles,
-  readProfileDependencies,
-  reconcileManifest,
-} from '../../src/materialize/manifest'
+import { managedBundleOrder, reconcileManifest } from '../../src/materialize/manifest'
 import { ensureProfileFiles } from '../../src/materialize/profile'
+import {
+  classifyProfileManifest,
+  type ProfileManifest,
+} from '../../src/materialize/profile-manifest'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
 import { bundle, generated } from '../support/plan-parts'
@@ -31,7 +30,7 @@ function reconcile(
   return reconcileManifest({
     profileName: 'work',
     plan: value,
-    manifest: Option.fromUndefinedOr(options.manifest),
+    manifest: Option.map(Option.fromUndefinedOr(options.manifest), viewOf),
     previous: Option.fromUndefinedOr(options.previous),
     runtimeSpec,
     generatedSpec,
@@ -40,6 +39,14 @@ function reconcile(
 }
 
 const BUNDLE = '@deepseek-ai/dsh-base'
+const MANIFEST_PATH = '/profile/package.json'
+
+/** Classify a raw document as the typed view reconciliation now consumes. */
+function viewOf(document: Record<string, unknown>): ProfileManifest {
+  const value = classifyProfileManifest(document, MANIFEST_PATH)
+  if (value._tag !== 'valid') throw new Error('expected a valid manifest view')
+  return value
+}
 
 describe('managed bundle order', () => {
   it('places the runtime bundle immediately before the generated bundle', () => {
@@ -70,63 +77,57 @@ describe('managed bundle order', () => {
   })
 })
 
-describe('tolerant profile readers', () => {
+describe('profile manifest classification', () => {
   it('reads no bundles when the dsh or profile section is missing or malformed', () => {
-    expect(readProfileBundles(Option.none())).toEqual([])
-    expect(readProfileBundles(Option.some({}))).toEqual([])
-    expect(readProfileBundles(Option.some({ dsh: null }))).toEqual([])
-    expect(readProfileBundles(Option.some({ dsh: { profile: 'not-a-record' } }))).toEqual([])
-    expect(
-      readProfileBundles(Option.some({ dsh: { profile: { bundles: 'not-an-array' } } })),
-    ).toEqual([])
+    expect(viewOf({}).bundles.state).toBe('absent')
+    expect(viewOf({ dsh: null }).bundles.state).toBe('absent')
+    expect(viewOf({ dsh: { profile: 'not-a-record' } }).bundles.state).toBe('absent')
+    expect(viewOf({ dsh: { profile: { bundles: 'not-an-array' } } }).bundles.state).toBe(
+      'malformed',
+    )
   })
 
-  it('keeps string bundles and drops invalid siblings', () => {
-    expect(
-      readProfileBundles(
-        Option.some({
-          dsh: { profile: { bundles: [BUNDLE, 1, null, '@edsh/adapted-ptc', ''] } },
-        }),
-      ),
-    ).toEqual([BUNDLE, '@edsh/adapted-ptc', ''])
+  it('keeps string bundles and names the invalid siblings', () => {
+    const view = viewOf({
+      dsh: { profile: { bundles: [BUNDLE, 1, null, '@edsh/adapted-ptc', ''] } },
+    })
+    expect(view.bundles.names).toEqual([BUNDLE, '@edsh/adapted-ptc', ''])
+    expect(view.bundles.unreadable).toEqual([1, 2])
+    expect(view.bundles.state).toBe('partially-readable')
   })
 
   it('reads empty dependency sections from a missing or malformed manifest', () => {
-    const empty = { dependencies: {}, devDependencies: {}, optionalDependencies: {} }
-    expect(readProfileDependencies(Option.none())).toEqual(empty)
-    expect(
-      readProfileDependencies(
-        Option.some({
-          dependencies: null,
-          devDependencies: ['not-a-record'],
-          optionalDependencies: 'not-a-record',
-        }),
-      ),
-    ).toEqual(empty)
+    const empty = { state: 'absent', specs: {}, entries: {}, unreadable: [] }
+    expect(viewOf({}).dependencies).toEqual(empty)
+    expect(viewOf({}).devDependencies).toEqual(empty)
+    expect(viewOf({}).optionalDependencies).toEqual(empty)
+    expect(viewOf({ dependencies: null }).dependencies.state).toBe('malformed')
+    expect(viewOf({ devDependencies: ['not-a-record'] }).devDependencies.state).toBe('malformed')
+    expect(viewOf({ optionalDependencies: 'not-a-record' }).optionalDependencies.state).toBe(
+      'malformed',
+    )
   })
 
-  it('keeps string dependencies and drops invalid siblings', () => {
-    expect(
-      readProfileDependencies(
-        Option.some({
-          dependencies: { good: '1.0.0', bad: 1, nil: null, empty: '', nested: {} },
-          devDependencies: { tool: '^2.0.0', flag: false },
-          optionalDependencies: { optional: '3.0.0', list: [] },
-        }),
-      ),
-    ).toEqual({
-      dependencies: { good: '1.0.0', empty: '' },
-      devDependencies: { tool: '^2.0.0' },
-      optionalDependencies: { optional: '3.0.0' },
+  it('keeps string dependencies and names the invalid siblings', () => {
+    const view = viewOf({
+      dependencies: { good: '1.0.0', bad: 1, nil: null, empty: '', nested: {} },
+      devDependencies: { tool: '^2.0.0', flag: false },
+      optionalDependencies: { optional: '3.0.0', list: [] },
     })
+    expect(view.dependencies.specs).toEqual({ good: '1.0.0', empty: '' })
+    expect(view.dependencies.unreadable).toEqual(['bad', 'nil', 'nested'])
+    expect(view.dependencies.state).toBe('partially-readable')
+    expect(view.devDependencies.specs).toEqual({ tool: '^2.0.0' })
+    expect(view.optionalDependencies.specs).toEqual({ optional: '3.0.0' })
   })
 
   it('treats empty records as empty sections', () => {
-    expect(readProfileBundles(Option.some({ dsh: { profile: { bundles: [] } } }))).toEqual([])
-    expect(readProfileDependencies(Option.some({ dependencies: {} }))).toEqual({
-      dependencies: {},
-      devDependencies: {},
-      optionalDependencies: {},
+    expect(viewOf({ dsh: { profile: { bundles: [] } } }).bundles.state).toBe('valid')
+    expect(viewOf({ dependencies: {} }).dependencies).toEqual({
+      state: 'valid',
+      specs: {},
+      entries: {},
+      unreadable: [],
     })
   })
 
@@ -155,7 +156,69 @@ describe('tolerant profile readers', () => {
     expect(empty.notices).toEqual([])
   })
 })
+describe('dependency entry policy', () => {
+  const packages = { '@scope/plugin': '1.2.3' }
 
+  it('preserves and reports an unreadable non-managed dependency entry', () => {
+    const result = reconcile(plan([bundle(BUNDLE)], packages), {
+      manifest: {
+        dependencies: { '@scope/plugin': '^1.0.0', '@scope/weird': 1, nested: { deep: true } },
+      },
+    })
+    expect(result.manifest.dependencies).toEqual({
+      '@scope/weird': 1,
+      nested: { deep: true },
+      '@eedsh/generated': generatedSpec,
+      '@eedsh/runtime': runtimeSpec,
+      '@scope/plugin': '1.2.3',
+    })
+    expect(result.notices).toEqual([
+      {
+        severity: 'warning',
+        message:
+          'cannot reconcile @scope/weird in dependencies: its value is not a package specification string; left unchanged',
+      },
+      {
+        severity: 'warning',
+        message:
+          'cannot reconcile nested in dependencies: its value is not a package specification string; left unchanged',
+      },
+    ])
+  })
+
+  it('rebuilds a non-object dependencies section and reports the loss', () => {
+    const result = reconcile(plan([bundle(BUNDLE)], packages), {
+      manifest: { dependencies: ['@scope/lost'] },
+    })
+    expect(result.manifest.dependencies).toEqual({
+      '@eedsh/generated': generatedSpec,
+      '@eedsh/runtime': runtimeSpec,
+      '@scope/plugin': '1.2.3',
+    })
+    expect(result.notices).toEqual([
+      {
+        severity: 'warning',
+        message:
+          'dependencies is not a record of package specifications; rebuilt from the managed specifications, so its previous contents could not be preserved',
+      },
+    ])
+  })
+
+  it('removes a managed name from a partially readable devDependencies and keeps the unreadable entry', () => {
+    const result = reconcile(plan([bundle(BUNDLE)], packages), {
+      manifest: { devDependencies: { '@scope/plugin': '^1.0.0', '@scope/tool': 1 } },
+    })
+    expect(result.manifest.devDependencies).toEqual({ '@scope/tool': 1 })
+    expect(result.notices).toEqual([
+      { severity: 'notice', message: 'removed @scope/plugin from devDependencies' },
+      {
+        severity: 'warning',
+        message:
+          'cannot reconcile @scope/tool in devDependencies: its value is not a package specification string; left unchanged',
+      },
+    ])
+  })
+})
 describe('manifest reconciliation', () => {
   it('creates a new profile manifest with managed bundles and dependencies', () => {
     const result = reconcile(plan([bundle(BUNDLE)], { '@scope/plugin': '1.2.3' }))

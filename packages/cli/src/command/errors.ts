@@ -23,6 +23,7 @@ import type {
   OwnershipRecordInvalid,
   PackageInstallFailure,
   PreflightFailure,
+  ProfileManifestInvalid,
   ProvisionFailure,
   SpawnFailure,
   SyncLocked,
@@ -55,6 +56,7 @@ export type EedshError =
   | DshFailure
   | DshResolveFailure
   | OwnershipRecordInvalid
+  | ProfileManifestInvalid
   | ProvisionFailure
   | UnknownProfile
   | AmbiguousProfile
@@ -76,6 +78,7 @@ const ERROR_TAGS: ReadonlySet<string> = new Set<string>([
   'DshFailure',
   'DshResolveFailure',
   'OwnershipRecordInvalid',
+  'ProfileManifestInvalid',
   'ProvisionFailure',
   'UnknownProfile',
   'AmbiguousProfile',

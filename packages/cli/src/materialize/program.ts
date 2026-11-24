@@ -6,12 +6,16 @@
 import { join } from 'node:path'
 import type { ConfigProvenance } from '@eedsh/config'
 import { canonicalJson, type ProfilePlan } from '@eedsh/plan'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as PlatformError from 'effect/PlatformError'
+import type * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import type { DshInstallationInfo } from '../dsh'
-import { type MaterializeError, OwnershipRecordInvalid } from '../internal/effect/errors'
+import {
+  type MaterializeError,
+  OwnershipRecordInvalid,
+  ProfileManifestInvalid,
+} from '../internal/effect/errors'
 import type {
   PackageManagerShape,
   PreflightShape,
@@ -45,6 +49,7 @@ import {
   LOCK_RELATIVE_PATH,
   PLAN_RELATIVE_PATH,
 } from './profile'
+import { type ProfileManifest, readProfileManifest } from './profile-manifest'
 import { publishProfile } from './publish'
 
 /** Inputs for {@link materialize}. */
@@ -87,31 +92,6 @@ export interface MaterializeResult {
   restartRequired: boolean
 }
 
-const profileManifestSchema = Schema.Record(Schema.String, Schema.Unknown)
-
-function readJsonFile(
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<Option.Option<Record<string, unknown>>, PlatformError.PlatformError> {
-  return Effect.gen(function* () {
-    if (!(yield* fs.exists(path))) return Option.none()
-    const text = yield* fs.readFileString(path)
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(text) as unknown,
-      catch: (cause) =>
-        PlatformError.systemError({
-          _tag: 'InvalidData',
-          module: 'FileSystem',
-          method: 'parseJson',
-          pathOrDescriptor: path,
-          cause,
-        }),
-    })
-    const decoded = Schema.decodeUnknownOption(profileManifestSchema)(parsed)
-    return Option.map(decoded, (value) => ({ ...value }))
-  })
-}
-
 /** The ownership baseline and diagnostics a materialization starts from. */
 interface GenerationBaseline {
   previous: Option.Option<PreviousGeneration>
@@ -125,7 +105,7 @@ interface GenerationBaseline {
 function hasPublishedArtifacts(
   fs: FileSystem.FileSystem,
   profileDir: string,
-  manifest: Option.Option<Record<string, unknown>>,
+  manifest: Option.Option<ProfileManifest>,
 ): Effect.Effect<boolean, PlatformError.PlatformError> {
   return Effect.gen(function* () {
     if (hasManagedBundles(manifest)) return true
@@ -135,10 +115,7 @@ function hasPublishedArtifacts(
 }
 
 /** Names the live manifest declares that the plan does not manage. */
-function adoptedNames(
-  plan: ProfilePlan,
-  manifest: Option.Option<Record<string, unknown>>,
-): string[] {
+function adoptedNames(plan: ProfilePlan, manifest: Option.Option<ProfileManifest>): string[] {
   const managedBundles = new Set(managedBundleOrder(plan))
   const managedPackages = new Set([
     ...Object.keys(plan.packages),
@@ -153,7 +130,7 @@ function adoptedNames(
 /** Re-baseline ownership from the current manifest and report what was adopted. */
 function adoptionBaseline(
   plan: ProfilePlan,
-  manifest: Option.Option<Record<string, unknown>>,
+  manifest: Option.Option<ProfileManifest>,
 ): GenerationBaseline {
   const names = adoptedNames(plan, manifest)
   return {
@@ -170,7 +147,7 @@ function adoptionBaseline(
 function resolveGenerationBaseline(
   lookup: GenerationLookup,
   options: MaterializeOptions,
-  manifest: Option.Option<Record<string, unknown>>,
+  manifest: Option.Option<ProfileManifest>,
   fs: FileSystem.FileSystem,
 ): Effect.Effect<GenerationBaseline, PlatformError.PlatformError | OwnershipRecordInvalid> {
   return Effect.gen(function* () {
@@ -247,7 +224,19 @@ export function materialize(
 
       const manifestPath = join(options.profileDir, 'package.json')
       const generatedManifestPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
-      const existingManifest = yield* readJsonFile(fs, manifestPath)
+      const manifestRead = yield* readProfileManifest(manifestPath, fs)
+      if (manifestRead._tag === 'invalid') {
+        return yield* Effect.fail(
+          new ProfileManifestInvalid({
+            path: manifestRead.path,
+            reason: manifestRead.reason,
+            detail: manifestRead.detail,
+            recovery: 'fix or delete the file, then run "eedsh sync" again',
+          }),
+        )
+      }
+      const existingManifest =
+        manifestRead._tag === 'valid' ? Option.some(manifestRead) : Option.none()
       const lookup = yield* lookupGenerationRecord(generatedManifestPath, fs)
       const baseline = yield* resolveGenerationBaseline(lookup, options, existingManifest, fs)
 
@@ -279,7 +268,7 @@ export function materialize(
         lookup.record.generationId === generated.generationId &&
         lookup.record.eedshVersion === generated.generation.eedshVersion &&
         lookup.record.dshVersion === generated.generation.dshVersion &&
-        canonicalJson(existingManifest.value) === canonicalJson(reconciled.manifest) &&
+        canonicalJson(existingManifest.value.document) === canonicalJson(reconciled.manifest) &&
         (yield* authoritativePlanIntact(fs, options.profileDir, generated)) &&
         (yield* planMirrorIntact(fs, options.profileDir, generated))
 
@@ -309,7 +298,8 @@ export function materialize(
         profileDir: options.profileDir,
         manifest: reconciled.manifest,
         generated,
-        previousManifest: existingManifest,
+        previous: existingManifest,
+        sections: reconciled.sections,
         strict: options.strict,
         explain: options.explain,
         installAnchor: options.dsh.installAnchor,
@@ -323,7 +313,7 @@ export function materialize(
         changed: true,
         warnings: published.warnings,
         notices: [...baseline.notices, ...published.notices],
-        createdProfile: Option.isNone(existingManifest),
+        createdProfile: manifestRead._tag === 'missing',
         restartRequired,
       }
     }),

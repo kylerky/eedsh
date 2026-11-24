@@ -1136,6 +1136,47 @@ describe('generation record diagnostics', () => {
   })
 })
 
+describe('profile manifest diagnostics', () => {
+  const profileDir = homePath('profiles', 'cli-fixture')
+  const manifestPath = join(profileDir, 'package.json')
+  const recordPath = join(profileDir, '.eedsh', 'generated', 'package.json')
+
+  it('refuses a non-object manifest with exit 1 and leaves the bytes untouched', async () => {
+    const manifest = '[]\n'
+    const h = harness({ files: { [manifestPath]: manifest } })
+    const code = await h.run(['sync', '--config', fixture('basic')])
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('cannot use the profile manifest at')
+    expect(errors).toContain(manifestPath)
+    expect(errors).toContain('not a JSON object')
+    expect(errors).toContain('eedsh sync')
+    expect(h.fs.files.get(manifestPath)).toBe(manifest)
+    expect(h.fs.files.has(recordPath)).toBe(false)
+    expect(h.packages.installs).toEqual([])
+  })
+
+  it('refuses an unparseable manifest with exit 1 and names the parse failure', async () => {
+    const manifest = '{ not json'
+    const h = harness({ files: { [manifestPath]: manifest } })
+    const code = await h.run(['sync', '--config', fixture('basic')])
+    expect(code).toBe(1)
+    const errors = h.err.join('\n')
+    expect(errors).toContain('cannot use the profile manifest at')
+    expect(errors).toContain('not valid JSON')
+    expect(h.fs.files.get(manifestPath)).toBe(manifest)
+    expect(h.fs.files.has(recordPath)).toBe(false)
+    expect(h.packages.installs).toEqual([])
+  })
+
+  it('still publishes a first run when the manifest is missing', async () => {
+    const h = harness()
+    expect(await h.run(['sync', '--config', fixture('basic')])).toBe(0)
+    expect(h.fs.files.has(manifestPath)).toBe(true)
+    expect(h.fs.files.has(recordPath)).toBe(true)
+  })
+})
+
 /** Add the lockfile and installed packages a clean doctor run expects. */
 function addPublishedRuntimeState(h: ReturnType<typeof harness>): void {
   const profileDir = homePath('profiles', 'cli-fixture')

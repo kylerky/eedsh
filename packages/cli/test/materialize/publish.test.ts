@@ -13,6 +13,7 @@ import {
 } from '../../src/internal/effect/services'
 import { buildGeneratedBundle } from '../../src/materialize/generated-bundle'
 import { reconcileManifest } from '../../src/materialize/manifest'
+import { classifyProfileManifest } from '../../src/materialize/profile-manifest'
 import { publishProfile } from '../../src/materialize/publish'
 import { memoryFileSystem } from '../support/fakes'
 import { planOf } from '../support/plan'
@@ -149,13 +150,17 @@ async function publish(options: PublishOptions = {}) {
     Layer.succeed(PackageManager, packages),
     Layer.succeed(Preflight, preflight),
   )
+  const previousRead = classifyProfileManifest({ name: 'initial', private: true }, MANIFEST_PATH)
+  if (previousRead._tag !== 'valid') throw new Error('expected a valid previous manifest')
+  const previousView = previousRead
   const exit = await Effect.runPromiseExit(
     publishProfile({
       plan,
       profileDir: PROFILE_DIR,
       manifest: reconciled.manifest,
       generated: bundleValue,
-      previousManifest: Option.some({ name: 'initial', private: true }),
+      previous: Option.some(previousView),
+      sections: reconciled.sections,
       strict: false,
       explain: false,
       installAnchor: '/dsh/package.json',

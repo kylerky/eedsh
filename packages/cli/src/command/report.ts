@@ -98,6 +98,9 @@ export function describeError(error: EedshError): string[] {
           adoptable: failure.adoptable,
         }),
       ],
+      ProfileManifestInvalid: (failure) => [
+        `cannot use the profile manifest at ${failure.path}: it is ${failure.detail}; ${failure.recovery}`,
+      ],
       DshResolveFailure: (failure) => [
         `cannot resolve DSH package ${failure.packageName}: ${String(failure.cause)}`,
       ],

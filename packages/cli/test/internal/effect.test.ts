@@ -3,7 +3,6 @@ import type { ProfilePlan } from '@eedsh/plan'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Layer } from 'effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as PlatformError from 'effect/PlatformError'
 import { describe, expect, it } from 'vitest'
 import { writeFileAtomic } from '../../src/internal/atomic-write'
 import {
@@ -191,12 +190,32 @@ describe('Effect materialization', () => {
     expect(test.lock.isHeld()).toBe(false)
   })
 
-  it('maps a malformed profile manifest to a platform parse error', async () => {
-    const test = harness({ files: { [manifestPath]: '{' } })
+  it('fails closed on an unparseable profile manifest', async () => {
+    const initialManifest = '{ not json'
+    const packages = fakePackageManager()
+    const test = harness({ files: { [manifestPath]: initialManifest }, packages: packages.shape })
     const error = await failureOf(test.program)
-    expect(PlatformError.isPlatformError(error)).toBe(true)
-    expect(error.reason.method).toBe('parseJson')
-    expect(error.reason.pathOrDescriptor).toBe(manifestPath)
+    expect(error._tag).toBe('ProfileManifestInvalid')
+    expect(error.reason).toBe('unparseable')
+    expect(error.path).toBe(manifestPath)
+    expect(error.detail).toContain('not valid JSON')
+    expect(error.recovery).toContain('eedsh sync')
+    expect(test.fs.files.get(manifestPath)).toBe(initialManifest)
+    expect(test.fs.files.has(generatedManifestPath)).toBe(false)
+    expect(packages.installs).toEqual([])
+  })
+
+  it('fails closed on a non-object profile manifest', async () => {
+    const initialManifest = '[]'
+    const packages = fakePackageManager()
+    const test = harness({ files: { [manifestPath]: initialManifest }, packages: packages.shape })
+    const error = await failureOf(test.program)
+    expect(error._tag).toBe('ProfileManifestInvalid')
+    expect(error.reason).toBe('not-an-object')
+    expect(error.detail).toBe('not a JSON object')
+    expect(test.fs.files.get(manifestPath)).toBe(initialManifest)
+    expect(test.fs.files.has(generatedManifestPath)).toBe(false)
+    expect(packages.installs).toEqual([])
   })
 
   it('removes a lockfile it had to create when restoring', async () => {

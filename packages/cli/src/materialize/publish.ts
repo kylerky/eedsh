@@ -22,13 +22,17 @@ import {
 import { readOptional } from '../internal/read-optional'
 import type { Diagnostic } from './diagnostics'
 import { type GeneratedBundle, writeGeneratedBundle } from './generated-bundle'
-import { readProfileDependencies } from './manifest'
 import {
   ensureProfileFiles,
   GENERATED_DIRNAME,
   PLAN_RELATIVE_PATH,
   PROVENANCE_RELATIVE_PATH,
 } from './profile'
+import {
+  dependencySections,
+  type ProfileDependencySections,
+  type ProfileManifest,
+} from './profile-manifest'
 import { provenanceSidecarContent } from './provenance'
 
 /** Inputs for {@link publishProfile}. */
@@ -38,8 +42,10 @@ export interface PublishProfileInput {
   /** The reconciled profile manifest to persist. */
   manifest: Record<string, unknown>
   generated: GeneratedBundle
-  /** The profile manifest as it was before this run, when it existed. */
-  previousManifest: Option.Option<Record<string, unknown>>
+  /** The typed view of the profile manifest as it was before this run, when it existed. */
+  previous: Option.Option<ProfileManifest>
+  /** The readable package specifications of the reconciled manifest's sections. */
+  sections: ProfileDependencySections
   strict: boolean
   /** Attribute preflight warnings to their source layers. */
   explain: boolean
@@ -125,15 +131,21 @@ function snapshotProfileFiles(
   })
 }
 
-/** Whether publication changes any dependency specification. */
-function profileDependenciesChanged(
-  previousManifest: Option.Option<Record<string, unknown>>,
-  manifest: Record<string, unknown>,
-): boolean {
-  return (
-    canonicalJson(readProfileDependencies(previousManifest)) !==
-    canonicalJson(readProfileDependencies(Option.some(manifest)))
-  )
+/** The previous manifest's dependency sections, or empty ones when it had none. */
+function previousSections(previous: Option.Option<ProfileManifest>): ProfileDependencySections {
+  if (Option.isNone(previous)) {
+    return { dependencies: {}, devDependencies: {}, optionalDependencies: {} }
+  }
+  return dependencySections(previous.value)
+}
+
+/**
+ * Whether publication changes any dependency specification. The previous
+ * view's sections are compared with the reconciliation result, so the built
+ * manifest is never parsed a second time.
+ */
+function profileDependenciesChanged(input: PublishProfileInput): boolean {
+  return canonicalJson(previousSections(input.previous)) !== canonicalJson(input.sections)
 }
 
 /** Write the advisory provenance sidecar next to the plan mirror. */
@@ -241,7 +253,7 @@ export function publishProfile(
     const snapshot = yield* snapshotProfileFiles(fs, input.profileDir)
     yield* writePublicationArtifacts(input, generatedDir, fs)
 
-    const dependenciesChanged = profileDependenciesChanged(input.previousManifest, input.manifest)
+    const dependenciesChanged = profileDependenciesChanged(input)
     yield* writeProfileManifest(fs, snapshot.manifestPath, input.manifest)
     const restore = restoreProfileFiles(fs, snapshot)
 

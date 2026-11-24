@@ -38,7 +38,6 @@ import {
 import {
   managedBundleOrder,
   readProfileBundles,
-  readProfileDependencies,
   scanDependencyConflicts,
 } from './materialize/manifest'
 import {
@@ -49,6 +48,7 @@ import {
   PROFILE_ROOT_FILENAME,
   PROFILE_WORKSPACE_FILENAME,
 } from './materialize/profile'
+import { classifyProfileManifest } from './materialize/profile-manifest'
 import { readSourceRecord } from './provision/record'
 import {
   resolveSourceLocation,
@@ -453,10 +453,10 @@ function checkManifest(
       return
     }
     const parsed = parseJson(read.success.value)
-    const decoded = Result.isSuccess(parsed)
-      ? Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
-      : Option.none()
-    if (Option.isNone(decoded)) {
+    const classified = Result.isSuccess(parsed)
+      ? classifyProfileManifest(parsed.success, path)
+      : undefined
+    if (classified === undefined || classified._tag !== 'valid') {
       findings.push(
         errorFinding(
           'manifest',
@@ -466,9 +466,8 @@ function checkManifest(
       )
       return
     }
-    const manifest = { ...decoded.value }
 
-    const listed = readProfileBundles(Option.some(manifest))
+    const listed = readProfileBundles(Option.some(classified))
     const prefixIntact =
       listed.length >= record.bundles.length &&
       record.bundles.every((name, index) => listed[index] === name)
@@ -482,7 +481,7 @@ function checkManifest(
       )
     }
 
-    const dependencies = readProfileDependencies(Option.some(manifest)).dependencies
+    const dependencies = classified.dependencies.specs
     for (const [name, spec] of Object.entries(record.packages)) {
       if (dependencies[name] === spec) continue
       const found = dependencies[name]
@@ -495,10 +494,7 @@ function checkManifest(
       )
     }
 
-    const scan = scanDependencyConflicts(
-      Option.some(manifest),
-      new Set(Object.keys(record.packages)),
-    )
+    const scan = scanDependencyConflicts(classified, new Set(Object.keys(record.packages)))
     for (const section of scan.malformed) {
       findings.push(
         warningFinding(
@@ -580,10 +576,8 @@ function checkSources(
     if (Result.isSuccess(read) && Option.isSome(read.success)) {
       const parsed = parseJson(read.success.value)
       if (Result.isSuccess(parsed)) {
-        const decoded = Schema.decodeUnknownOption(jsonRecordSchema)(parsed.success)
-        if (Option.isSome(decoded)) {
-          dependencies = readProfileDependencies(Option.some({ ...decoded.value })).dependencies
-        }
+        const classified = classifyProfileManifest(parsed.success, manifestPath)
+        if (classified._tag === 'valid') dependencies = classified.dependencies.specs
       }
     }
 
