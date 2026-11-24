@@ -24,6 +24,11 @@ import type { DoctorFinding } from '../doctor'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from '../materialize/generated-bundle'
 import type { GenerationLookup } from '../materialize/generation-record'
+import {
+  declaredPackageSpecs,
+  type ProfileManifest,
+  type ProfileManifestRead,
+} from '../materialize/profile-manifest'
 
 /** The composed row data one row view wraps. */
 type RowData = PlanEntry
@@ -329,15 +334,6 @@ export interface PackageInfo {
   readonly installedVersion: string | undefined
 }
 
-function stringRecord(value: unknown): Record<string, string> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
-  const out: Record<string, string> = {}
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item === 'string') out[key] = item
-  }
-  return out
-}
-
 /**
  * Read one installed package version, or undefined when it is not installed.
  * @param fileSystem - the file-system service.
@@ -363,28 +359,18 @@ function installedVersion(
   })
 }
 
-/** The dependency specifications one profile manifest declares. */
-function manifestPackageSpecs(
-  manifest: Record<string, unknown> | undefined,
-): Record<string, string> {
-  return {
-    ...stringRecord(manifest?.dependencies),
-    ...stringRecord(manifest?.devDependencies),
-    ...stringRecord(manifest?.optionalDependencies),
-  }
-}
-
 /** The package names a profile view reports, sorted. */
 function packageNames(
   plan: ProfilePlan | undefined,
-  manifest: Record<string, unknown> | undefined,
+  manifest: ProfileManifest | undefined,
 ): string[] {
   const managed = new Set([
     ...Object.keys(plan?.packages ?? {}),
     RUNTIME_PACKAGE_NAME,
     GENERATED_PACKAGE_NAME,
   ])
-  return [...new Set([...managed, ...Object.keys(manifestPackageSpecs(manifest))])].sort()
+  const declared = manifest === undefined ? {} : declaredPackageSpecs(manifest)
+  return [...new Set([...managed, ...Object.keys(declared)])].sort()
 }
 
 /** Declared, managed, and installed package information for one profile. */
@@ -399,11 +385,11 @@ export class PackageView {
 
   constructor(
     plan: ProfilePlan | undefined,
-    manifest: Record<string, unknown> | undefined,
+    manifest: ProfileManifest | undefined,
     installed: Readonly<Record<string, string>> = {},
   ) {
     this.declared = { ...(plan?.packages ?? {}) }
-    const manifestSpecs = manifestPackageSpecs(manifest)
+    const manifestSpecs = manifest === undefined ? {} : declaredPackageSpecs(manifest)
     const managed = new Set([
       ...Object.keys(this.declared),
       RUNTIME_PACKAGE_NAME,
@@ -428,16 +414,17 @@ export class PackageView {
    * Read one profile's package view, including the installed versions.
    * @param plan - the profile plan, when the profile is valid.
    * @param profileDir - the profile directory to inspect; empty means none.
-   * @param manifest - the profile manifest, when readable.
+   * @param reading - the profile manifest's classification, when inspected.
    * @param fileSystem - the file-system service.
    * @returns the declared, managed, and installed package information.
    */
   static read(
     plan: ProfilePlan | undefined,
     profileDir: string,
-    manifest: Record<string, unknown> | undefined,
+    reading: ProfileManifestRead | undefined,
     fileSystem: FileSystem.FileSystem,
   ): Effect.Effect<PackageView> {
+    const manifest = reading !== undefined && reading._tag === 'valid' ? reading : undefined
     return Effect.gen(function* () {
       const installed: Record<string, string> = {}
       for (const name of packageNames(plan, manifest)) {
@@ -474,8 +461,8 @@ export interface PublishedSnapshot {
   readonly dir: string
   /** Whether the profile directory exists. */
   readonly exists: boolean
-  /** The profile manifest, when readable. */
-  readonly manifest: Record<string, unknown> | undefined
+  /** The profile manifest's classification, when the profile was inspected. */
+  readonly manifest: ProfileManifestRead | undefined
   /** The generation-record classification, when a record exists. */
   readonly generation: GenerationLookup | undefined
   /** The valid generation record, when one exists. */
@@ -498,8 +485,8 @@ export class PublishedProfileView {
   readonly dir: string
   /** Whether the profile directory exists; a missing profile is not an error. */
   readonly exists: boolean
-  /** The profile manifest, when readable. */
-  readonly manifest: Record<string, unknown> | undefined
+  /** The profile manifest's classification, when the profile was inspected. */
+  readonly manifest: ProfileManifestRead | undefined
   /** The generation-record classification, when a record exists. */
   readonly generation: GenerationLookup | undefined
   /** The valid generation record, when one exists. */
@@ -637,11 +624,12 @@ export class ProfileView {
 
   /** Declared, managed, and installed package information. */
   packages(): PackageView {
+    const manifest = this.snapshot.published.manifest
     return (
       this.snapshot.packages ??
       new PackageView(
         Result.isSuccess(this.outcome) ? this.outcome.success : undefined,
-        this.snapshot.published.manifest,
+        manifest !== undefined && manifest._tag === 'valid' ? manifest : undefined,
       )
     )
   }

@@ -7,6 +7,10 @@ import { Effect } from 'effect'
 import * as Result from 'effect/Result'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DoctorResult } from '../../src/doctor'
+import {
+  classifyProfileManifest,
+  parseProfileManifest,
+} from '../../src/materialize/profile-manifest'
 import { touchedRowIds } from '../../src/preflight'
 import { composeFor, ReplSession } from '../../src/repl/session'
 import {
@@ -322,10 +326,10 @@ describe('package views', () => {
       PackageView.read(
         outcome.success,
         profileDir,
-        JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as Record<
-          string,
-          unknown
-        >,
+        parseProfileManifest(
+          await readFile(join(profileDir, 'package.json'), 'utf8'),
+          join(profileDir, 'package.json'),
+        ),
         await realFileSystemValue(),
       ),
     )
@@ -416,7 +420,7 @@ describe('published views', () => {
     const view = new PublishedProfileView({
       dir: '/profile',
       exists: true,
-      manifest: { name: 'dsh-profile-work' },
+      manifest: classifyProfileManifest({ name: 'dsh-profile-work' }, '/profile/package.json'),
       generation: {
         _tag: 'valid',
         record: {
@@ -445,7 +449,10 @@ describe('published views', () => {
       warnings: 1,
     })
     expect(view.exists).toBe(true)
-    expect(view.manifest).toEqual({ name: 'dsh-profile-work' })
+    expect(view.manifest).toMatchObject({
+      _tag: 'valid',
+      document: { name: 'dsh-profile-work' },
+    })
     expect(view.generation?._tag).toBe('valid')
     expect(view.plan).toEqual({ profile: { name: 'work' } })
     expect(view.planPath).toContain('gen-1.json')
@@ -562,6 +569,19 @@ describe('exploration snapshots', () => {
     const previewDir = await h.session.evaluate('selectedProfile.published().dir')
     expect(previewDir).not.toBe(realDir)
     expect(previewDir).toContain('cache')
+  })
+
+  it('reports an invalid manifest as unusable rather than absent', async () => {
+    const profileDir = join(work, 'home', 'profiles', 'work')
+    await mkdir(profileDir, { recursive: true })
+    await writeFile(join(profileDir, 'package.json'), '[]\n')
+    const h = await makeSession({
+      config: configOf((builder) => builder.profile('work', (profile) => profile.generated())),
+    })
+    expect(await h.session.evaluate('selectedProfile.published().manifest')).toMatchObject({
+      _tag: 'invalid',
+      reason: 'not-an-object',
+    })
   })
 
   it('refreshes published state after a successful sync', async () => {

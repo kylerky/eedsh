@@ -85,6 +85,20 @@ export interface ProfileDependencySections {
 }
 
 /**
+ * Every package specification the manifest declares in an install-relevant
+ * section; later sections override earlier ones.
+ * @param manifest - the typed manifest view.
+ * @returns the declared specifications by package name.
+ */
+export function declaredPackageSpecs(manifest: ProfileManifest): Record<string, string> {
+  return {
+    ...manifest.dependencies.specs,
+    ...manifest.devDependencies.specs,
+    ...manifest.optionalDependencies.specs,
+  }
+}
+
+/**
  * The readable package specifications of a manifest's dependency sections.
  * @param manifest - the typed manifest view.
  * @returns the specifications by section, in section order.

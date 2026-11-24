@@ -16,10 +16,11 @@ import { readRecord } from '../internal/schema-readers'
 import { type Diagnostic, notice, warning } from './diagnostics'
 import { GENERATED_PACKAGE_NAME, RUNTIME_PACKAGE_NAME } from './generated-bundle'
 import type { PreviousGeneration } from './generation-record'
-import type {
-  ManifestDependencies,
-  ProfileDependencySections,
-  ProfileManifest,
+import {
+  declaredPackageSpecs,
+  type ManifestDependencies,
+  type ProfileDependencySections,
+  type ProfileManifest,
 } from './profile-manifest'
 
 export type { PreviousGeneration } from './generation-record'
@@ -95,14 +96,7 @@ export function readProfileBundles(manifest: Option.Option<ProfileManifest>): st
  */
 export function declaredDependencyNames(manifest: Option.Option<ProfileManifest>): string[] {
   if (Option.isNone(manifest)) return []
-  const { dependencies, devDependencies, optionalDependencies } = manifest.value
-  return [
-    ...new Set([
-      ...Object.keys(dependencies.specs),
-      ...Object.keys(devDependencies.specs),
-      ...Object.keys(optionalDependencies.specs),
-    ]),
-  ]
+  return Object.keys(declaredPackageSpecs(manifest.value))
 }
 
 /**

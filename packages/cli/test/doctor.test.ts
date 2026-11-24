@@ -12,13 +12,21 @@ import {
 import { SUPPORTED_DSH_RANGE } from '../src/dsh'
 import type { DiscoveredDshInstallation } from '../src/dsh-discovery'
 import { sha256 } from '../src/internal/sha256'
+import { readProfileManifest } from '../src/materialize/profile-manifest'
 import {
   sourceCheckoutDir,
   sourceKey,
   sourceLinkSpec,
   sourceStatePath,
 } from '../src/provision/source'
-import { BUNDLE, harness, MANIFEST_PATH, PROFILE_DIR, RECORD_PATH } from './support/materialize'
+import {
+  BUNDLE,
+  failureOf,
+  harness,
+  MANIFEST_PATH,
+  PROFILE_DIR,
+  RECORD_PATH,
+} from './support/materialize'
 import { planOf } from './support/plan'
 import { bundle, generated, insert, layer } from './support/plan-parts'
 
@@ -392,6 +400,31 @@ describe('doctor manifest checks', () => {
     const dependencies = finding(result, 'dependencies')
     expect(dependencies).toMatchObject({ severity: 'warning', check: 'dependencies' })
     expect(dependencies?.message).toContain('resolved version may differ')
+  })
+
+  it('names an unreadable dependency entry', async () => {
+    const h = await published()
+    editManifest(h, (manifest) => {
+      manifest.devDependencies = { '@scope/tool': 1 }
+    })
+    const result = await diagnose(h.fs.fs)
+    const item = finding(result, 'dependencies')
+    expect(item).toMatchObject({ severity: 'warning', check: 'dependencies' })
+    expect(item?.message).toContain('@scope/tool')
+    expect(item?.message).toContain('devDependencies')
+    expect(item?.message).toContain('not a package specification')
+  })
+
+  it('reports the same invalid reason materialization reports', async () => {
+    const h = await published()
+    h.fs.files.set(MANIFEST_PATH, '[]\n')
+    const result = await diagnose(h.fs.fs)
+    const read = await Effect.runPromise(readProfileManifest(MANIFEST_PATH, h.fs.fs))
+    if (read._tag !== 'invalid') throw new Error('expected an invalid manifest')
+    expect(read.reason).toBe('not-an-object')
+    expect(finding(result, 'manifest')?.message).toBe(`${read.detail}; run "eedsh sync"`)
+    const error = failureOf(await h.runExit())
+    expect(error).toMatchObject({ _tag: 'ProfileManifestInvalid', reason: read.reason })
   })
 })
 
@@ -957,6 +990,21 @@ importers:
     expect(result.errors).toBe(0)
     expect(doctorExitCode(result, false)).toBe(0)
     expect(doctorExitCode(result, true)).toBe(1)
+  })
+
+  it('reads the profile manifest once per diagnosis', async () => {
+    const h = await publishedSource()
+    let reads = 0
+    const counting: FileSystem.FileSystem = {
+      ...h.fs.fs,
+      readFileString: (path) => {
+        if (path === MANIFEST_PATH) reads += 1
+        return h.fs.fs.readFileString(path)
+      },
+    }
+    const result = await diagnose(counting, { dshHome: DSH_HOME })
+    expect(result.errors).toBe(0)
+    expect(reads).toBe(1)
   })
 
   it('never provisions or writes while inspecting a source', async () => {

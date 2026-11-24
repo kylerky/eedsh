@@ -35,11 +35,7 @@ import {
   lookupGenerationRecord,
   missingGenerationRecord,
 } from './materialize/generation-record'
-import {
-  managedBundleOrder,
-  readProfileBundles,
-  scanDependencyConflicts,
-} from './materialize/manifest'
+import { managedBundleOrder, scanDependencyConflicts } from './materialize/manifest'
 import {
   GENERATED_DIRNAME,
   GENERATED_MANIFEST_RELATIVE_PATH,
@@ -48,7 +44,7 @@ import {
   PROFILE_ROOT_FILENAME,
   PROFILE_WORKSPACE_FILENAME,
 } from './materialize/profile'
-import { classifyProfileManifest } from './materialize/profile-manifest'
+import { type ProfileManifestRead, readProfileManifest } from './materialize/profile-manifest'
 import { readSourceRecord } from './provision/record'
 import {
   resolveSourceLocation,
@@ -422,98 +418,89 @@ function checkMirror(
   })
 }
 
-/** Verify managed bundles, managed dependencies, and dependency-section conflicts. */
+/**
+ * Verify managed bundles, managed dependencies, and dependency-section
+ * conflicts against the diagnosis's one manifest read. A read failure is
+ * reported where the read happens, so this check receives no classification.
+ */
 function checkManifest(
-  fs: FileSystem.FileSystem,
-  profileDir: string,
+  path: string,
+  manifestRead: ProfileManifestRead | undefined,
   record: GenerationRecord,
   findings: DoctorFinding[],
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const path = join(profileDir, 'package.json')
-    const read = yield* readOptional(fs, path).pipe(Effect.result)
-    if (Result.isFailure(read)) {
-      findings.push(
-        errorFinding(
-          'manifest',
-          `cannot read the profile manifest: ${messageOf(read.failure)}`,
-          Option.some(path),
-        ),
-      )
-      return
-    }
-    if (Option.isNone(read.success)) {
-      findings.push(
-        errorFinding(
-          'manifest',
-          'the profile manifest is missing; run "eedsh sync"',
-          Option.some(path),
-        ),
-      )
-      return
-    }
-    const parsed = parseJson(read.success.value)
-    const classified = Result.isSuccess(parsed)
-      ? classifyProfileManifest(parsed.success, path)
-      : undefined
-    if (classified === undefined || classified._tag !== 'valid') {
-      findings.push(
-        errorFinding(
-          'manifest',
-          'the profile manifest is not a JSON object; run "eedsh sync"',
-          Option.some(path),
-        ),
-      )
-      return
-    }
+): void {
+  if (manifestRead === undefined) return
+  if (manifestRead._tag === 'missing') {
+    findings.push(
+      errorFinding(
+        'manifest',
+        'the profile manifest is missing; run "eedsh sync"',
+        Option.some(path),
+      ),
+    )
+    return
+  }
+  if (manifestRead._tag === 'invalid') {
+    findings.push(
+      errorFinding('manifest', `${manifestRead.detail}; run "eedsh sync"`, Option.some(path)),
+    )
+    return
+  }
 
-    const listed = readProfileBundles(Option.some(classified))
-    const prefixIntact =
-      listed.length >= record.bundles.length &&
-      record.bundles.every((name, index) => listed[index] === name)
-    if (!prefixIntact) {
-      findings.push(
-        errorFinding(
-          'manifest',
-          `managed bundles must start with ${record.bundles.join(', ')} in recorded order; run "eedsh sync"`,
-          Option.some(path),
-        ),
-      )
-    }
+  const listed = manifestRead.bundles.names
+  const prefixIntact =
+    listed.length >= record.bundles.length &&
+    record.bundles.every((name, index) => listed[index] === name)
+  if (!prefixIntact) {
+    findings.push(
+      errorFinding(
+        'manifest',
+        `managed bundles must start with ${record.bundles.join(', ')} in recorded order; run "eedsh sync"`,
+        Option.some(path),
+      ),
+    )
+  }
 
-    const dependencies = classified.dependencies.specs
-    for (const [name, spec] of Object.entries(record.packages)) {
-      if (dependencies[name] === spec) continue
-      const found = dependencies[name]
-      findings.push(
-        errorFinding(
-          'manifest',
-          `managed package ${name} must be declared as ${spec} in dependencies${found === undefined ? '' : ` (found ${found})`}; run "eedsh sync"`,
-          Option.some(path),
-        ),
-      )
-    }
+  const dependencies = manifestRead.dependencies.specs
+  for (const [name, spec] of Object.entries(record.packages)) {
+    if (dependencies[name] === spec) continue
+    const found = dependencies[name]
+    findings.push(
+      errorFinding(
+        'manifest',
+        `managed package ${name} must be declared as ${spec} in dependencies${found === undefined ? '' : ` (found ${found})`}; run "eedsh sync"`,
+        Option.some(path),
+      ),
+    )
+  }
 
-    const scan = scanDependencyConflicts(classified, new Set(Object.keys(record.packages)))
-    for (const section of scan.malformed) {
-      findings.push(
-        warningFinding(
-          'dependencies',
-          `${section} is not a record of package specifications; eedsh sync leaves it unchanged`,
-          Option.some(path),
-        ),
-      )
-    }
-    for (const conflict of scan.conflicts) {
-      const message =
-        conflict.field === 'devDependencies' || conflict.field === 'optionalDependencies'
-          ? `managed package ${conflict.name} is also declared in ${conflict.field}; run "eedsh sync" to remove it`
-          : `managed package ${conflict.name} is also declared in ${conflict.field}; the resolved version may differ`
-      findings.push(warningFinding('dependencies', message, Option.some(path)))
-    }
-  })
+  const scan = scanDependencyConflicts(manifestRead, new Set(Object.keys(record.packages)))
+  for (const section of scan.malformed) {
+    findings.push(
+      warningFinding(
+        'dependencies',
+        `${section} is not a record of package specifications; eedsh sync leaves it unchanged`,
+        Option.some(path),
+      ),
+    )
+  }
+  for (const problem of scan.unreadable) {
+    findings.push(
+      warningFinding(
+        'dependencies',
+        `the ${problem.field} entry ${problem.name} is not a package specification string; run "eedsh sync"`,
+        Option.some(path),
+      ),
+    )
+  }
+  for (const conflict of scan.conflicts) {
+    const message =
+      conflict.field === 'devDependencies' || conflict.field === 'optionalDependencies'
+        ? `managed package ${conflict.name} is also declared in ${conflict.field}; run "eedsh sync" to remove it`
+        : `managed package ${conflict.name} is also declared in ${conflict.field}; the resolved version may differ`
+    findings.push(warningFinding('dependencies', message, Option.some(path)))
+  }
 }
-
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
 
 /** The commit a provisioned working tree is checked out at, from its refs. */
@@ -560,7 +547,8 @@ function derivedSourceSpec(declaration: PlanSource, dshHome: string): string | u
  */
 function checkSources(
   fs: FileSystem.FileSystem,
-  profileDir: string,
+  manifestPath: string,
+  manifestRead: ProfileManifestRead | undefined,
   plan: ProfilePlan,
   dshHome: string,
   findings: DoctorFinding[],
@@ -570,16 +558,10 @@ function checkSources(
     const names = Object.keys(sources).sort()
     if (names.length === 0) return
 
-    const manifestPath = join(profileDir, 'package.json')
-    const read = yield* readOptional(fs, manifestPath).pipe(Effect.result)
-    let dependencies: Readonly<Record<string, string>> | undefined
-    if (Result.isSuccess(read) && Option.isSome(read.success)) {
-      const parsed = parseJson(read.success.value)
-      if (Result.isSuccess(parsed)) {
-        const classified = classifyProfileManifest(parsed.success, manifestPath)
-        if (classified._tag === 'valid') dependencies = classified.dependencies.specs
-      }
-    }
+    const dependencies =
+      manifestRead !== undefined && manifestRead._tag === 'valid'
+        ? manifestRead.dependencies.specs
+        : undefined
 
     for (const name of names) {
       const declaration = sources[name] as PlanSource
@@ -973,6 +955,19 @@ export function doctor(
       return summarize(findings, dsh)
     }
 
+    const manifestPath = join(options.profileDir, 'package.json')
+    const manifestResult = yield* readProfileManifest(manifestPath, fs).pipe(Effect.result)
+    if (Result.isFailure(manifestResult)) {
+      findings.push(
+        errorFinding(
+          'manifest',
+          `cannot read the profile manifest: ${messageOf(manifestResult.failure)}`,
+          Option.some(manifestPath),
+        ),
+      )
+    }
+    const manifestRead = Result.isSuccess(manifestResult) ? manifestResult.success : undefined
+
     const recordPath = join(options.profileDir, GENERATED_MANIFEST_RELATIVE_PATH)
     const record = yield* readRecord(fs, recordPath, findings)
     if (Option.isNone(record)) return summarize(findings, dsh)
@@ -990,9 +985,9 @@ export function doctor(
     if (Option.isSome(plan)) {
       checkConsistency(record.value, plan.value, recordPath, findings)
       yield* checkMirror(fs, options.profileDir, plan.value, findings)
-      yield* checkSources(fs, options.profileDir, plan.value, options.dshHome, findings)
+      yield* checkSources(fs, manifestPath, manifestRead, plan.value, options.dshHome, findings)
     }
-    yield* checkManifest(fs, options.profileDir, record.value, findings)
+    checkManifest(manifestPath, manifestRead, record.value, findings)
     yield* checkScaffolding(fs, options.profileDir, findings)
     const lockfile = yield* checkLockfile(fs, options.profileDir, record.value, findings)
     yield* checkInstalled(fs, options.profileDir, record.value, lockfile, findings)

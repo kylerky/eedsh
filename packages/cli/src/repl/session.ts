@@ -36,6 +36,7 @@ import type { BundleResolverShape } from '../internal/effect/services'
 import type { GenerationRecord } from '../materialize/generated-bundle'
 import { classifyGenerationRecord, type GenerationLookup } from '../materialize/generation-record'
 import { GENERATED_DIRNAME, GENERATED_MANIFEST_RELATIVE_PATH } from '../materialize/profile'
+import { type ProfileManifestRead, readProfileManifest } from '../materialize/profile-manifest'
 import { composePreflightLayers, type PreflightLayer, touchedRowIds } from '../preflight'
 import { describeProfileSelection, selectProfile } from '../selection'
 import type { SpawnLike } from '../spawn'
@@ -978,6 +979,18 @@ export class ReplSession {
     })
   }
 
+  /** The profile manifest's classification, or undefined when it cannot be read. */
+  private profileManifestRead(profileDir: string): Effect.Effect<ProfileManifestRead | undefined> {
+    const self = this
+    return Effect.gen(function* () {
+      if (profileDir === '') return undefined
+      const read = yield* Effect.result(
+        readProfileManifest(join(profileDir, 'package.json'), self.fileSystem),
+      )
+      return Result.isSuccess(read) ? read.success : undefined
+    })
+  }
+
   private readJsonRecord(path: string): Effect.Effect<Record<string, unknown> | undefined> {
     const self = this
     return Effect.gen(function* () {
@@ -1027,9 +1040,7 @@ export class ReplSession {
     const self = this
     return Effect.gen(function* () {
       const exists = profileDir !== '' && (yield* pathExists(self.fileSystem, profileDir))
-      const manifest = exists
-        ? yield* self.readJsonRecord(join(profileDir, 'package.json'))
-        : undefined
+      const manifest = exists ? yield* self.profileManifestRead(profileDir) : undefined
       const generation = exists
         ? yield* self.readGeneration(profileDir)
         : { generation: undefined, record: undefined, plan: undefined, planPath: undefined }
@@ -1153,26 +1164,15 @@ export class ReplSession {
     })
   }
 
-  private profileManifest(): Effect.Effect<Record<string, unknown> | undefined> {
-    return this.readJsonRecord(join(this.effectiveProfileDir(), 'package.json'))
+  private profileManifest(): Effect.Effect<ProfileManifestRead | undefined> {
+    return this.profileManifestRead(this.effectiveProfileDir())
   }
 
   private manifestBundles(): Effect.Effect<readonly string[]> {
     const self = this
     return Effect.gen(function* () {
       const manifest = yield* self.profileManifest()
-      const dsh = manifest?.dsh
-      const profile =
-        dsh !== null && typeof dsh === 'object'
-          ? (dsh as Record<string, unknown>).profile
-          : undefined
-      const bundles =
-        profile !== null && typeof profile === 'object'
-          ? (profile as Record<string, unknown>).bundles
-          : undefined
-      return Array.isArray(bundles)
-        ? bundles.filter((item): item is string => typeof item === 'string')
-        : []
+      return manifest !== undefined && manifest._tag === 'valid' ? [...manifest.bundles.names] : []
     })
   }
 
@@ -1181,11 +1181,13 @@ export class ReplSession {
     return Effect.gen(function* () {
       const names = new Set<string>(Object.keys(self.plan?.packages ?? {}))
       const manifest = yield* self.profileManifest()
-      if (manifest !== undefined) {
-        for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-          const value = manifest[section]
-          if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
-          for (const name of Object.keys(value)) names.add(name)
+      if (manifest !== undefined && manifest._tag === 'valid') {
+        for (const section of [
+          manifest.dependencies,
+          manifest.devDependencies,
+          manifest.optionalDependencies,
+        ]) {
+          for (const name of Object.keys(section.entries)) names.add(name)
         }
       }
       return [...names].sort()
