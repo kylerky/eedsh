@@ -24,38 +24,6 @@ Gives eedsh authors a synchronous, typed object model for composing profiles and
 - **WHEN** a config is built
 - **THEN** no profile directory is written and no installation or publication runs
 
-### Requirement: The authoring API exposes the active DSH version
-
-`@eedsh/config` SHALL export a synchronous `dshVersion(): string` returning the exact version of the selected DSH installation. It SHALL read the active bridge, not the plan or a bundled default, and SHALL NOT select or install DSH. Without a bridge it SHALL throw a tagged `resolution.bridge_missing` failure naming `eedsh sync`, `eedsh run`, and `--dsh`. It SHALL NOT write a DSH field or engine into the plan or generated manifest.
-
-#### Scenario: The selected version is returned
-
-- **WHEN** `--dsh` selects `0.2.1-rc.5` and the config calls `dshVersion()`
-- **THEN** the call returns `'0.2.1-rc.5'`
-
-#### Scenario: The config value does not change the result
-
-- **WHEN** the selected installation is `0.2.2-alpha.2`
-- **THEN** `dshVersion()` returns `'0.2.2-alpha.2'` regardless of the plan version or profile data
-
-#### Scenario: The running version is observable but not pinnable
-
-- **WHEN** an author uses `dshVersion()` in a layer expression or log message
-- **THEN** the value is the exact running version
-- **AND** no DSH value is written into the plan or generated manifest
-
-#### Scenario: No bridge fails loudly
-
-- **WHEN** a config calls `dshVersion()` outside eedsh, with no bridge installed
-- **THEN** the call throws the tagged `resolution.bridge_missing` failure
-- **AND** it never returns `undefined` or a stale version
-
-#### Scenario: Synchronous and side-effect free
-
-- **WHEN** an author calls `dshVersion()`
-- **THEN** it returns synchronously
-- **AND** it writes no files and installs nothing
-
 ### Requirement: Profiles are composed through typed methods
 
 A `ProfileBuilder` SHALL add ordered bundles, at most one generated marker, ordered patch layers, and profile-local package specifications through methods. It SHALL preserve authored order, and a layer callback SHALL receive a layer builder scoped to that layer.
@@ -96,7 +64,7 @@ A `LayerBuilder` SHALL provide insert, disable, enable, override, and raw patch 
 
 ### Requirement: Bundle handles resolve rows from one explicit root
 
-`bundle(name)` SHALL return a typed `Bundle` that can be used as a plan selection and as a query handle. With no root, queries SHALL resolve from the active discovered DSH installation. `.fromProfile()` SHALL resolve a named profile's installed copy, and `.fromPackageDir()` SHALL resolve a directory; a relative directory SHALL resolve against the config file's directory. A rooted handle SHALL be query-only and SHALL NOT be accepted as a plan selection.
+`bundle(name)` SHALL return a typed `Bundle` that can be used as a plan selection and as a query handle. A handle SHALL record its root as data and SHALL be resolved by the invocation that evaluates the config, never by IO at the call site. With no root, the recorded root SHALL be the installation selected for that invocation. `.fromProfile()` SHALL name a profile's installed copy, and `.fromPackageDir()` SHALL name a directory; a relative directory SHALL resolve against the config file's directory. A rooted handle SHALL be query-only and SHALL NOT be accepted as a plan selection.
 
 #### Scenario: The pinned installation is the default
 
@@ -117,6 +85,11 @@ A `LayerBuilder` SHALL provide insert, disable, enable, override, and raw patch 
 
 - **WHEN** a rooted handle is passed to `ProfileBuilder.bundle()`
 - **THEN** authoring rejects it and does not silently drop the root
+
+#### Scenario: The handle performs no IO when it is created
+
+- **WHEN** a config calls `bundle(name)` and roots it while the module is evaluated
+- **THEN** the call records the name and the root without reading a package manifest
 
 ### Requirement: Bundle handles expose typed resolution data
 

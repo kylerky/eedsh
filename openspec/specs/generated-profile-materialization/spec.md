@@ -60,7 +60,7 @@ Materialization SHALL NOT modify an existing profile `cordis.patch.yml`, the har
 
 ### Requirement: Profile dependencies are reconciled
 
-The profile manifest SHALL declare the plan's package dependencies plus the runtime and generated bundle packages. Dependencies removed from the plan after being eedsh-managed SHALL be removed; dependencies added outside eedsh SHALL be preserved. Managed specifications SHALL win when the same package is declared outside eedsh. Managed and previously managed package names SHALL be removed from `devDependencies` and `optionalDependencies`; unrelated entries SHALL be preserved, and a section that is not a record of string specifications SHALL be left unchanged and reported. Managed and previously managed names declared in `peerDependencies`, `pnpm.overrides`, `overrides`, or `resolutions` SHALL be reported as warnings and SHALL NOT be modified. Package installation SHALL run when any reconciled dependency section changes.
+The profile manifest SHALL declare the plan's package dependencies plus the runtime and generated bundle packages. Dependencies removed from the plan after being eedsh-managed SHALL be removed; dependencies added outside eedsh SHALL be preserved. A `dependencies` entry whose value is not a package specification string SHALL be preserved verbatim and reported, except that the managed specification SHALL win when the same name is managed. When `dependencies` is not a JSON object, reconciliation SHALL rebuild the section from the managed specifications and SHALL report that its previous contents could not be preserved. Managed specifications SHALL win when the same package is declared outside eedsh. Managed and previously managed package names SHALL be removed from `devDependencies` and `optionalDependencies`; unrelated entries SHALL be preserved, and a section that is not a JSON object SHALL be left unchanged and reported. Within a section that is an object, an entry whose value is not a package specification string SHALL be preserved unchanged and reported, and readable managed names SHALL still be removed. Managed and previously managed names declared in `peerDependencies`, `pnpm.overrides`, `overrides`, or `resolutions` SHALL be reported as warnings and SHALL NOT be modified. Package installation SHALL run when any reconciled dependency section changes.
 
 #### Scenario: Managed dependency is installed
 
@@ -108,9 +108,28 @@ The profile manifest SHALL declare the plan's package dependencies plus the runt
 
 #### Scenario: Malformed dependency section is left alone
 
-- **WHEN** `devDependencies` or `optionalDependencies` is not a record of string specifications
+- **WHEN** `devDependencies` or `optionalDependencies` is not a JSON object
 - **THEN** materialization leaves the section unchanged
 - **AND** reports that the section could not be reconciled
+
+#### Scenario: Partially readable section is reconciled by entry
+
+- **WHEN** `devDependencies` is an object that declares a managed package and also an entry whose value is not a package specification string
+- **THEN** the managed entry is removed
+- **AND** the unreadable entry is preserved unchanged
+- **AND** the unreadable entry is reported
+
+#### Scenario: Unreadable dependency entry is preserved and reported
+
+- **WHEN** `dependencies` declares a package eedsh does not manage with a value that is not a package specification string
+- **THEN** the entry is preserved verbatim in the materialized manifest
+- **AND** the entry is reported
+
+#### Scenario: Non-object dependencies section is rebuilt and reported
+
+- **WHEN** `dependencies` is an array, null, or a scalar
+- **THEN** the materialized manifest declares the managed specifications
+- **AND** materialization reports that the previous contents could not be preserved
 
 #### Scenario: Peer or override conflict is reported
 

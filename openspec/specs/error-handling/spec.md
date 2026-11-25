@@ -8,7 +8,7 @@ Defines one failure model for eedsh: expected failures are values, exceptions fr
 
 ### Requirement: Expected failures are values rather than exceptions
 
-A synchronous operation that can fail for an expected reason SHALL return an Effect `Result`. An asynchronous or IO operation that can fail for an expected reason SHALL fail in the Effect error channel. Expected failures SHALL NOT be thrown, except at the synchronous authoring boundary where bundle queries and preset child lookups throw tagged authoring failures so fluent config composition stays direct. The authoring boundary SHALL throw only tagged authoring errors with stable codes, and config import SHALL preserve those tags. Programmer errors and impossible states MAY remain defects, but they SHALL be distinguishable from expected failures.
+A failure produced by pure computation SHALL be returned as an Effect `Result`. Every operation that touches the world — filesystem, process, network, clock, environment, or module loading — SHALL express an expected failure in the Effect error channel. Expected failures SHALL NOT be thrown. Authoring misuse that the type system cannot exclude SHALL be a defect rather than a thrown expected failure, and a config author SHALL NOT be required to catch it. Programmer errors and impossible states MAY remain defects, but a defect SHALL remain distinguishable from an expected failure.
 
 #### Scenario: Invalid plan is a Result failure
 
@@ -30,8 +30,8 @@ A synchronous operation that can fail for an expected reason SHALL return an Eff
 
 #### Scenario: Authoring lookup is a tagged exception
 
-- **WHEN** a bundle query or preset child lookup fails for an expected authoring reason
-- **THEN** the synchronous authoring API throws a tagged authoring failure with a stable code
+- **WHEN** an authoring call's input cannot satisfy its contract at run time
+- **THEN** the invocation reports a defect naming the call rather than throwing an expected failure
 - **AND** no untagged exception escapes the authoring boundary
 
 #### Scenario: Asynchronous config failure is a typed Effect failure
@@ -39,6 +39,12 @@ A synchronous operation that can fail for an expected reason SHALL return an Eff
 - **WHEN** a config file cannot be read, the TypeScript loader cannot be initialized, or the module cannot be imported
 - **THEN** config loading fails in the Effect error channel with a config failure
 - **AND** the caller observes the failure without a JavaScript catch
+
+#### Scenario: Pure computation keeps Result
+
+- **WHEN** a pure validator or normalizer rejects its input
+- **THEN** it returns a failure Result
+- **AND** it requires no running runtime and performs no IO
 
 ### Requirement: External exceptions are adapted once at the boundary
 
@@ -70,13 +76,18 @@ Code that calls an API that throws or rejects SHALL adapt the failure exactly on
 
 ### Requirement: Domain and platform failures keep their identities
 
-Expected failures SHALL retain a stable identity: domain failures SHALL be tagged errors with a stable tag, schema failures SHALL remain the native schema error, and file-system failures SHALL remain the platform's file-system error. Diagnostics SHALL be selected by tag or native error type rather than by matching message text.
+Expected failures SHALL retain a stable identity: each package SHALL export one closed union of the domain failures it can report, each domain failure SHALL be a tagged error with a stable tag, schema failures SHALL remain the native schema error, and file-system failures SHALL remain the platform's file-system error. The CLI edge SHALL expose one union of every failure a command can report and SHALL render a diagnostic by matching that union exhaustively, so a failure without a diagnostic SHALL fail the type check. Diagnostics SHALL NOT be selected by inspecting an untyped record, by converting a tag to a string, or by matching message text.
 
 #### Scenario: Domain failure is matched by tag
 
 - **WHEN** a preflight, lock, installation, resolution, config, check, or spawn failure reaches the reporter
-- **THEN** the reporter selects its diagnostic by the failure's tag
+- **THEN** the reporter matches it against the closed failure union
 - **AND** the diagnostic includes the facts that tag carries
+
+#### Scenario: A failure without a diagnostic fails the build
+
+- **WHEN** a new tagged failure is added to the union without a diagnostic arm
+- **THEN** the type check fails and names the missing case
 
 #### Scenario: Platform failure is reported as a platform error
 
@@ -90,9 +101,37 @@ Expected failures SHALL retain a stable identity: domain failures SHALL be tagge
 - **THEN** the reporter prints the native formatted schema message
 - **AND** does not wrap it in a project-defined failure
 
+### Requirement: Resolution and evaluation failures keep their identities
+
+A query-resolution failure, a schema rejection from the build phase, and a config import failure SHALL keep distinct identities. The CLI SHALL report a resolution failure with its stable code, the bundle name, the root, and the underlying cause; SHALL report a build rejection as the native schema message without an import prefix; and SHALL report only an unexpected exception during evaluation as `config.import_failed`. A missing default export SHALL remain `config.missing_default_export`, and a default export that is not a factory SHALL fail with `config.invalid_default_export`.
+
+#### Scenario: A resolution failure is reported with its facts
+
+- **WHEN** a recorded query cannot be resolved against the selected installation
+- **THEN** standard error carries the resolution code, the bundle name, and the root
+- **AND** the command exits 1 without reporting `config.import_failed`
+
+#### Scenario: A build rejection prints the native message
+
+- **WHEN** the build phase returns a failure Result
+- **THEN** standard error contains the native formatted schema message, including location annotations
+- **AND** it does not contain a `config.import_failed` prefix
+
+#### Scenario: An unexpected evaluation exception stays an import failure
+
+- **WHEN** a config module throws an untagged exception while being evaluated
+- **THEN** the command reports `config.import_failed` naming the config path
+- **AND** the original cause is retained for the diagnostic
+
+#### Scenario: A non-factory default export is rejected
+
+- **WHEN** a config module exports a value that is not a function
+- **THEN** the command reports `config.invalid_default_export`
+- **AND** the build phase does not run
+
 ### Requirement: The CLI observes one process outcome
 
-Each `eedsh` invocation SHALL execute its command as one Effect program and SHALL observe the outcome once with `Effect.runPromiseExit`. The resulting `Exit` SHALL determine the process result: a usage error exits 2, a typed failure is reported and exits 1, a defect is reported and exits 1, and a successful command exits with the exit code it produced. A failure SHALL NOT be reported more than once.
+Each `eedsh` invocation SHALL execute as one Effect program, observed once at the process entry point, which SHALL be the only place in the CLI that starts a runtime. A command SHALL return its exit code as the program's value, and the process result SHALL be derived from that value together with the single `Exit`. A typed failure SHALL be reported once, by the command that produced it; the entry point SHALL report only defects, interruptions, and usage errors. A failure SHALL NOT be reported more than once, and interactive evaluation SHALL run inside the same program rather than in a nested runtime.
 
 #### Scenario: Typed command failure is reported once
 
@@ -118,9 +157,15 @@ Each `eedsh` invocation SHALL execute its command as one Effect program and SHAL
 - **THEN** the watcher and service layer are released
 - **AND** the command exits 0
 
+#### Scenario: Interactive publication runs in the same program
+
+- **WHEN** an interactive session publishes the selected profile
+- **THEN** the publication runs inside the invocation's program
+- **AND** no nested runtime is started and no failure crosses the boundary as a rejected promise
+
 ### Requirement: Defects are reported but never recovered
 
-An unexpected exception (a defect) SHALL be reported and SHALL exit 1. It SHALL NOT be converted into a domain failure, silently swallowed, or retried as an expected failure. Scoped cleanup SHALL still run.
+An unexpected exception, an impossible state, or authoring misuse SHALL be reported and SHALL exit 1. It SHALL NOT be converted into a domain failure, silently swallowed, or retried as an expected failure. Scoped cleanup SHALL still run, and a defect SHALL NOT prevent a scoped resource — a profile lock, a watcher, or a session — from being released.
 
 #### Scenario: Injected service construction throws
 
@@ -134,52 +179,48 @@ An unexpected exception (a defect) SHALL be reported and SHALL exit 1. It SHALL 
 - **THEN** the process exits 1 with a diagnostic
 - **AND** the profile lock and other scoped resources are released
 
+#### Scenario: Authoring misuse is reported as a defect
+
+- **WHEN** an authoring call receives an out-of-contract value at run time
+- **THEN** the command reports a defect and exits 1
+- **AND** it does not print a resolution or preset failure code
+
 ### Requirement: Expected-failure exceptions are confined
 
-Production source outside `@eedsh/runtime`, the CLI process entry point's final rejection safety net, the synchronous authoring and query boundary, and explicitly documented defects SHALL NOT use JavaScript `throw` or `try/catch` for expected failures. The workspace SHALL enforce this with an architecture check over source files and an explicit allowlist that records why each exception site exists.
+Production source in `@eedsh/plan`, `@eedsh/config`, and `@eedsh/cli` SHALL NOT use JavaScript `throw`, `try`, or `catch` for any purpose, and the workspace SHALL enforce that with an architecture check that carries no per-file allowlist. One exception SHALL remain: the CLI process entry point SHALL hold a single final safety net that converts an unexpected rejection into a reported defect.
 
 #### Scenario: Architecture check rejects a new throw
 
-- **WHEN** production source outside the allowlist adds a `throw` or `try` statement
+- **WHEN** production source adds a `throw`, `try`, or `catch` statement
 - **THEN** the architecture check fails and names the file
 
 #### Scenario: Allowlisted authoring boundary remains
 
-- **WHEN** a query or preset child lookup throws a tagged authoring failure
-- **THEN** the architecture check permits the documented authoring modules
-- **AND** the allowlist records the synchronous-composition rationale
+- **WHEN** a synchronous authoring boundary is proposed as an exception site
+- **THEN** no allowlist entry is required, because authoring performs no IO and authoring misuse is a defect
+- **AND** the check still rejects an added exception
 
 #### Scenario: Allowlisted defect remains
 
-- **WHEN** an explicitly documented impossible state or the Effect-free runtime uses an exception
-- **THEN** the architecture check permits it
-- **AND** the allowlist records why
+- **WHEN** the entry safety net converts an unexpected rejection
+- **THEN** it is the only permitted exception site in production source
+- **AND** it records the rejection as a defect
 
-### Requirement: Tagged authoring failures survive config import
+#### Scenario: The entry net is the only exception site
 
-Config loading SHALL preserve native schema failures and tagged authoring failures instead of wrapping them as generic import failures. The preserved authoring failures SHALL include resolution failures and preset child lookup failures, with their stable codes and facts. Only unexpected exceptions SHALL become config import failures. The CLI and REPL SHALL format preserved authoring failures by tag, code, and message.
+- **WHEN** the process entry point is inspected
+- **THEN** it holds exactly one final rejection safety net
+- **AND** no other production module contains exception control flow
 
-#### Scenario: Missing preset reaches the formatter
+#### Scenario: Authoring contains no exception control flow
 
-- **WHEN** a config module requests a preset that its bundle does not declare
-- **THEN** config loading preserves the resolution failure
-- **AND** the CLI reports its resolution code and message rather than `config.import_failed`
-
-#### Scenario: Missing preset child reaches the formatter
-
-- **WHEN** a config module requests a preset child that the preset does not declare
-- **THEN** config loading preserves the preset-definition failure
-- **AND** the CLI reports its preset code, preset id, row id, and child id rather than `config.import_failed`
-
-#### Scenario: Unexpected import failure stays a config failure
-
-- **WHEN** a config module throws an untagged exception while being imported
-- **THEN** config loading reports a config import failure naming the config path
-- **AND** the original cause is retained for the diagnostic
+- **WHEN** the authoring package sources are inspected
+- **THEN** no module throws, catches, or wraps an external failure
+- **AND** invalid authoring input is reported as a defect through the effect channel
 
 ### Requirement: DSH discovery and capability failures are tagged
 
-A missing, invalid, unsupported, or capability-incomplete DSH installation SHALL produce a tagged domain failure with a stable code and the facts needed to act. The CLI SHALL report it once and exit 1 without publishing or booting. A missing authoring bridge SHALL remain a tagged resolution failure through config import.
+A missing, invalid, unsupported, or capability-incomplete DSH installation SHALL produce a tagged domain failure with a stable code and the facts needed to act. The CLI SHALL report it once and exit 1 without resolving queries, publishing, or booting. Discovery SHALL complete before config evaluation, because the selected version is an evaluation input; an installation that cannot provide a required capability SHALL fail before any bundle query is resolved.
 
 #### Scenario: No DSH installation is found
 
@@ -203,7 +244,6 @@ A missing, invalid, unsupported, or capability-incomplete DSH installation SHALL
 
 #### Scenario: Authoring runs without a bridge
 
-- **WHEN** a config query runs with no bridge installed
-- **THEN** the failure code is `resolution.bridge_missing`
-- **AND** config loading preserves that tagged resolution failure
-- **AND** the CLI does not report `config.import_failed`
+- **WHEN** an invocation evaluates a config with no installation selected
+- **THEN** there is no bridge to install and none to be missing
+- **AND** the command fails with the discovery failure before evaluation begins
